@@ -533,11 +533,13 @@ Phases are sized for Claude Code + gstack, one coherent phase per focused work s
 - Tests: `evidence/append.test.ts` — happy path, content-hash idempotency, `EVIDENCE_ENTITY_UNKNOWN` rejection, invalid auth, concurrent-append-doesn't-race. `evidence/query.test.ts` — reverse-chron order, quarantined records excluded. `evidence/quarantine.test.ts` — round-trip + un-quarantine. `evidence/provenance.test.ts` — full source+author attribution.
 - Gate: all evidence tests green. Can inject test evidence via CLI and read back via `get_evidence`.
 
-**Phase 2 — Namespace + seed entities**
-- Create `dent-brain-data` repo with namespace layout per v0.7 §7.
-- Write `DENT_SCHEMA.md`.
-- Seed entity pages for Steve, Jason, Dent (hand-written).
-- Gate: `get_page(entities/people/steve-broback)` returns the hand-written page.
+**Phase 2 — Namespace + seed entities (DONE 2026-04-21)**
+- ✓ Created `github.com/dentthefuture/dent-brain-data` private repo (`main` branch).
+- ✓ 15 namespace directories per v0.7 §7 / DENT_SCHEMA.md §3 (entities/{people,companies,projects}, streams, speakers, sponsors, sessions/{dent-2025,dent-2026}, community, marketing, team-ops/meetings, originals, dent-library, archives, observations, integrations). `.gitkeep` sentinels for empty namespaces.
+- ✓ `DENT_SCHEMA.md` written (7 sections: slug convention, entity types, namespaces, FM federation rules, conflict resolution, evidence schema reference, signal-detector trigger seed list).
+- ✓ Seed entity pages: `entities/people/steve-broback.md`, `entities/people/jason-preston.md`, `entities/projects/dent.md`. All marked `seed: true` in frontmatter so the future materializer rebuilds them cleanly.
+- ✓ `README.md` at the root documenting purpose + write access policy (Jason now, Dent Brain server + skill-invoked humans post-Phase-3).
+- **Remaining Phase 2 gate** (after Phase 3 materializer lands): `get_page(entities/people/steve-broback)` returns the seeded page.
 
 **Phase 3 — Materializer (LLM synthesis with guardrails)**
 - Synthesis prompt produces confirmed facts, working inferences, open questions, conflicts, evidence timeline.
