@@ -11,6 +11,8 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.1.1 (2026-04-21 late evening, in-repo correction):** Substrate-naming fix. Previous revisions (v0.9, v1.0, v1.1 in Dropbox) had "gstack as substrate" in several places — that was a typo I (Claude) propagated. The substrate is **gbrain** (`github.com/garrytan/gbrain`), not gstack. gstack is a separate repo, the dev toolkit that powers `/ship`, `/office-hours`, `/plan-eng-review`, etc. gbrain is the knowledge-brain substrate: Bun + PGLite/Postgres + pgvector + 26 skills + MCP + entity-extraction + self-wiring graph. Phase 0 already executed: cloned garrytan/gbrain v0.16.0 to jasonp/dent-brain (private), upstream remote preserved. Only this PLAN.md was edited; `docs/dent-brain/design-history/` files preserve original wording as historical record.
+
 **v1.1 (2026-04-21 evening):** FM MCP reality check. Steve didn't use Claris hosted — he wrote a 395-line custom Node.js stdio MCP server. Plan updated.
 
 - **Steve's custom Node.js MCP server is the canonical FM integration.** Adopted into `jasonp/dent-brain/plugin/fm-mcp/`. Credit preserved.
@@ -127,7 +129,7 @@ The cost of the status quo is visible every time the team asks "did we already p
 
 - Zero terminal for non-technical installs. Applies to Steve too, even though he could handle terminal — the install path must be plugin-grade.
 - Cowork as primary interface. Scheduled tasks caveat is accepted: v1 doesn't need 24/7 ingest freshness.
-- gstack as substrate, not fork target. All MVP code sits as layers above gstack.
+- gbrain as substrate, not fork target. All MVP code sits as layers above gbrain (under `src/dent/`, `skills/dent/`, `plugin/`). Upstream pulls from `garrytan/gbrain` stay clean.
 - @dentthefuture.com identities only.
 - Monthly cost ≤ 0 for MVP infra (Railway + Supabase + existing Dropbox/Granola/email).
 
@@ -166,7 +168,7 @@ Evidence log + LLM-synthesized compiled entity pages (confirmed facts, inference
 ### Approach C: Notion/Airtable substrate
 Skip custom evidence log entirely. Use Notion as the data layer; skills read/write Notion API.
 - Pros: fastest to ship. Free UI for team.
-- Cons: kills gstack-substrate thesis and portability story. Tied to Notion's performance ceiling. Migration cost later is high. Not interesting to build.
+- Cons: kills gbrain-substrate thesis and portability story. Tied to Notion's performance ceiling. Migration cost later is high. Not interesting to build.
 
 ## Recommended Approach: B
 
@@ -373,7 +375,7 @@ These are the queries Steve and the team actually want to make. They define the 
 - `append_evidence(entity_refs, content, source_context?)`
 - `get_evidence(entity_slug, limit?)`
 - `get_page(slug)` — entity or namespace, renders compiled sections (confirmed facts, working inferences, open questions, conflicts, evidence timeline). For person entities, includes a `filemaker_record_id` pointer in frontmatter when one is linked.
-- `search(query)` — gstack's existing hybrid RRF over evidence + entity pages
+- `search(query)` — gbrain's existing hybrid RRF over evidence + entity pages
 - `list_recent_writes(since, user?)`
 - `whoami()`
 - `rebuild_entity(slug)` — rebuilds the whole compiled page from evidence: runs synthesis, writes markdown, updates search index. Does NOT call FM at rebuild time.
@@ -499,8 +501,8 @@ MVP is successful if, 2 weeks after ship-to-Steve, all of these are true:
 Phases are sized for Claude Code + gstack, one coherent phase per focused work session. Approximate ordering; some phases can run partially in parallel.
 
 **Phase 0 — Substrate and infra + feasibility spikes**
-- Fork gstack to `github.com/jasonp/dent-brain`. Rename CLI entry point.
-- Deploy vanilla gstack to Railway. Verify MCP endpoint answers.
+- Clone gbrain to `github.com/jasonp/dent-brain` as a private fork. Set `upstream` → `garrytan/gbrain` for future merges. (DONE 2026-04-21.)
+- Deploy vanilla gbrain to Railway. Verify MCP endpoint answers.
 - Migrate to Supabase. Add users + tokens + audit tables. Middleware.
 - Custom subdomain + TLS.
 - **Spike A6:** Signal-detector per-message hook feasibility in Cowork (1h).
@@ -751,10 +753,10 @@ Eng-review forced explicit listing of deferred work. Each item has a rationale.
 
 ## What already exists (reuse inventory)
 
-- **gstack** — CLI, MCP server, 37 existing ops, hybrid RRF search (pgvector + tsvector), embedding pipeline, chunking, import command, recipe framework, skill patterns. Reused as substrate; additions are layered.
+- **gbrain** — CLI (`gbrain` binary), MCP server, 37+ existing ops, hybrid RRF search (pgvector + tsvector), embedding pipeline, chunking, import command, recipe framework, 26 skills including meeting-sync / dream-cycle / signal-detector patterns. Reused as substrate; additions are layered under `src/dent/`, `skills/dent/`, `plugin/fm-mcp/`.
 - **FileMaker MCP** — full R+W, 47 layouts, authenticated. Reused in place; Dent Brain does NOT proxy.
 - **pg-boss** — Postgres-native job queue for materializer. Do not roll a custom queue.
-- **gstack's meeting-sync skill (for future Granola ingest)** — v1 will fork or share; decision at that time.
+- **gbrain's meeting-sync skill (for future Granola ingest)** — v1 will fork or share; decision at that time.
 - **Dropbox SDK** — Node/Bun; no custom auth.
 - **zod** — LLM output structural validation; no custom schema library.
 
