@@ -13,3 +13,4 @@ supabase/.temp/
 .claude/skills/
 .idea
 eval/reports/
+experiments/*/node_modules/
