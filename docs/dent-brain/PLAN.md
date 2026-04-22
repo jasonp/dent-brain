@@ -11,6 +11,16 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.2 (2026-04-21, namespace + multi-org):** Two architectural decisions locked in for open-source posture and future-proofing.
+
+- **CLI namespace separation: `dbrain` (not `gbrain`).** Renamed `package.json`'s `name` and `bin` from `gbrain` → `dbrain`. Personal gbrain installs and organizational dbrain installs now coexist on the same machine — `gbrain` for personal knowledge, `dbrain` for org work. The substrate code keeps the gbrain identifier internally (would be a 79-file rename otherwise); only user-facing surface is dbrain. Polish-pass on `src/cli.ts` self-introduction strings is tracked as P3 TODO.
+- **Upstream-merge ergonomics:** `scripts/sync-from-upstream.sh` (`bun run sync:upstream`) handles the recurring rename re-application after each upstream merge from `garrytan/gbrain`. Fetches, merges, restores `dbrain` rename if clobbered, runs tests. ~2 min per upstream pull when no other conflicts.
+- **Multi-org by design.** Two zero-cost decisions architected now:
+  1. **Server deploys are single-tenant.** Each org forks dbrain, edits `plugin/manifest.json`, deploys their own Railway service + own Postgres + own data repo. Multi-tenant within one server is explicitly OUT OF SCOPE (too much complexity for too little value).
+  2. **Skill names get an org-prefix at plugin-build time.** Substrate provides skill templates; `plugin/manifest.json:deploy.org_prefix` is substituted at build. Dent's deploy ships `/dent-append-evidence`, `/dent-flag-fact`, etc. Another org's deploy would ship `/<their-prefix>-append-evidence`. Multi-org coexistence in one Cowork session = both connectors installed + both skill bundles installed, zero name collision.
+- **`plugin/manifest.json` added** with deploy config (org_prefix, server_url, data_repo, FM MCP config) and an example showing how a hypothetical YC deployment would look.
+- **All future PLAN.md skill references should use `/dent-` prefix** (was: `/append-evidence`, `/flag-fact`, etc.). Inline references in this doc not yet swept — tracked as P3 polish TODO.
+
 **v1.1.2 (2026-04-21, branch protection deferred):** Tried to apply branch protection to both repos. Blocked: `jasonp/dent-brain` requires GitHub Pro for protection on private repos ($4/mo, declined for now); `dentthefuture/dent-brain-data` requires admin permission which Jason doesn't have (he's an outside collaborator with push, not admin). Path forward: discipline-based workflow now (never force-push, never delete master/main); upgrade + properly admin-grant when Steve onboards in Phase 8 to enforce required-PR + 1-approval. Tracked as P2 TODO at end of this doc.
 
 **v1.1.1 (2026-04-21 late evening, in-repo correction):** Substrate-naming fix. Previous revisions (v0.9, v1.0, v1.1 in Dropbox) had "gstack as substrate" in several places — that was a typo I (Claude) propagated. The substrate is **gbrain** (`github.com/garrytan/gbrain`), not gstack. gstack is a separate repo, the dev toolkit that powers `/ship`, `/office-hours`, `/plan-eng-review`, etc. gbrain is the knowledge-brain substrate: Bun + PGLite/Postgres + pgvector + 26 skills + MCP + entity-extraction + self-wiring graph. Phase 0 already executed: cloned garrytan/gbrain v0.16.0 to jasonp/dent-brain (private), upstream remote preserved. Only this PLAN.md was edited; `docs/dent-brain/design-history/` files preserve original wording as historical record.
@@ -861,3 +871,13 @@ These two are the only critical gaps. Fixable in ~30min with CC. Plan will inclu
 - `jasonp/dent-brain`: upgrade jasonp account to GitHub Pro ($4/mo). Apply medium protection to master: require PR + 1 approval, block force-push, block deletion, enforce for admins.
 - `dentthefuture/dent-brain-data`: get admin permission on the repo (or have whoever owns the dentthefuture user account apply it). Apply soft protection to main: block force-push and deletion, allow PRs without required approvals (materializer needs automated writes).
 - Reason for deferral: Jason solo right now, risk is low. With Steve and other collaborators, risk profile changes.
+
+**P3 (polish): Sweep `src/cli.ts` to use the package.json `name` dynamically instead of hardcoded "gbrain" strings.**
+- Currently `src/cli.ts` has ~10 hardcoded references to `gbrain` in user-facing help text, error messages, and version strings. When users type `dbrain --help` they see "gbrain" which is wrong but functional.
+- Fix: refactor cli.ts to read its own name from `package.json` at runtime (or a constant near the top derived from package.json). One place to change, no recurring upstream conflict.
+- Defer until: post-MVP. Not blocking any user behavior.
+
+**P3 (polish): Sweep PLAN.md inline skill references to use `/dent-` prefix.**
+- Body of PLAN.md still uses unprefixed names like `/append-evidence`, `/flag-fact`, `/setup-filemaker-mcp`. They should be `/dent-append-evidence`, `/dent-flag-fact`, `/dent-setup-filemaker-mcp` per the multi-org architecture decision.
+- ~15 inline edits, all mechanical.
+- Defer until: post-MVP. Confusing-but-not-blocking.
