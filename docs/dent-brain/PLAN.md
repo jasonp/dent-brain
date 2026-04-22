@@ -11,6 +11,13 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.2.1 (2026-04-22, install model codified):** Decided the install UX for three audiences and spec'd the tool that makes it work.
+
+- **Three-audience install model documented in DENT_BRAIN.md + PLAN.md:** (1) team members install Cowork plugins + one automated `/dent-setup-filemaker-mcp` run, no local code, ~10-15 min; (2) admins deploying a new dbrain instance run `bun run dbrain init` — gbrain-style interactive prompts that generate `plugin/manifest.json` + `.env.local` + `NEXT_STEPS.md`; (3) power users — multiple Cowork plugins for multi-org participation OR multiple clones for multi-deploy admins.
+- **`dbrain init` promoted to P1 post-MVP (unblocks OSS release).** Spec: 7 prompts (org name, skill prefix, email domain, server URL, data repo URL, FM federation y/n + details, admin email). Writes manifest.json from answers plus a NEXT_STEPS.md that enumerates manual steps the admin still needs to take (Railway deploy, Supabase, DNS).
+- **Single-org-by-default confirmed.** Multi-org is software-supported (skill-prefix namespace convention + single-tenant-per-deploy architecture) but NOT the install-time default. The default admin experience is "one org, answer seven questions, done."
+- **Dent's own admin path unchanged.** Jason already hand-filled `plugin/manifest.json` for Dent. No re-run needed when `dbrain init` ships. The tool is for the NEXT admin — whoever deploys dbrain for their org.
+
 **v1.2 (2026-04-21, namespace + multi-org):** Two architectural decisions locked in for open-source posture and future-proofing.
 
 - **CLI namespace separation: `dbrain` (not `gbrain`).** Renamed `package.json`'s `name` and `bin` from `gbrain` → `dbrain`. Personal gbrain installs and organizational dbrain installs now coexist on the same machine — `gbrain` for personal knowledge, `dbrain` for org work. The substrate code keeps the gbrain identifier internally (would be a 79-file rename otherwise); only user-facing surface is dbrain. Polish-pass on `src/cli.ts` self-introduction strings is tracked as P3 TODO.
@@ -674,6 +681,7 @@ Fresh-install timing:
 - End-of-week-2 retro on the MVP success criteria above, including hallucination rate from correction log.
 
 **After MVP (v1 targets, in likely order):**
+- **`dbrain init` skill/CLI (P1, unblocks OSS release).** Interactive setup replacing hand-edited `plugin/manifest.json`. Asks admin for org name, prefix, email domain, server URL, data repo URL, FM federation config, admin email. Writes manifest.json + .env.local + NEXT_STEPS.md. Enables gbrain-style OSS install for future admins at other orgs. ~200 lines + 1 README. Should land before any external admin tries to deploy dbrain. Dent's own admin (Jason) does NOT need to re-run this — manifest is already hand-filled for the Dent deployment.
 - **Phase 5b — FM Notes import** (`Notes Q` + `Sticky Notes` → evidence records). Skip records with `CreatedBy: mcp_claude` to prevent round-trip loops.
 - **Gmail ingest** via user's native connector (v0.7 §8.2). Unblocks Use Case 1 (carry-forward registration recall).
 - **Granola ingest** (v0.7 §8.2).
@@ -696,6 +704,28 @@ Fresh-install timing:
 
 **v2+ note (not roadmapped, flagged for record):**
 - FM integration-layout consolidation. The FM DB has MailChimp×3, GetProspect×4, JoinIt, Regfox, CloudHQ, Fullcontact layouts — classic hub-and-spoke CRM sprawl. Steve's comment: "could be flattened considerably with Google Sheets + Claude Code." Not Dent Brain's job, but the same team / same infrastructure could do it. Worth a separate /office-hours session when the time comes.
+
+## Install model (three audiences)
+
+dbrain has three install paths. See DENT_BRAIN.md for detailed commands; this section is the architectural summary.
+
+### Team members using an existing deployment (MVP audience — Steve first, Jeff/Robin/Andreas/Morgan in Phase 8)
+
+- Install is entirely Cowork-side: connector URL + bearer token + plugin bundle.
+- Plugin bundle ships prefix-namespaced skills (`/dent-append-evidence`, `/dent-flag-fact`, `/dent-setup-filemaker-mcp`, etc.) — see §Multi-org architecture for why.
+- `/dent-setup-filemaker-mcp` automates the FM MCP install (Phase 7 skill).
+- Target: ~10-15 min, zero Terminal.
+
+### Admins deploying a new dbrain instance (Jason for Dent today; future OSS admins for their own orgs)
+
+- `git clone https://github.com/jasonp/dent-brain.git` → `bun install` → `bun run dbrain init`.
+- `dbrain init` is interactive: asks for org name, prefix, email domain, server URL, data repo URL, FM federation config, admin email. Writes `plugin/manifest.json` + `.env.local` + `NEXT_STEPS.md`.
+- **`dbrain init` is P1 post-MVP work** (see §Post-MVP below). For Dent's alpha, Jason hand-filled `plugin/manifest.json`; future admins skip that manual step.
+
+### Power users (rare)
+
+- **Person in multiple orgs:** install multiple Cowork plugins (different URLs, different tokens, different prefixes). Skills coexist via namespace. No local install needed. Falls out of the single-tenant-per-deploy architecture for free.
+- **Admin running multiple deployments:** separate clone per deployment, `dbrain init` in each. Each directory is its own deployment with its own manifest, Railway service, data repo.
 
 ## The Assignment
 

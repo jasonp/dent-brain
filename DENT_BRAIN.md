@@ -52,20 +52,75 @@ Dent Brain is a shared brain used by the Dent Conference team (Jason, Steve, Jef
 
 Keeping Dent additions under `dent/` subdirectories by construction — upstream merges from gbrain stay clean because we never touch `src/<top-level>/`.
 
-## Getting started
+## Install model (three audiences)
+
+dbrain has three types of users, each with a different install path.
+
+### 1. Team members using an existing deployment (Steve, Jeff, Robin, Andreas, Morgan)
+
+**They never run `dbrain init` or touch the server code.** Their install is entirely Cowork-side:
+
+1. Admin gives them a connector URL + bearer token + plugin bundle.
+2. In Claude Desktop → Settings → Connectors: paste the URL + token.
+3. Install the plugin bundle (ships Cowork skills like `/dent-append-evidence`, `/dent-flag-fact`, `/dent-setup-filemaker-mcp`, plus the signal detector).
+4. Run `/dent-setup-filemaker-mcp` once — automated FM MCP install (see PLAN.md Phase 7).
+5. Done. ~10-15 min end-to-end.
+
+Target experience: zero Terminal, zero code.
+
+### 2. Admins deploying a NEW dbrain instance (Jason for Dent, someone for any future org)
+
+**gbrain-style install — `dbrain init` asks a few questions, generates config.** *(`dbrain init` is P1 post-MVP; for Dent's alpha, Jason hand-filled `plugin/manifest.json`. Once `dbrain init` ships, future admins skip the hand-editing.)*
 
 ```bash
-# Clone (once you have access)
-git clone https://github.com/jasonp/dent-brain.git ~/gh/dent-brain
+git clone https://github.com/jasonp/dent-brain.git ~/gh/my-org-brain
+cd ~/gh/my-org-brain
+
+bun install                     # installs deps (no global linking)
+bun run sync:upstream           # optional — pull latest gbrain before init
+bun test                        # verify substrate passes on your machine
+
+bun run dbrain init             # interactive prompts (see spec below)
+
+# dbrain init asks:
+#   1. What's your organization name?          (e.g., "Acme Corp")
+#   2. Short prefix for skill names?            (e.g., "acme" → /acme-append-evidence)
+#   3. Primary email domain?                    (e.g., "acme.com")
+#   4. Server URL (Railway deploy target)?      (or "skip")
+#   5. Data repo URL?                           (existing GitHub URL, or "gh repo create" on the spot)
+#   6. FileMaker federation?                    (y/n + host/database/privilege set if yes)
+#   7. Admin email?                             (for the initial bearer token)
+#
+# Writes:
+#   - plugin/manifest.json  (from answers)
+#   - .env.local            (for any secrets provided)
+#   - NEXT_STEPS.md         (Railway deploy, Supabase, DNS — what the admin still has to do manually)
+```
+
+Target experience: gbrain-like. Clone, answer 7 questions, run one more command per manual step the admin hasn't automated yet, ship.
+
+### 3. Power users (rare — one person admining multiple org deploys, OR participating in multiple orgs)
+
+**Multiple-org participation** (team member in Dent AND Acme): just install multiple Cowork plugins, one per org. Skill names don't collide because of the prefix convention (`/dent-*` vs `/acme-*`). No local dbrain install needed. Nothing special to configure.
+
+**Multiple-admin-deployments** (one admin owns multiple dbrain instances): clone dbrain separately per deployment, run `dbrain init` in each clone. Each directory is its own deployment with its own manifest, its own Railway service, its own data repo.
+
+```bash
+~/gh/dent-brain/       # deployment for Dent
+~/gh/acme-brain/       # deployment for Acme (if this admin also runs Acme's dbrain)
+```
+
+Neither mode requires any multi-tenancy awareness in the dbrain code itself. Both are out-of-the-box consequences of the single-tenant-per-deploy architecture.
+
+## Getting started (for Dent admins — Jason, during Phase 0)
+
+Manifest is already populated for Dent (hand-filled before `dbrain init` exists). Just:
+
+```bash
 cd ~/gh/dent-brain
-
-# gbrain install (this is Phase 0)
-bun install
-bun link
-gbrain init                     # local brain, ready in 2 seconds (PGLite)
-
-# Run gbrain's existing tests to verify substrate works
-bun test
+bun install                     # installs deps, no global linking
+bun test                        # verify substrate passes on your machine
+# Skip: bun link, dbrain init, gbrain init (none needed for Dent's admin path today)
 ```
 
 Then follow `docs/dent-brain/PLAN.md` from Phase 0 onward. The plan is eng-review-cleared with 10 architecture + 7 code-quality + 3 performance decisions locked.
