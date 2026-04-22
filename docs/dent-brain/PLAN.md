@@ -11,6 +11,14 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.3 (2026-04-22, Phase 6 reshape from A6 spike):** Cowork uses a deferred-tools model that makes passive per-message MCP invocation unreliable. Phase 6 reshapes.
+
+- **A6 spike result:** built a throwaway MCP server (`experiments/a6-cowork-hook-spike/`) with a `passive_observer` tool whose description instructed Claude to call it every turn. Installed in Claude Desktop, opened a Cowork session, verified the tool was registered. **Log: zero invocations across a full test conversation.** Root cause: Cowork requires `ToolSearch → select:<tool>` to load a tool's schema before it can be called. The "always call me" instruction lives INSIDE the schema, so Claude never sees the instruction until (or unless) it manually loads the schema. Deferred-tools model kills passive per-turn invocation as a reliable pattern.
+- **Phase 6 reshape:** replaced the per-message passive observer with two patterns that work WITH Cowork: (1) amplification inside `/dent-append-evidence` — when user explicitly appends evidence, the skill also scans recent session context for OTHER Dent entities mentioned and offers multi-append; (2) session-start digest (`/dent-check`, v1) — one-time info on each new Cowork session about recent Dent activity. True proactive detection moves entirely to v1 server-side ingest (Gmail, Granola, Dropbox drop folder) — aligns with the hybrid architecture we locked in v0.9.
+- **Removed from MVP:** per-message passive observer MCP tool, session-level signal-detector off toggle, rate limiter, fixture-scenarios tests.
+- **Added to Phase 4 `/dent-append-evidence`:** amplification scan over session context + multi-append UX.
+- **Architectural learning for future OSS distribution:** document in DENT_BRAIN.md so other orgs deploying dbrain don't hit the same wall. The dbrain framework's design assumption is "explicit user invocation + server-side proactive ingest," not "passive Cowork observation."
+
 **v1.2.1 (2026-04-22, install model codified):** Decided the install UX for three audiences and spec'd the tool that makes it work.
 
 - **Three-audience install model documented in DENT_BRAIN.md + PLAN.md:** (1) team members install Cowork plugins + one automated `/dent-setup-filemaker-mcp` run, no local code, ~10-15 min; (2) admins deploying a new dbrain instance run `bun run dbrain init` — gbrain-style interactive prompts that generate `plugin/manifest.json` + `.env.local` + `NEXT_STEPS.md`; (3) power users — multiple Cowork plugins for multi-org participation OR multiple clones for multi-deploy admins.
@@ -596,14 +604,72 @@ Phases are sized for Claude Code + gstack, one coherent phase per focused work s
 - Same staged + quarantine pattern as Dropbox import.
 - Phase 5b is NOT in MVP. Listed here so the architecture stays open to it.
 
-**Phase 6 — Signal-detector skill**
-- Shape validated in Phase 0 A6 spike. If per-message hooks unsupported, Phase 6 reshapes to session-start digest or keyword-flag skill.
-- Per-message skill in Cowork plugin reads session context.
-- Trigger list fetched once per session (P2): entity names + FM tag list + DENT_SCHEMA triggers. Version-checked on session start.
-- Match against trigger list.
-- Rate limiter: ≤2 suggestions per session. One-click dismiss + `/signal-detector-dent off` per-session silence.
-- Tests: `signal-detector/triggers.test.ts` (person name → suggests; sponsor company name → suggests; non-Dent context → silent; rate-limit after 2; dismiss honored; session-level off). `signal-detector/fixture-scenarios.test.ts` (10 synthetic Cowork scenarios fixture file, passes on expected-trigger and expected-silence cases).
-- Gate: all tests green. 10 synthetic scenarios from fixture produce expected signal-detector behavior.
+**Phase 6 — Signal surfacing (RESHAPED after A6 spike, 2026-04-22)**
+
+**Original design (OBSOLETE):** per-message MCP tool whose description instructed Claude to call it on every user turn in Cowork, auto-detecting Dent entity mentions and suggesting `/dent-append-evidence`.
+
+**A6 spike finding (binding):** Cowork uses a **deferred-tools model**. New MCP tools register by name but schemas must be explicitly loaded via `ToolSearch → select:<tool>` before Claude can invoke them. Until the schema is loaded, the tool's description — including any "always call me" instruction — never reaches Claude's reasoning. Even after schema load, persistence in Claude's context is not something we control. The original per-turn passive-observer pattern is not a reliable foundation. See `experiments/a6-cowork-hook-spike/README.md` for test artifacts.
+
+**Reshaped Phase 6 design** = two complementary patterns that work WITH Cowork's architecture, not against it.
+
+### Pattern 1: Amplification inside `/dent-append-evidence`
+
+When the user explicitly invokes `/dent-append-evidence` for entity X, the skill does two jobs:
+1. Write the evidence record for X (the original behavior).
+2. Scan the last N turns of Cowork session context (passed in by Claude as part of the skill invocation) for OTHER Dent entities mentioned but not-yet-appended. For each, surface a candidate: `"I noticed Mike Cottmeyer and Dent:Blend Austin came up too. Append evidence for those?"`
+
+Net effect: one explicit invocation becomes a multi-append opportunity. The user is already thinking about the brain when they type the command, so the cognitive cost of saying yes to 2-3 additional appends is near zero.
+
+### Pattern 2: Session-start digest (optional, per-user config)
+
+At the start of each Cowork session, if the user has opted in via plugin config, the Dent Brain server sends a one-time digest as a tool response to `/dent-check` or `/dent-whoami`:
+
+```
+Dent activity since you last checked (12h ago):
+- Mike Cottmeyer entity page updated (+3 evidence records via Dropbox drop folder)
+- Dent:Blend Austin project: 2 new meeting notes ingested from Granola
+- Flag from yesterday: "Mike travel-constrained in Q2" was flagged and rebuilt as Open Question
+```
+
+This trains muscle memory ("when I open Cowork, I check in with the brain") without needing per-turn invocation. Simple, deterministic, works in Cowork's model.
+
+### Pattern 3: True proactive detection moves to v1 server-side ingest (already planned)
+
+The "proactive detection across the team's work" value prop actually doesn't need to live in Cowork. In v1:
+- Gmail ingest (user-scheduled, runs daily)
+- Granola ingest (user-scheduled, runs after each meeting)
+- Server-side Dropbox drop folder cron
+
+These are where proactive signal-capture happens server-side. Cowork becomes the QUERY surface (via `/dent-` commands) and the IN-MOMENT capture surface (via `/dent-append-evidence` + Pattern 1 amplification), not the always-on observation surface. This is actually simpler and more aligned with the hybrid architecture from v0.9.
+
+### MVP scope after reshape
+
+Keep in MVP:
+- Pattern 1: `/dent-append-evidence` with amplification scan (small addition to the skill's post-write logic).
+- Trigger list (entity names + FM tag list + DENT_SCHEMA keywords): used BY the amplification scan, not by a passive observer. Fetched when the skill runs, not pre-loaded per session.
+
+Defer to v1:
+- Pattern 2: session-start digest skill (`/dent-check`). Lands with the first v1 skill batch.
+- Pattern 3: server-side ingest (already in plan's v1 roadmap).
+
+Cut entirely:
+- Per-message passive observer MCP tool.
+- Session-level `/signal-detector-dent off` toggle (no per-message noise to silence).
+- The rate limiter (nothing to rate-limit when invocation is user-initiated).
+
+### Tests (revised)
+
+`skills/dent-append-evidence.test.ts` gets new test cases:
+- Amplification scan finds 2 entities mentioned in session context, suggests appends.
+- Amplification scan on "clean" session context finds nothing, doesn't offer.
+- User accepts amplification suggestion for one entity → new evidence record written for that entity.
+- User declines all → single evidence record written, no surplus data.
+
+No fixture-scenarios test needed anymore (no passive behavior to fixture-test).
+
+### Gate
+
+User runs `/dent-append-evidence` with a fresh Cowork session where 2 other Dent entities were recently mentioned. Sees the amplification prompt. Can accept or decline each. Declined suggestions produce zero writes.
 
 **Phase 7 — Plugin bundle + `/setup-filemaker-mcp` + non-technical install**
 

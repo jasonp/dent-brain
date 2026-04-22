@@ -66,20 +66,53 @@ cat /tmp/a6-spike-log.jsonl
 - Did Claude use the tool MORE than once per turn (double-invocation)? Would affect rate-limiting logic.
 - Did the tool get called when Steve (or any second participant) sent messages in Cowork? That's the actual multi-writer signal we care about.
 
-## Recording findings
-
-After running the experiment, document findings here:
+## Findings (2026-04-22)
 
 ```
-Date run:
-Claude Desktop version:
-Number of messages in test conversation:
-Number of passive_observer invocations logged:
-Hit rate (invocations / messages):
-Did Cowork announce the tool-use visibly? (y/n)
-Verdict: PHASE 6 SHIPS AS DESIGNED / RESHAPE NEEDED / INCONCLUSIVE
-Notes:
+Date run:                                          2026-04-22
+Claude Desktop config:                             Local stdio MCP, added via claude_desktop_config.json
+Number of messages in test conversation:           Full conversation (8-10 turns)
+Number of passive_observer invocations logged:     0
+Hit rate (invocations / messages):                 0%
+Did Cowork announce the tool-use visibly? (n/a)    Tool was never invoked, no announcement happened
+
+Verdict: RESHAPE NEEDED. Cowork uses a deferred-tools model.
 ```
+
+### Root cause
+
+The system-reminder shown to Claude in Cowork explicitly said:
+
+> The following deferred tools are now available via ToolSearch. Their schemas are NOT
+> loaded — calling them directly will fail with InputValidationError. Use ToolSearch
+> with query "select:<name>[,<name>...]" to load tool schemas before calling them:
+> mcp__a6-spike__passive_observer
+
+When asked "what tools do you have?", Claude's response was:
+> "I can see there's a tool called mcp__a6-spike__passive_observer in my available tools.
+>  Let me load its schema so I can tell you exactly what it does."
+
+So Claude could see the tool was registered, but could NOT invoke it without running `ToolSearch` first to load its schema. Since the "always call me at every turn" instruction lives INSIDE the schema, Claude never had access to that instruction in context — it simply had the tool name.
+
+### Implication for Phase 6
+
+The original design (passive observer MCP tool that Claude reflexively calls every turn) is incompatible with Cowork's deferred-tools model. Even if we could trick Claude into loading the schema once, we have no guarantee the schema stays resident in context across turns. Fragile foundation for a core product feature.
+
+### Reshape
+
+Phase 6 in PLAN.md v1.3 replaces the per-message passive observer with:
+
+1. **Amplification inside `/dent-append-evidence`** — when the user explicitly invokes the skill, it scans recent session context for OTHER Dent entities mentioned and offers multi-append suggestions. Every explicit invocation becomes a multi-append opportunity.
+
+2. **Session-start digest** (`/dent-check`, v1) — one-time info on each new Cowork session about recent Dent activity across the team.
+
+3. **True proactive detection moves to v1 server-side ingest** — Gmail, Granola, Dropbox drop folder. Cowork becomes the query + in-moment capture surface, not the always-on observation surface.
+
+This is both simpler architecturally and more aligned with the v0.9 hybrid architecture (Dent Brain server owns shared state and proactive ingest; Cowork owns user-initiated queries and captures).
+
+### Experiment status: COMPLETE
+
+Answer known. No further test runs needed. The experiment directory stays in-repo as a reference artifact for anyone evaluating similar Cowork MCP patterns in the future (or for OSS consumers of dbrain who want to understand why Phase 6 is shaped the way it is).
 
 ## Cleanup after experiment
 
