@@ -11,6 +11,8 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.1.2 (2026-04-21, branch protection deferred):** Tried to apply branch protection to both repos. Blocked: `jasonp/dent-brain` requires GitHub Pro for protection on private repos ($4/mo, declined for now); `dentthefuture/dent-brain-data` requires admin permission which Jason doesn't have (he's an outside collaborator with push, not admin). Path forward: discipline-based workflow now (never force-push, never delete master/main); upgrade + properly admin-grant when Steve onboards in Phase 8 to enforce required-PR + 1-approval. Tracked as P2 TODO at end of this doc.
+
 **v1.1.1 (2026-04-21 late evening, in-repo correction):** Substrate-naming fix. Previous revisions (v0.9, v1.0, v1.1 in Dropbox) had "gstack as substrate" in several places — that was a typo I (Claude) propagated. The substrate is **gbrain** (`github.com/garrytan/gbrain`), not gstack. gstack is a separate repo, the dev toolkit that powers `/ship`, `/office-hours`, `/plan-eng-review`, etc. gbrain is the knowledge-brain substrate: Bun + PGLite/Postgres + pgvector + 26 skills + MCP + entity-extraction + self-wiring graph. Phase 0 already executed: cloned garrytan/gbrain v0.16.0 to jasonp/dent-brain (private), upstream remote preserved. Only this PLAN.md was edited; `docs/dent-brain/design-history/` files preserve original wording as historical record.
 
 **v1.1 (2026-04-21 evening):** FM MCP reality check. Steve didn't use Claris hosted — he wrote a 395-line custom Node.js stdio MCP server. Plan updated.
@@ -850,3 +852,12 @@ These two are the only critical gaps. Fixable in ~30min with CC. Plan will inclu
 **UNRESOLVED:** 0.
 
 **VERDICT:** ENG CLEARED — ready to implement. Phase 0 + Lane B (FM MCP install) + Lane C (data repo seed) can launch in parallel. Null hypothesis test declined; proceeding with build as planned.
+
+---
+
+## TODO (post-MVP)
+
+**P2: Apply branch protection to both repos (during Steve onboarding, Phase 8).**
+- `jasonp/dent-brain`: upgrade jasonp account to GitHub Pro ($4/mo). Apply medium protection to master: require PR + 1 approval, block force-push, block deletion, enforce for admins.
+- `dentthefuture/dent-brain-data`: get admin permission on the repo (or have whoever owns the dentthefuture user account apply it). Apply soft protection to main: block force-push and deletion, allow PRs without required approvals (materializer needs automated writes).
+- Reason for deferral: Jason solo right now, risk is low. With Steve and other collaborators, risk profile changes.
