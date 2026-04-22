@@ -1,0 +1,54 @@
+{
+  "$schema": "./manifest.schema.json",
+  "manifest_version": "1.0",
+
+  "deploy": {
+    "org_prefix": "dent",
+    "org_full_name": "Dent The Future, Inc.",
+    "org_email_domain": "dentthefuture.com",
+    "deploy_id": "dent-brain-prod",
+    "server_url": "https://dent-brain.dentthefuture.com/mcp",
+    "server_url_dev": "http://localhost:3000/mcp",
+    "data_repo": "github.com/dentthefuture/dent-brain-data"
+  },
+
+  "skills": {
+    "_naming_convention": "Skill names are prefixed with deploy.org_prefix at plugin-build time. The substrate provides skill TEMPLATES with {{prefix}} placeholders; the plugin builder substitutes the prefix when packaging. This ensures multiple dbrain deployments coexist in the same Claude Desktop / Cowork session without name collisions.",
+    "_example": "Template: append-evidence → Built: /dent-append-evidence (Dent deploy) or /yc-append-evidence (hypothetical YC deploy)",
+
+    "templates": [
+      "append-evidence",
+      "flag-fact",
+      "whoami",
+      "resolve-entity",
+      "update-dbrain",
+      "setup-filemaker-mcp",
+      "signal-detector"
+    ]
+  },
+
+  "fm_mcp": {
+    "_note": "FileMaker MCP config is org-specific and goes here. Each deploy that uses FM federation fills these in.",
+    "enabled": true,
+    "host": "sea-17.fmsdb.com",
+    "database": "DentCRM2025",
+    "account_prefix": "mcp_",
+    "privilege_set": "MCP Read And Edit Records",
+    "vendored_server_path": "plugin/fm-mcp/",
+    "vendored_server_version": "0.1.0"
+  },
+
+  "_other_orgs_using_dbrain": {
+    "_note": "If another org wants to deploy dbrain, they fork this repo, edit deploy.* and fm_mcp.* fields here, set their own org_prefix, and rebuild the plugin bundle. The substrate code in src/ does not change.",
+    "_example_alt_deploy": {
+      "deploy": {
+        "org_prefix": "yc",
+        "org_full_name": "Y Combinator",
+        "org_email_domain": "ycombinator.com",
+        "deploy_id": "yc-brain-prod",
+        "server_url": "https://brain.ycombinator.com/mcp"
+      },
+      "_skill_names_become": "/yc-append-evidence, /yc-flag-fact, /yc-setup-filemaker-mcp, etc."
+    }
+  }
+}
