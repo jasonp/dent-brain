@@ -1,0 +1,57 @@
+# .dockerignore — keep the Railway build image small
+#
+# Everything below is either substrate that's not needed at runtime, or
+# our own artifacts (design docs, experiments) that shouldn't ship to prod.
+
+# Node / Bun artifacts
+node_modules/
+bin/
+*.log
+
+# Local configs
+.env
+.env.local
+.env.testing
+.env.testing.example
+
+# Git
+.git/
+.gitignore
+
+# Test infrastructure (don't ship tests to prod)
+test/
+*.test.ts
+*.spec.ts
+eval/
+
+# Dev scripts not needed in prod
+scripts/
+docker-compose.test.yml
+.gitleaks.toml
+
+# Experiments and design docs
+experiments/
+docs/dent-brain/design-history/
+docs/dent-brain/reference/
+
+# Docs gbrain ships — not needed at runtime, but keep a few for reference
+# Commented intentionally: llms.txt, llms-full.txt, README.md, AGENTS.md, CLAUDE.md
+# can stay in the image for debugging or future CLI self-docs
+
+# Gstack / Cursor / agents configs (these are substrate meta-files)
+.agents/
+.cursor/
+.factory/
+.gbrain/
+.github/
+.hermes/
+.kiro/
+.openclaw/
+.opencode/
+
+# Our Dropbox-only files (if any leaked in)
+*.DS_Store
+
+# Build outputs if any exist
+dist/
+build/
