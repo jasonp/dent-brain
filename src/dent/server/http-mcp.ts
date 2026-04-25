@@ -59,8 +59,12 @@ const authDb = postgres(DATABASE_URL, {
 
 // Single shared PostgresEngine used by all MCP calls.
 // Stateless requests, single engine connection pool.
+// Pass an explicit poolSize so the engine takes the worker-instance code path
+// (its own postgres() connection) instead of the module singleton — that way
+// our HTTP server's connection pool is isolated from any other gbrain code
+// that might construct a separate engine in the same process.
 const engine = new PostgresEngine();
-await engine.connect({ url: DATABASE_URL });
+await engine.connect({ database_url: DATABASE_URL, poolSize: 10 });
 
 // ---------------------------------------------------------------------------
 // Auth
