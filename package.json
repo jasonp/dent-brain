@@ -9,7 +9,8 @@
     "url": "https://github.com/jasonp/dent-brain.git"
   },
   "bin": {
-    "dbrain": "src/cli.ts"
+    "dbrain": "src/cli.ts",
+    "gbrain": "src/cli.ts"
   },
   "exports": {
     ".": "./src/core/index.ts",
