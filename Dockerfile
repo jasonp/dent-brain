@@ -9,7 +9,7 @@ WORKDIR /app
 # Only copy lockfile + package.json so dep install layer is cached when only
 # source code changes.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production=false
+RUN bun install --frozen-lockfile
 
 # ---- Stage 2: runtime ------------------------------------------------------
 FROM oven/bun:1.3.11-alpine
