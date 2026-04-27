@@ -106,10 +106,17 @@ async function logMcpRequest(
   errorCode?: string,
 ): Promise<void> {
   try {
+    // gbrain's mcp_request_log schema is (token_name, operation, latency_ms,
+    // status, created_at). No error_code column. We surface error detail to
+    // Railway stderr instead — gbrain's audit table records the binary
+    // success/error and the latency, which is enough for trend monitoring.
     await authDb`
-      INSERT INTO mcp_request_log (token_name, operation, latency_ms, status, error_code)
-      VALUES (${tokenName}, ${operation}, ${latencyMs}, ${status}, ${errorCode ?? null})
+      INSERT INTO mcp_request_log (token_name, operation, latency_ms, status)
+      VALUES (${tokenName}, ${operation}, ${latencyMs}, ${status})
     `;
+    if (status === 'error' && errorCode) {
+      console.error(`[audit] op=${operation} err=${errorCode} latency=${latencyMs}ms token=${tokenName}`);
+    }
   } catch (err) {
     // Non-blocking; audit log failures should not fail the request.
     const msg = err instanceof Error ? err.message : String(err);
