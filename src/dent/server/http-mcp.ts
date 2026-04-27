@@ -51,10 +51,18 @@ if (!DATABASE_URL) {
 // Connect to Postgres for token lookups + request logging.
 // Keep this separate from the gbrain engine's own connection so auth is
 // fast and not competing with operation handlers for pool slots.
+//
+// IMPORTANT: prepare: false is required when DATABASE_URL points at PgBouncer
+// in transaction mode (Supabase pooler port 6543). Without this, prepared
+// statements get associated with the wrong backend connection on each query
+// and the pool wedges within minutes. gbrain's PostgresEngine auto-detects
+// port 6543 and sets this; we mirror the convention here.
+const isPooler = DATABASE_URL.includes(':6543') || DATABASE_URL.includes('pooler.supabase.com');
 const authDb = postgres(DATABASE_URL, {
   max: 2, // auth and logging only — minimal pool
   idle_timeout: 20,
   connect_timeout: 10,
+  prepare: !isPooler,
 });
 
 // Single shared PostgresEngine used by all MCP calls.
