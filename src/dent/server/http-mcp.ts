@@ -214,8 +214,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
-  // MCP — bearer auth required
-  if (url === '/mcp' && method === 'POST') {
+  // MCP — bearer auth required, supports POST (JSON-RPC), GET (SSE stream),
+  // DELETE (close stream). All three are part of the Streamable HTTP transport
+  // spec; clients like Cowork probe with GET first to establish a notification
+  // stream, then POST individual requests.
+  if (url === '/mcp' && (method === 'POST' || method === 'GET' || method === 'DELETE')) {
     const authHeader = (req.headers.authorization || req.headers.Authorization) as string | undefined;
     const token = await verifyBearer(authHeader);
     if (!token) {
@@ -225,26 +228,28 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     const startedAt = Date.now();
-    let operationName = 'unknown';
+    let operationName = method === 'GET' ? 'sse_stream' : method === 'DELETE' ? 'sse_close' : 'unknown';
     let status: 'success' | 'error' = 'success';
     let errorCode: string | undefined;
 
     try {
-      // Read body once, parse, pass to transport.
-      const body = await readBody(req);
+      // For POST: read + parse the JSON body. For GET/DELETE: no body to read.
       let parsedBody: unknown = undefined;
-      if (body.length > 0) {
-        try {
-          parsedBody = JSON.parse(body.toString('utf-8'));
-          // Capture the operation name for audit log (best-effort).
-          if (parsedBody && typeof parsedBody === 'object' && 'method' in parsedBody) {
-            const m = (parsedBody as any).method;
-            if (typeof m === 'string') operationName = m;
+      if (method === 'POST') {
+        const body = await readBody(req);
+        if (body.length > 0) {
+          try {
+            parsedBody = JSON.parse(body.toString('utf-8'));
+            // Capture the operation name for audit log (best-effort).
+            if (parsedBody && typeof parsedBody === 'object' && 'method' in parsedBody) {
+              const m = (parsedBody as any).method;
+              if (typeof m === 'string') operationName = m;
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_json', message: 'Request body is not valid JSON' }));
+            return;
           }
-        } catch {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid_json', message: 'Request body is not valid JSON' }));
-          return;
         }
       }
 
@@ -254,7 +259,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       });
       await server.connect(transport);
 
-      // Hand off to the transport. It writes the response itself.
+      // Hand off to the transport. It dispatches based on req.method (POST →
+      // JSON-RPC, GET → SSE stream, DELETE → close).
       await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
       status = 'error';
