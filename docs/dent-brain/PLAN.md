@@ -11,6 +11,19 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.4 (2026-04-27, Phase 0 substrate complete; OAuth identified as auth-surface gap):**
+
+- **HTTP MCP server live at https://dent-brain-production.up.railway.app/mcp**, deployed via Railway, talking to Supabase Postgres (us-west-2 transaction pooler), 14 gbrain migrations applied, bearer auth + audit log working, end-to-end MCP tool invocations confirmed via curl AND via Claude Code's loaded MCP tools (`get_health`, `get_stats` returned valid responses).
+- **Phase 0 substrate is DONE.** Bun runtime, gbrain v0.16.0 fork, dbrain rename, plugin manifest, FM MCP vendored, deploy config (Dockerfile + railway.json + .dockerignore), HTTP wrapper at `src/dent/server/http-mcp.ts` (322 lines, MCP SDK's StreamableHTTPServerTransport, bearer auth via gbrain's `access_tokens` table, audit via `mcp_request_log`).
+- **Bugs caught and fixed during deploy:** (a) Bun 1.3.11 `--production=false` flag invalid → dropped from Dockerfile; (b) bun.lock out of sync after Jason added @supabase/* deps → resynced; (c) `engine.connect({url})` should be `{database_url}` per gbrain's EngineConfig → fixed; (d) `mcp_request_log` schema doesn't have `error_code` column → INSERT fixed; (e) `postgres.js` defaults to prepared statements which wedge under PgBouncer transaction-mode → set `prepare:false` when DATABASE_URL is port 6543 (matches gbrain's own engine convention via `resolvePrepare`).
+- **gbrain bin alias:** added `gbrain` alongside `dbrain` in package.json `bin` block. gbrain's internal migration runner shells out to a `gbrain` binary; without the alias the v0.11.0 migration fails. Both names install with `bun link`.
+- **Architectural finding — three Claude surfaces have different MCP-config paths:**
+  - **Standalone Claude Code CLI** (`/Users/<user>/.local/bin/claude`): reads `~/.claude.json`. **Supports bearer auth via `claude mcp add --header`.** ✅ dent-brain works here today.
+  - **Claude Desktop's embedded Claude Code** (`/Library/Application Support/Claude/claude-code/<ver>/...`): does NOT read `~/.claude.json`. Uses Cowork-cloud-managed connectors via per-session `enabledMcpTools` allowlist. Requires OAuth.
+  - **Claude.ai web (Customize → Connectors)**: same as Claude Desktop's Claude Code — Cowork-cloud-managed connectors only. OAuth-only on Pro/Max plans.
+- **Phase 0 closeout: implement OAuth 2.1 client credentials on dent-brain server.** Required for both Claude Desktop's Claude Code feature AND Claude.ai web. Not required for the standalone CLI workflow Jason has been using. Estimated ~2-3 focused hours. The MCP SDK ships an OAuth provider implementation we wire in.
+- **Standalone CLI works as a fully-functional Dent Brain client today.** Solo dev workflow unblocked. OAuth gates team rollout (Steve onboarding) and any non-CLI surface use.
+
 **v1.3 (2026-04-22, Phase 6 reshape from A6 spike):** Cowork uses a deferred-tools model that makes passive per-message MCP invocation unreliable. Phase 6 reshapes.
 
 - **A6 spike result:** built a throwaway MCP server (`experiments/a6-cowork-hook-spike/`) with a `passive_observer` tool whose description instructed Claude to call it every turn. Installed in Claude Desktop, opened a Cowork session, verified the tool was registered. **Log: zero invocations across a full test conversation.** Root cause: Cowork requires `ToolSearch → select:<tool>` to load a tool's schema before it can be called. The "always call me" instruction lives INSIDE the schema, so Claude never sees the instruction until (or unless) it manually loads the schema. Deferred-tools model kills passive per-turn invocation as a reliable pattern.
