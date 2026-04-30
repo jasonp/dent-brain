@@ -14,3 +14,7 @@ supabase/.temp/
 .idea
 eval/reports/
 experiments/*/node_modules/
+# Private deploy runbooks — per-deployment values (Railway CNAME, TXT records,
+# Supabase project IDs, etc.) live in the deployer's home dir, never the repo.
+DEPLOY_NOTES.md
+DEPLOY_NOTES.*.md

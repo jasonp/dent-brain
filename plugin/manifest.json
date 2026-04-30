@@ -23,7 +23,8 @@
       "resolve-entity",
       "update-dbrain",
       "setup-filemaker-mcp",
-      "signal-detector"
+      "signal-detector",
+      "onboard-teammate"
     ]
   },
 

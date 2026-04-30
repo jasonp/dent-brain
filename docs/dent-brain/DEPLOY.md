@@ -165,14 +165,47 @@ Should show your `tools/list` call, status `success`, latency in ms.
 
 ---
 
-## 4. Custom subdomain (optional, post-Phase-0)
+## 4. Custom subdomain (recipe — applies to any deployment)
 
-Once `dentthefuture.com` DNS access is available:
+Canonical URL for any deployment: **`https://<your-subdomain>.<your-domain>/mcp`**, set in `plugin/manifest.json` under `deploy.server_url`.
 
-- Railway project → **Networking** → **Custom Domain** → `dent-brain.dentthefuture.com`
-- Railway gives you a CNAME target (e.g., `<uuid>.up.railway.app`)
-- Add the CNAME at your DNS provider. Railway handles TLS automatically (LetsEncrypt).
-- Wait for DNS + cert (usually 5-10 min)
+Steps:
+
+1. **Railway side — add the custom domain.** Project dashboard → **Networking** → **Custom Domain** → enter `<your-subdomain>.<your-domain>`. Railway returns:
+   - A **CNAME target** (e.g. `<unique-id>.up.railway.app`) — call this `<your-railway-cname-target>`.
+   - A **TXT verification record** on a Railway-defined record name — call this `<railway-txt-record-name>` and `<railway-txt-record-value>`. The TXT proves you control the domain so Railway can issue a LetsEncrypt cert.
+2. **DNS side — add BOTH records at your DNS provider.** GoDaddy, Cloudflare, Namecheap, Route 53, etc. all work the same:
+   - Record 1 (CNAME):
+     - Type: `CNAME`
+     - Name: `<your-subdomain>` *(subdomain only, not the full hostname)*
+     - Value: `<your-railway-cname-target>`
+     - TTL: 1 Hour (default)
+   - Record 2 (TXT):
+     - Type: `TXT`
+     - Name: `<railway-txt-record-name>` *(exactly as Railway showed)*
+     - Value: `<railway-txt-record-value>` *(exactly as Railway showed)*
+     - TTL: 1 Hour (default)
+
+   ⚠️ Both records are required. Skipping the TXT means Railway never validates the domain and the LetsEncrypt cert never issues — the URL keeps serving the wildcard `*.up.railway.app` cert and clients fail SSL verification.
+3. **Wait.** DNS propagates fast on most providers (under a minute on GoDaddy + Google/Cloudflare resolvers). Railway issues the LetsEncrypt cert within ~1-5 min after seeing both valid records.
+4. **Verify.**
+   ```bash
+   dig +short <your-subdomain>.<your-domain> CNAME           # should show your Railway target
+   echo | openssl s_client -servername <your-subdomain>.<your-domain> \
+     -connect <your-subdomain>.<your-domain>:443 2>/dev/null \
+     | openssl x509 -noout -subject                          # should be CN=<your-subdomain>.<your-domain>, NOT *.up.railway.app
+   curl -fsS https://<your-subdomain>.<your-domain>/health    # {"ok":true,...}
+   ```
+5. **Update existing standalone CLI registrations** to use the new URL (tokens are URL-agnostic — same token works on both URLs). Run as ONE line — backslash continuations break in some terminal paste modes:
+   ```bash
+   claude mcp remove dent-brain -s user
+   claude mcp add dent-brain -s user -t http https://<your-subdomain>.<your-domain>/mcp -H "Authorization: Bearer <existing-token>"
+   ```
+   ⚠️ The `-s user` flag is required. Default scope is "local" (project-private), which doesn't surface in Claude Desktop's Code mode or Cowork — both read user-scope `~/.claude.json`. The onboarding skill (`/dent-onboard-teammate`) hardcodes `-s user` for this reason.
+
+The Railway-provided URL (`https://<service-name>.up.railway.app/mcp`) keeps working in parallel — Railway routes both. The onboarding skill (`/dent-onboard-teammate`) reads `plugin/manifest.json` for the canonical URL, so all new registrations use the custom domain automatically.
+
+**Deployment-specific values** (Railway CNAME target, TXT record name + value, Supabase project ID, etc.) belong in your private deploy runbook (e.g. `~/.dent-brain/DEPLOY_NOTES.md`, gitignored), NOT in this repo. The placeholders above are the OSS-shareable recipe; the private runbook is the per-deploy ledger.
 
 ---
 

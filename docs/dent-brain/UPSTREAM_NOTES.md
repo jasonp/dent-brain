@@ -4,21 +4,22 @@ Known quirks and caveats in the gbrain substrate (`garrytan/gbrain`) that affect
 
 ---
 
-## Three Claude surfaces, three different MCP-config paths (2026-04-27)
+## Claude Desktop's Claude Code mode reads `~/.claude.json` (2026-04-29, supersedes 2026-04-27 finding)
 
-**Surfacing:** When an MCP is added via `claude mcp add` from the standalone Claude Code CLI, it appears in standalone CLI sessions but NOT in Claude Desktop's "Claude Code" feature, NOT in Claude.ai web's Customize → Connectors view.
+**Empirical result:** Claude Desktop's embedded Claude Code mode DOES read `~/.claude.json`. An MCP registered via `claude mcp add` (standalone CLI, bearer + custom headers) appears in tool listings inside Claude Desktop's Claude Code mode and is fully invokable. Same token name shows up in the audit log regardless of which surface fired the call.
 
-**Why:** the three surfaces use different config sources:
+**Verification (Phase 0 auth-surface test, 2026-04-29):**
+- Registered `dent-brain` via `claude mcp add -t http <url>/mcp -H "Authorization: Bearer ..."` from the standalone CLI.
+- Opened Claude Desktop, switched to Claude Code mode. Asked the model to list its MCP tools — `dent-brain` appeared under "Custom / Personal."
+- Asked the model to call `get_stats`. Audit log recorded `op=tools/call latency=213ms status=success token=dent-brain-jason`. Same token row that the standalone CLI uses.
 
-| Surface | Binary path | Reads | Auth supported |
-|---|---|---|---|
-| **Standalone CLI** | `~/.local/bin/claude` | `~/.claude.json` | Bearer + headers via `--header` |
-| **Claude Desktop's Claude Code** | `~/Library/Application Support/Claude/claude-code/<ver>/claude.app/.../claude` | Per-session `local-agent-mode-sessions/.../local_*.json` files keyed by Cowork connector UUIDs | OAuth (via Cowork cloud) |
-| **Claude.ai web** | (no local binary) | Cowork-cloud-managed connectors | OAuth |
+**Conclusion:** the standalone CLI and Claude Desktop's Claude Code mode share the same `~/.claude.json` registration store. Bearer auth via `claude mcp add` works on both surfaces. **No OAuth needed for the team-use case** (Dent team works in Claude Desktop's Cowork sessions).
 
-**Implication for dbrain (any deployment):** for cross-surface team rollout, OAuth 2.1 client credentials on the server is required. Bearer-with-custom-headers only works for the standalone CLI workflow. This isn't a gbrain quirk — it's how Anthropic structured Claude's surfaces.
+**Caveat — not yet tested:** Claude.ai web's "Customize → Connectors" UI was NOT tested in this round. It may still require OAuth for custom connectors registered through the browser. For Dent's MVP this is out of scope (team uses desktop apps, not web).
 
-**For our deployment:** Phase 0 closeout = implement OAuth on the dent-brain server. The MCP SDK ships `@modelcontextprotocol/sdk/server/auth/` provider implementations that map cleanly to our existing `access_tokens` table.
+**Supersedes the 2026-04-27 entry** that claimed Claude Desktop's Claude Code mode doesn't read `~/.claude.json`. That earlier finding was wrong — likely a config or session quirk in that test, not a structural property. The OAuth implementation flagged as "Phase 0 closeout" in PLAN.md v1.4 is therefore unnecessary for Dent's MVP. See `docs/dent-brain/TESTS_phase0_auth_surfaces.md` for the test that produced this correction.
+
+**For dbrain forks (OSS posture):** the install model is the same as upstream gbrain — `claude mcp add` per-user with a bearer token. No OAuth issuer to deploy, no consent UI, no DCR. ChatGPT integration (if/when desired) would still require OAuth 2.1 per gbrain's README, but that's a different conversation.
 
 ---
 

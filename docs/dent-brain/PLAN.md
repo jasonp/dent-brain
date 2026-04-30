@@ -11,6 +11,69 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.5 (2026-04-29, OAuth scrapped after empirical re-test; Phase 0 closes on per-user install instead):**
+
+- **OAuth implementation cancelled.** v1.4 conclusion that "Claude Desktop's
+  Claude Code feature does NOT read `~/.claude.json` and requires OAuth" was
+  empirically wrong. Re-tested 2026-04-29 with the deployed Railway backend:
+  registered `dent-brain` via `claude mcp add -t http <url>/mcp -H "Authorization:
+  Bearer ..."` from the standalone CLI, then opened Claude Desktop's embedded
+  Claude Code mode. The registration was visible in tool listings, and a
+  `get_stats` invocation produced an audit row (`op=tools/call latency=213ms
+  status=success`) under the same token name the CLI uses. Standalone CLI and
+  Claude Desktop's Claude Code mode **share the same `~/.claude.json` config**.
+  The 2026-04-27 finding that prompted the OAuth plan was a test quirk, not a
+  structural property of the surface. Test record:
+  `docs/dent-brain/TESTS_phase0_auth_surfaces.md`. UPSTREAM_NOTES.md updated
+  with the corrected finding.
+
+- **Bearer + `claude mcp add` is canonical for the team-use case.** Phase 0
+  closeout reshapes from "implement OAuth (~4-5 hours)" to "ship the per-user
+  install flow" — the install skill that, for each team member, runs
+  `claude mcp add dent-brain -t http <url>/mcp -H "Authorization: Bearer ..."`
+  with their personal bearer token. Same install model gbrain uses upstream.
+
+- **Web surface explicitly out of scope for MVP.** Claude.ai web Connectors UI
+  was not tested. Dent team uses Claude Cowork desktop apps for both directions
+  of the dent-brain workflow (queries pulling context out + scheduled tasks
+  pushing context in). Re-open T3 only if a future use case requires browser-
+  only access.
+
+- **Architectural lock-in.** dbrain's canonical client surface is **Claude
+  Desktop / Claude Code / Cowork** (all three reading `~/.claude.json`). This
+  matters for OSS distribution: forks inherit the same install model — no OAuth
+  issuer to deploy, no consent UI to host, no DCR endpoints. Same friction as
+  upstream gbrain.
+
+- **Phase 0 substantively complete.** HTTP MCP at Railway works on the surfaces
+  that matter. Background ingest (server-side cron via `dbrain jobs work` for
+  Gmail / Granola / Dropbox drop folder) remains as planned for v1 and is a
+  separate pipeline from MCP auth.
+
+- **Followups for the install skill (Phase 0 closeout work, ~1-2 hours):**
+  - `gbrain auth create "<user-name>"` admin CLI surface (already exists per
+    `src/commands/auth.ts`).
+  - `/dent-onboard-teammate` skill: Jason runs it once per teammate
+    — generates token, DMs the `claude mcp add` command, verifies registration
+    via Railway audit log. **Drafted 2026-04-29** at
+    `skills/dent/onboard-teammate/SKILL.md` (200 lines, 8 phases, anti-patterns
+    documented). Untested in production; first real run is when Steve
+    onboards (Phase 8).
+  - Per-user identity: each token name should match a real human (`steve`,
+    `jeff`, `robin`, etc.) so `mcp_request_log` is per-user-attributable.
+
+- **Custom domain wired 2026-04-29.** Canonical URL is now
+  `https://dent-brain.dentthefuture.com/mcp`. Railway-provided URL keeps
+  working in parallel (both routes live). DNS via GoDaddy: CNAME +
+  ownership-proof TXT (both required — TXT was missed initially, caught
+  by Jason; recipe at `docs/dent-brain/DEPLOY.md` §4 now flags both as
+  required). LetsEncrypt cert auto-provisioned by Railway after both
+  records validated. `plugin/manifest.json` already pointed at the
+  canonical URL, so the onboarding skill picks it up automatically.
+  Deployment-specific values (Railway CNAME target, TXT record details)
+  live in private runbook (`~/.dent-brain/DEPLOY_NOTES.md`, gitignored),
+  not this repo — OSS-posture clean.
+
 **v1.4 (2026-04-27, Phase 0 substrate complete; OAuth identified as auth-surface gap):**
 
 - **HTTP MCP server live at https://dent-brain-production.up.railway.app/mcp**, deployed via Railway, talking to Supabase Postgres (us-west-2 transaction pooler), 14 gbrain migrations applied, bearer auth + audit log working, end-to-end MCP tool invocations confirmed via curl AND via Claude Code's loaded MCP tools (`get_health`, `get_stats` returned valid responses).
