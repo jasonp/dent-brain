@@ -38,6 +38,13 @@ import type { OperationContext } from '../../core/operations.ts';
 import { loadConfig } from '../../core/config.ts';
 import { VERSION } from '../../version.ts';
 import { buildToolDefs } from '../../mcp/tool-defs.ts';
+import { dentOperations } from '../operations/evidence.ts';
+import type { DentOperationContext } from '../types.ts';
+
+// Combined operation registry: gbrain core + dent additions.
+// Dent ops are kept in `src/dent/` so upstream merges from `garrytan/gbrain`
+// never collide. http-mcp is the single dispatch point that knows about both.
+const allOps = [...operations, ...dentOperations];
 
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -136,19 +143,19 @@ async function logMcpRequest(
 // MCP Server (per-request instance for stateless operation)
 // ---------------------------------------------------------------------------
 
-function buildMcpServer(): Server {
+function buildMcpServer(currentAuthor: string): Server {
   const server = new Server(
     { name: 'dent-brain', version: VERSION },
     { capabilities: { tools: {} } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: buildToolDefs(operations),
+    tools: buildToolDefs(allOps),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
     const { name, arguments: params } = request.params;
-    const op = operations.find((o) => o.name === name);
+    const op = allOps.find((o) => o.name === name);
     if (!op) {
       return {
         content: [{ type: 'text', text: `Error: Unknown tool: ${name}` }],
@@ -156,6 +163,9 @@ function buildMcpServer(): Server {
       };
     }
 
+    // Dent ops read `author` from a DentOperationContext extension. Always
+    // populate it from the verified bearer token's name, captured per-request
+    // and threaded into buildMcpServer via a closure.
     const ctx: OperationContext = {
       engine,
       config: loadConfig() || { engine: 'postgres' },
@@ -168,6 +178,7 @@ function buildMcpServer(): Server {
       // HTTP callers are remote by definition; enforce strict file confinement.
       remote: true,
     };
+    (ctx as DentOperationContext).author = currentAuthor;
 
     const safeParams = params || {};
 
@@ -268,7 +279,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         }
       }
 
-      const server = buildMcpServer();
+      const server = buildMcpServer(token.name);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // stateless — each request is self-contained
       });
