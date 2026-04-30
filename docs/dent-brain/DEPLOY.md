@@ -209,16 +209,29 @@ The Railway-provided URL (`https://<service-name>.up.railway.app/mcp`) keeps wor
 
 ---
 
-## 5. Add the connector to Claude Cowork
+## 5. Per-teammate install: dual-registration with mcp-remote bridge
 
-For Team/Enterprise Cowork plans, an org Owner adds the connector:
+Claude Desktop has **two MCP config files** with different schemas, and the team-use surface (Cowork mode) reads the stdio-only one. So every teammate gets BOTH registrations:
 
-1. **Organization Settings** → **Connectors** → **Add**
-2. URL: `https://<railway-domain>/mcp` (or the custom subdomain once set up)
-3. Auth: **Bearer**, paste the `dbk_...` token from step 1.4
-4. **Save**
+| Surface | Config file | Schema | Mechanism |
+|---|---|---|---|
+| Standalone CLI + Claude Desktop's **Code mode** | `~/.claude.json` (top-level `mcpServers.<name>`) | HTTP allowed (`{type, url, headers}`) | Direct write |
+| Claude Desktop's **Cowork mode** + classic Desktop chats | `~/Library/Application Support/Claude/claude_desktop_config.json` | **stdio-only** | `mcp-remote` npm package as bridge |
 
-Test in a new Cowork session: "What tools do I have from dent-brain?" — should list gbrain's 30+ operations.
+Why the bridge: Cowork's config file rejects `{type: "http", ...}` entries with a launch-time popup ("entries are not valid MCP server configurations"). `mcp-remote` (npm) speaks MCP stdio to Claude Desktop and proxies to the remote URL. Same bearer token authenticates both surfaces.
+
+Don't try to roll a custom Cowork connector through claude.ai's web Connectors UI — that requires OAuth and gates on the Pro/Max web plan, which is out of scope for Dent's MVP.
+
+**Onboarding mechanics:** the `/dent-onboard-teammate` skill (admin-only, runs on Jason's machine) generates a per-user bearer token, embeds it in a one-paste Python-driven shell block, and walks the admin through delivery + verification via the audit log. The teammate pastes the block in their own terminal; both config files get atomically updated with backups in `~/.dent-brain/backups/`.
+
+**Per-teammate prerequisites** (the skill walks the admin through pre-checking these):
+- Claude Desktop installed and signed in (download: https://claude.ai/download).
+- Node 18+ on the teammate's machine (`node --version`). Install via `brew install node` if missing — required for `npx -y mcp-remote` to spawn.
+- Python 3 (universal on macOS, no install needed).
+
+**Verification:** the admin polls the audit log via `./scripts/tail-mcp-audit.sh 20 | grep <teammate-handle>` after the teammate confirms they ran the install + asked Cowork to call `get_stats`. Pass criteria: a `tools/call` row from the teammate's token. `initialize` / `tools/list` rows alone don't count — they fire on connector load even without invocation.
+
+For OSS forks: the dual-registration pattern works against any remote dbrain deployment. The `mcp-remote` bridge is one extra command in the install block; no OAuth issuer to deploy. See `docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces" for the discovery story.
 
 ---
 

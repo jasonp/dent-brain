@@ -4,22 +4,48 @@ Known quirks and caveats in the gbrain substrate (`garrytan/gbrain`) that affect
 
 ---
 
-## Claude Desktop's Claude Code mode reads `~/.claude.json` (2026-04-29, supersedes 2026-04-27 finding)
+## Three Claude surfaces, two config files, one stdio bridge needed (2026-04-30, supersedes 2026-04-27 AND 2026-04-29 entries)
 
-**Empirical result:** Claude Desktop's embedded Claude Code mode DOES read `~/.claude.json`. An MCP registered via `claude mcp add` (standalone CLI, bearer + custom headers) appears in tool listings inside Claude Desktop's Claude Code mode and is fully invokable. Same token name shows up in the audit log regardless of which surface fired the call.
+**The actual surface architecture, verified end-to-end via audit-log evidence:**
 
-**Verification (Phase 0 auth-surface test, 2026-04-29):**
-- Registered `dent-brain` via `claude mcp add -t http <url>/mcp -H "Authorization: Bearer ..."` from the standalone CLI.
-- Opened Claude Desktop, switched to Claude Code mode. Asked the model to list its MCP tools — `dent-brain` appeared under "Custom / Personal."
-- Asked the model to call `get_stats`. Audit log recorded `op=tools/call latency=213ms status=success token=dent-brain-jason`. Same token row that the standalone CLI uses.
+| Surface | Config file | HTTP-type entries supported | Notes |
+|---|---|---|---|
+| Standalone Claude Code CLI (`~/.local/bin/claude`) | `~/.claude.json` (top-level `mcpServers.<name>`) | ✅ Yes — `{type: "http", url, headers}` | `claude mcp add -s user -t http ... -H "..."` writes here |
+| Claude Desktop's **Code mode** (embedded `claude-code/<ver>`) | `~/.claude.json` (same file as standalone CLI) | ✅ Yes — same shape | Reads `~/.claude.json` directly. Empirically confirmed 2026-04-29 |
+| Claude Desktop's **Cowork mode** (and classic Desktop chats) | `~/Library/Application Support/Claude/claude_desktop_config.json` | ❌ **stdio-only.** HTTP shape rejected with the popup "entries are not valid MCP server configurations and were skipped" | Remote HTTP MCPs need a stdio bridge (see below) |
 
-**Conclusion:** the standalone CLI and Claude Desktop's Claude Code mode share the same `~/.claude.json` registration store. Bearer auth via `claude mcp add` works on both surfaces. **No OAuth needed for the team-use case** (Dent team works in Claude Desktop's Cowork sessions).
+**The bridge:** `npx -y mcp-remote <url> --header "Authorization: Bearer <token>"`. `mcp-remote` is a maintained npm package (current `0.1.38`, description: "Remote proxy for Model Context Protocol, allowing local-only clients to connect"). It speaks MCP stdio to Claude Desktop and proxies all calls over HTTP to the remote server. Schema in `claude_desktop_config.json`:
 
-**Caveat — not yet tested:** Claude.ai web's "Customize → Connectors" UI was NOT tested in this round. It may still require OAuth for custom connectors registered through the browser. For Dent's MVP this is out of scope (team uses desktop apps, not web).
+```json
+{
+  "mcpServers": {
+    "dent-brain": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://dent-brain.dentthefuture.com/mcp", "--header", "Authorization: Bearer <token>"]
+    }
+  }
+}
+```
 
-**Supersedes the 2026-04-27 entry** that claimed Claude Desktop's Claude Code mode doesn't read `~/.claude.json`. That earlier finding was wrong — likely a config or session quirk in that test, not a structural property. The OAuth implementation flagged as "Phase 0 closeout" in PLAN.md v1.4 is therefore unnecessary for Dent's MVP. See `docs/dent-brain/TESTS_phase0_auth_surfaces.md` for the test that produced this correction.
+**Verification (Phase 0/1 auth-surface re-test, 2026-04-30):**
+- Registered dent-brain via `claude mcp add -s user -t http ...` → tools surface in standalone CLI ✓ and Claude Desktop's Code mode ✓ (T2 from 2026-04-29).
+- **But:** in a fresh Claude Desktop **Cowork session** the model reported "I don't see any tools with 'dent-brain' in the name." Audit log showed only passive heartbeats during the Cowork test — no fresh `tools/call`.
+- Tried adding `{type: "http", url, headers}` directly to `claude_desktop_config.json` → Claude Desktop popup on launch: "entries are not valid MCP server configurations and were skipped: dent-brain." Schema rejected.
+- Replaced with stdio entry `{command: "npx", args: ["-y", "mcp-remote", ...]}` → restarted Claude Desktop → fresh Cowork session → `get_stats` returned real JSON, audit row at 13:41:46.421Z, latency 328ms. **Cowork now sees dent-brain.**
 
-**For dbrain forks (OSS posture):** the install model is the same as upstream gbrain — `claude mcp add` per-user with a bearer token. No OAuth issuer to deploy, no consent UI, no DCR. ChatGPT integration (if/when desired) would still require OAuth 2.1 per gbrain's README, but that's a different conversation.
+**Why this matters for OSS distribution:** the install pattern for downstream forks of dbrain (or anyone deploying their own gbrain-shape brain to Cowork-using teams) is **dual-registration**:
+1. `~/.claude.json` direct edit OR `claude mcp add -s user` for Code mode + standalone CLI.
+2. `claude_desktop_config.json` with the `mcp-remote` stdio bridge for Cowork.
+
+Both registrations use the same bearer token; the token is URL-agnostic and the same `access_tokens.name` row authenticates both. **No OAuth needed.** The stdio bridge is the workaround.
+
+**Supersedes the 2026-04-29 entry** that claimed Code mode and Cowork share the same registration store. They don't. The 2026-04-29 test passed for Code mode but the conclusion was incorrectly generalized to Cowork. Empirically corrected on 2026-04-30 when a fresh Cowork session failed the same test. See `docs/dent-brain/TESTS_phase0_auth_surfaces.md` for both rounds of testing.
+
+**Supersedes the 2026-04-27 entry** that claimed Code mode "does NOT read ~/.claude.json" and required OAuth. Both halves were wrong: Code mode does read `~/.claude.json`, and OAuth is unnecessary for Cowork given the mcp-remote bridge.
+
+**Caveat — Claude.ai web Connectors UI** (browser, not desktop) was not tested. May still require OAuth there. Out of scope for Dent's MVP; team uses Claude Desktop, not the web.
+
+**For dbrain forks (OSS posture):** ship the dual-registration install command. Don't ship OAuth. The `mcp-remote` bridge is one extra line per teammate's `claude_desktop_config.json` and removes the need for an OAuth issuer. Same friction as upstream gbrain plus a stdio bridge, both well-trodden patterns.
 
 ---
 

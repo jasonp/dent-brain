@@ -18,3 +18,6 @@ experiments/*/node_modules/
 # Supabase project IDs, etc.) live in the deployer's home dir, never the repo.
 DEPLOY_NOTES.md
 DEPLOY_NOTES.*.md
+# Local-only reference material (vendor setup docs, scratch notes, etc.).
+# Never committed; never pushed.
+_reference/

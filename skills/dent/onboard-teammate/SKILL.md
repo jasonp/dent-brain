@@ -79,15 +79,75 @@ Capture the printed token. The token is shown ONCE. Hold it briefly to construct
 
 ### Phase 4: Construct the install command
 
-Build the exact one-line command the teammate will paste. Pull the server URL from `plugin/manifest.json` (`deploy.server_url`) so this works in any dent-brain deployment.
+Every teammate gets **dual-registration** so dent-brain works in BOTH:
+- Claude Desktop's **Code mode** + the standalone Claude Code CLI (reads `~/.claude.json`).
+- Claude Desktop's **Cowork mode** + classic Desktop chats (reads `~/Library/Application Support/Claude/claude_desktop_config.json`).
 
+The two config files take different value shapes and Cowork is **stdio-only** (HTTP-type entries get rejected on launch). Cowork's registration uses the `mcp-remote` npm package as a stdio bridge that proxies to our remote URL. Background:`docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces, two config files".
+
+Pull the server URL from `plugin/manifest.json` (`deploy.server_url`) so this skill works for any dent-brain deployment, not just Dent's.
+
+The install command is a single Python-driven shell block. Python 3 is universally available on macOS — we don't require teammates to install the standalone Claude Code CLI. The block:
+1. Backs up both target files (timestamped, in `~/.dent-brain/backups/`).
+2. Reads each, merges the dent-brain entry, writes it back atomically.
+3. Validates JSON after each write.
+4. Prints the relaunch instruction.
+
+Substitute `<SERVER_URL>` and `<TOKEN>` before showing to the teammate. Today: `<SERVER_URL>` is `https://dent-brain.dentthefuture.com/mcp`.
+
+```bash
+TOKEN="<TOKEN>"
+URL="<SERVER_URL>"
+TOKEN="$TOKEN" URL="$URL" python3 <<'PY'
+import json, os, shutil, time
+HOME = os.path.expanduser("~")
+TOKEN = os.environ["TOKEN"]; URL = os.environ["URL"]
+
+bk_dir = os.path.join(HOME, ".dent-brain", "backups")
+os.makedirs(bk_dir, exist_ok=True)
+stamp = time.strftime("%Y%m%d-%H%M%S")
+
+def patch(path, entry):
+    if os.path.exists(path):
+        shutil.copy(path, os.path.join(bk_dir, f"{os.path.basename(path)}.{stamp}.bak"))
+        with open(path) as f: cfg = json.load(f)
+    else:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        cfg = {}
+    cfg.setdefault("mcpServers", {})
+    cfg["mcpServers"]["dent-brain"] = entry
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    with open(path) as f: json.load(f)  # validate
+    print(f"  wrote: {path}")
+
+# 1. Code mode + standalone CLI: ~/.claude.json (HTTP-type entry)
+patch(
+    os.path.join(HOME, ".claude.json"),
+    {"type": "http", "url": URL, "headers": {"Authorization": f"Bearer {TOKEN}"}},
+)
+
+# 2. Cowork mode + classic Desktop chats: claude_desktop_config.json (stdio bridge via mcp-remote)
+patch(
+    os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+    {
+        "command": "npx",
+        "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"],
+    },
+)
+
+print("\nDone. Backups saved to ~/.dent-brain/backups/")
+print("Next: quit Claude Desktop completely (Cmd+Q) and relaunch.")
+print("Then start a NEW Cowork session (not an existing one — tool registries cache per-chat).")
+PY
 ```
-claude mcp add dent-brain -s user -t http <SERVER_URL> -H "Authorization: Bearer <TOKEN>"
-```
 
-⚠️ **`-s user` is non-negotiable.** Without it, `claude mcp add` defaults to "local" scope (project-private) and the registration lives in the per-project section of `~/.claude.json`. That works for terminal `claude` sessions launched from one specific directory, but **does NOT surface in Claude Desktop's Claude Code mode or Cowork** — both of those read the user-scope (top-level) section of `~/.claude.json`. A teammate who installs at local scope will think they have dent-brain access ("✓ Connected" in `claude mcp list`) but their Cowork sessions won't see it. Always use `-s user`.
+⚠️ **Why this is dual, not single.** Earlier versions of this skill (pre-2026-04-30) used `claude mcp add -s user -t http ...` only. That works for Code mode but Cowork sessions reported "I don't see any dent-brain tools" because they read a different file. The dual-registration above is the empirically verified fix.
 
-For Dent's deploy today: `<SERVER_URL>` is `https://dent-brain.dentthefuture.com/mcp` (canonical, custom domain). The Railway-provided `https://dent-brain-production.up.railway.app/mcp` URL keeps working in parallel and is acceptable as a fallback if the custom domain ever lapses.
+⚠️ **Cowork tool registry caches per-chat.** Tell the teammate to start a NEW Cowork session, not continue an existing one. Same caveat Steve's FM MCP doc calls out. Old chats won't see the connector even after Claude Desktop restarts.
+
+⚠️ **Token never logged or backed up to git.** Backups go to `~/.dent-brain/backups/` (gitignored at user-home, never enters any repo). The TOKEN env var is local to the heredoc invocation and dies with the shell session.
 
 ### Phase 5: Produce the install message
 
@@ -101,35 +161,37 @@ To install on your machine:
 1. Make sure Claude Desktop is installed and you're signed in.
    (Download: https://claude.ai/download)
 
-2. Open a terminal and run this exactly (one line — DO NOT split into multiple lines):
+2. Open a terminal (Spotlight → "Terminal") and PASTE this entire block,
+   then press Enter. It's one shell command that registers dent-brain in
+   two places so it works in Claude Code AND in Claude Cowork sessions.
 
-   claude mcp add dent-brain -s user -t http <SERVER_URL> -H "Authorization: Bearer <TOKEN>"
+   <PASTE THE PYTHON BLOCK FROM PHASE 4 HERE, WITH TOKEN AND URL FILLED IN>
 
-3. Verify it works. Open Claude Desktop, switch to Claude Code mode, start
-   a new session, and ask:
+3. Quit Claude Desktop completely (Cmd+Q) and relaunch.
 
-   "List the dent-brain tools you have access to."
+4. Start a NEW Cowork session (not an existing one — tool registries are
+   cached per-chat, so old chats won't see dent-brain even after restart).
+   Ask: "Use dent-brain to call get_stats and tell me what's in there."
 
-   You should see a list including get_stats, query, search, put_page, etc.
-   If you don't, ping <admin handle>.
+   You should see a JSON blob with the current page count. The brain may
+   be empty or small in the early phase — that's expected.
 
-4. Try a real query. Ask:
+You're done. dent-brain is now available in:
+- Claude Cowork sessions opened from Claude Desktop (the main team workflow)
+- Claude Desktop's Code mode (if you use it)
+- The standalone Claude Code CLI in your terminal (if you use it)
 
-   "Use dent-brain to call get_stats and tell me what's in there."
-
-   You'll get back a JSON blob with the current page count. Brain might be
-   small or empty for a while — that's expected during the early phase.
-
-You're done. dent-brain is now available in any Claude Cowork session you
-open from Claude Desktop on this machine.
+All three surfaces share the same token and the same per-user audit log,
+so we can see what each person is querying (and the cost) without it
+being surveillance — it's just operational hygiene.
 
 Heads up:
-- Don't share the token. It's tied to your name so we can see who's making
-  which queries (audit + cost tracking — not surveillance).
-- If you switch machines, ping <admin handle> for a re-issue. Don't try to
-  copy the token between machines.
-- If the install command shows an error, copy the full output and share it
-  with <admin handle>.
+- Don't share the token. It's tied to your name in our audit log.
+- If you switch machines, ping <admin handle> for a re-issue. Don't try
+  to copy the token between machines.
+- If anything errors, copy the full terminal output and share it with
+  <admin handle>. There's a backup of your previous config at
+  ~/.dent-brain/backups/ — restoring is one shell command.
 ```
 
 Substitute: `<FullName>`, `<SERVER_URL>`, `<TOKEN>`, `<admin handle>`.
@@ -149,17 +211,19 @@ Pause. Wait for the admin to say "done" or "they ran it" before continuing.
 
 ### Phase 7: Verify registration
 
-After the teammate has run the install command, check the audit log:
+After the teammate has run the install command AND restarted Claude Desktop AND started a new Cowork session asking the model to call `get_stats`, check the audit log:
 
 ```bash
 ./scripts/tail-mcp-audit.sh 20 | grep "<handle>"
 ```
 
-Pass criteria: at least one row with `op=initialize` or `op=tools/list` from token `<handle>`. The standalone CLI registration triggers an immediate handshake to fetch tool definitions; that handshake produces audit rows.
+Pass criteria: at least one row with `op=tools/call` from token `<handle>`. Initialize / tools-list rows alone don't count — they fire on connector load even if the teammate never invokes a tool. The `tools/call` row is proof the Cowork session both saw the connector AND successfully invoked it end-to-end.
 
-If no rows appear within ~5 minutes of the teammate running the command:
-- The command may not have run successfully on their machine. Ask them to paste the terminal output.
-- Or: their `~/.claude.json` may already have a different `dent-brain` entry that's blocking the new one. Have them run `claude mcp list` to check, then `claude mcp remove dent-brain` if needed before retrying.
+If no `tools/call` row appears within ~5 minutes of the teammate confirming they asked for `get_stats`:
+- **Most likely:** they continued an OLD Cowork chat instead of starting a new one. Tool registries are cached per-chat. Tell them to start a fresh chat and try again.
+- **Less likely:** Claude Desktop's launch popup said "entries are not valid MCP server configurations and were skipped: dent-brain." That means `mcp-remote` couldn't load — usually because Node 18+ isn't installed (`node --version`). Install via `brew install node` and relaunch.
+- **Rare:** the python block in the install message wasn't pasted as a single unit. Ask them to confirm the JSON is valid: `python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json` should print without error.
+- **Last resort:** restore the pre-install backup from `~/.dent-brain/backups/` and re-run the install command.
 
 Once verified: tell the admin "verified — `<handle>` is live as of `<timestamp>`."
 

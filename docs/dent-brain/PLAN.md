@@ -11,6 +11,44 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.7 (2026-04-30, Cowork-mode surface gap caught + dual-install fix):**
+
+- **v1.5 conclusion was incomplete.** The 2026-04-29 test that "validated"
+  Cowork was actually testing Claude Desktop's Code mode, NOT Cowork mode.
+  Different registration stores. Cowork's mcp registry comes from
+  `~/Library/Application Support/Claude/claude_desktop_config.json`, which
+  is **stdio-only** — HTTP-type MCPs (`{type, url, headers}`) get rejected
+  on launch with a "not valid MCP server configurations" popup.
+- **Caught the day after PLAN v1.6 landed,** when Jason spot-checked Cowork
+  before Steve onboarding. Saved Steve from a guaranteed broken first
+  install. Empirical run-through recorded in
+  `docs/dent-brain/TESTS_phase0_auth_surfaces.md` (round 2) and the
+  superseded UPSTREAM_NOTES entries (corrected).
+- **Fix: dual-registration with `mcp-remote` stdio bridge for Cowork.**
+  Every teammate gets BOTH:
+  1. `~/.claude.json` HTTP entry → Code mode + standalone CLI.
+  2. `claude_desktop_config.json` stdio entry running
+     `npx -y mcp-remote <url> --header "Authorization: Bearer <token>"`
+     → Cowork mode + classic Claude Desktop chats.
+  Same bearer token authenticates both; one row in `access_tokens` per
+  human; per-user audit unchanged. OAuth still not needed.
+- **`/dent-onboard-teammate` skill rewritten** to produce a single
+  Python-driven shell block that updates BOTH config files atomically,
+  validates JSON, and prints the relaunch instructions. No
+  `claude mcp add` dependency (Python is universal on macOS; we don't
+  require teammates to install the standalone Claude Code CLI).
+- **DEPLOY.md §4 updated** with the Cowork bridge requirement so OSS
+  forks don't trip the same surface gap.
+- **Architectural lock-in:** dbrain's canonical client surface is
+  Claude Desktop (Code mode + Cowork mode + classic chats) plus
+  optionally the standalone Claude Code CLI for technical users. Web
+  Connectors UI remains explicitly out of scope.
+- **Lessons captured** in UPSTREAM_NOTES: gbrain's README claim that
+  bearer auth works in "Claude Desktop, Cowork, Perplexity" is true ONLY
+  for Code-mode / standalone-CLI patterns. Cowork mode requires the
+  stdio bridge regardless of how the upstream README phrases it. This
+  isn't a gbrain bug; it's the actual Claude Desktop surface architecture.
+
 **v1.6 (2026-04-29 evening, Phase 1 evidence-log core landed):**
 
 - **Phase 1 Gate met.** Schema migration applied to production Supabase
