@@ -11,6 +11,41 @@ Supersedes: DENT_BRAIN_MVP_v1.0.md (which superseded v0.9, v0.8, v0.7)
 
 ## Changelog
 
+**v1.6 (2026-04-29 evening, Phase 1 evidence-log core landed):**
+
+- **Phase 1 Gate met.** Schema migration applied to production Supabase
+  (`dent_version=1`, `evidence` table with GIN(entity_refs) per A2 + four
+  supporting indexes). Four operations live and serving on the Railway
+  build: `append_evidence`, `get_evidence`, `quarantine_batch`,
+  `get_provenance`. Full end-to-end round-trip verified via
+  `https://dent-brain.dentthefuture.com/mcp` with the `dent-brain-jason`
+  token: append → read → provenance, audit log captured each call,
+  evidence row's `author` field reflects the token name (per-user attribution
+  works as designed). Gate-test fixtures cleaned up after verification.
+- **25 unit tests, all green** (`test/dent/evidence/{append,query,quarantine,
+  provenance}.test.ts`). Runs against PGLite in-memory, no DATABASE_URL
+  required. Covers happy paths, content-hash idempotency including
+  same-content-different-source disambiguation, EVIDENCE_ENTITY_UNKNOWN
+  rejection (full + mixed sets), auth_invalid on missing author,
+  concurrent-append-doesn't-race (5 parallel appends → 1 row), reverse-chron
+  ordering, quarantine round-trip + reason metadata in JSONB, dry-run
+  semantics, EVIDENCE_NOT_FOUND on get_provenance with bogus id.
+- **CQ5 error taxonomy doc landed in `dent-brain-data` private repo at
+  `docs/ERROR_TAXONOMY.md`.** 7 codes documented (6 in use; `entity_not_found`
+  reserved for Phase 3+).
+- **Architecture decision: Dent migrations run in a parallel runner**
+  (`src/dent/migrate.ts`) using `dent_version` config key, never touching
+  gbrain's `version`. Keeps upstream merges from `garrytan/gbrain` clean.
+  CLI: `bun run scripts/dent-migrate.ts` with `DATABASE_URL` env.
+- **`DentOperationContext` extends `OperationContext` with `author` field**
+  populated by http-mcp from the verified bearer token's `access_tokens.name`.
+  Single confined cast in dent handlers, no gbrain core modification.
+- **Deploy gotcha caught:** Railway auto-deploy from GitHub was NOT wired
+  on the original Phase 0 setup (deploy was via `railway up`). Push to
+  master alone doesn't trigger a rebuild; manual `railway up` is required
+  until GitHub integration is added in the Railway dashboard. Recorded as
+  a P2 followup; not blocking Phase 1.
+
 **v1.5 (2026-04-29, OAuth scrapped after empirical re-test; Phase 0 closes on per-user install instead):**
 
 - **OAuth implementation cancelled.** v1.4 conclusion that "Claude Desktop's
