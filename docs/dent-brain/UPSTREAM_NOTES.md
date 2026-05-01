@@ -57,7 +57,7 @@ Both registrations use the same bearer token; the token is URL-agnostic and the 
 
 **Fix:** set `prepare: false` on the `postgres()` config when DATABASE_URL points at the pooler. Detect via `:6543` or `pooler.supabase.com` substring.
 
-**Convention:** gbrain's `PostgresEngine` does this automatically via `resolvePrepare(url)` in `src/core/db.ts`. Our HTTP MCP wrapper's separate `authDb` connection didn't inherit the convention — added in `src/dent/server/http-mcp.ts` post-deploy.
+**Convention:** gbrain's `PostgresEngine` does this automatically via `resolvePrepare(url)` in `src/core/db.ts`. Historically our `src/dent/server/http-mcp.ts` wrapper had a separate `authDb` connection that didn't inherit the convention — fixed post-deploy. The wrapper has since been deleted (Option B retrofit, 2026-05-01); upstream's `src/mcp/http-transport.ts` handles auth via the same shared engine, so the bug class is gone.
 
 **Lesson for any new direct-postgres connection in this repo:** always check the convention. Don't construct a fresh `postgres()` without thinking about pooler-mode prepare.
 

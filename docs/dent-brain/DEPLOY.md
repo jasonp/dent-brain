@@ -112,13 +112,13 @@ git commit --allow-empty -m "chore: trigger Railway deploy"
 git push origin master
 ```
 
-Watch the build logs in Railway's dashboard. Expected: Docker build completes in 1-3 min (mostly `bun install`), then the server starts and you see the three `[dent-brain]` log lines:
+Watch the build logs in Railway's dashboard. Expected: Docker build completes in 1-3 min (mostly `bun install`), then the server starts (`bun run src/dent/serve.ts` per `railway.json` / `Dockerfile` CMD) and you see the `[dent-brain]` log lines:
 
 ```
-[dent-brain] HTTP MCP server listening on :<PORT> (env=production, version=0.16.0)
+[dent-brain] HTTP MCP server listening on :<PORT> (env=production, version=<gbrain-version>)
 [dent-brain]   GET  /health
-[dent-brain]   GET  /ready
 [dent-brain]   POST /mcp  (Bearer <token> required)
+[dent-brain]   ops    : 41 core + 4 dent = 45
 ```
 
 ---
@@ -129,11 +129,10 @@ Watch the build logs in Railway's dashboard. Expected: Docker build completes in
 
 ```bash
 curl https://<railway-domain>/health
-# {"ok":true,"version":"0.16.0","service":"dent-brain"}
-
-curl https://<railway-domain>/ready
-# {"ok":true,"db":"reachable"}
+# {"ok":true,"version":"<gbrain-version>","service":"dent-brain","db":"reachable"}
 ```
+
+Upstream's `/health` is DB-probing — a single endpoint covers liveness + readiness. (The legacy separate `/ready` from our removed http-mcp wrapper no longer exists.)
 
 ### 3.2 MCP auth check
 
@@ -239,7 +238,7 @@ For OSS forks: the dual-registration pattern works against any remote dbrain dep
 
 **Railway deploy fails with "no space left":** Our `.dockerignore` trims most non-runtime files. If you hit size issues, inspect the build context with `docker build --no-cache .` locally.
 
-**`/ready` returns 503 db unreachable:** DATABASE_URL is wrong, or Supabase is blocking the Railway IP. Supabase defaults to open; check project settings → Database → Network Restrictions.
+**`/health` returns `db:"unreachable"` (503):** DATABASE_URL is wrong, or Supabase is blocking the Railway IP. Supabase defaults to open; check project settings → Database → Network Restrictions.
 
 **`401 unauthorized` with correct token:** verify the token was created against the SAME Supabase instance Railway is pointing at. Check `Authorization: Bearer <token>` header (no extra spaces, no trailing newline).
 

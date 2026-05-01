@@ -21,11 +21,13 @@ Substrate just upgraded gbrain v0.16.0 → v0.25.0 (39 upstream commits absorbed
 to "fork gbrain's `enrich` skill with FM-injection + FM-wins + merge-on-rerun"
 — Cowork-side, subscription-funded, 1-2 day phase instead of 1-2 weeks.
 
-**Next work session — Option B retrofit:** delete `src/dent/server/http-mcp.ts`
-in favor of upstream's `src/mcp/http-transport.ts` (v0.22.7), drop `evidence.author`
-column (per-row attribution comes from `mcp_request_log` join), refactor 4 dent
-ops to plain `OperationContext`, register them with upstream's operations array,
-redeploy Railway as `dbrain serve --http --port $PORT`. Then Phase 3 implementation.
+**Option B retrofit (DONE 2026-05-01):** `src/dent/server/http-mcp.ts` deleted
+in favor of upstream's `src/mcp/http-transport.ts` (v0.22.7). `evidence.author`
+column dropped via dent migration v2 (per-row attribution now comes from the
+`mcp_request_log` join). The 4 dent ops were refactored to plain
+`OperationContext` and registered alongside upstream's operations array via the
+new `src/dent/serve.ts` entry. Railway redeployed (`bun run src/dent/serve.ts`),
+`/health` 200, `dent_version=2`, 4 dent ops live. Next: Phase 3 implementation.
 
 **Withdrawn this revision (v1.8):** the entire materializer pipeline — A1 (queue
 + debounce), A8 (prompt versioning), A10 (snapshot table), CQ2 (structural
@@ -103,9 +105,9 @@ per session. Required for P1 performance monitoring.
 **CQ5. Error taxonomy.** Documented in Phase 1 in
 `~/gh/dent-brain-data/docs/ERROR_TAXONOMY.md` (private repo). Active codes:
 `evidence_not_found`, `evidence_entity_unknown`, `entity_not_found`,
-`fm_unreachable`, `rate_limited`. *Note: `auth_invalid` and
-`materializer_failed` are slated for removal in the Option B retrofit
-(no more author column, no more materializer).*
+`fm_unreachable`, `rate_limited`. *Note: `auth_invalid` was removed in the
+Option B retrofit (2026-05-01) — no more author column. `materializer_failed`
+also retired with the materializer pipeline.*
 
 **CQ6. Classifier strategy: rules-first with LLM fallback.** Filename +
 folder location rules catch ~80% of files. Unmatched files → Claude
@@ -525,12 +527,11 @@ MVP is successful if, 2 weeks after ship-to-Steve, all of these are true:
 **Phase 0 — Substrate and infra (DONE)**, **Phase 0.5 — FileMaker MCP
 federation (DONE)**, **Phase 1 — Evidence log core (DONE)**, **Phase 2 —
 Namespace + seed entities (DONE)**. Production state:
-`https://dent-brain.dentthefuture.com/mcp`, dent_version=1, 4 dent ops
-serving, 25 unit tests green, FM MCP installed per-user, dent-brain-data
-repo seeded. *Outstanding: Option B retrofit (drops `evidence.author` column
-+ moves the 4 ops into upstream's operations array; replaces our http-mcp
-wrapper with `dbrain serve --http`); time the 5 UC queries end-to-end and
-write `FILEMAKER_FEDERATION.md` to data repo (can run alongside Phase 4).*
+`https://dent-brain.dentthefuture.com/mcp`, dent_version=2, 4 dent ops
+serving via `src/dent/serve.ts`, 24 unit tests green, FM MCP installed
+per-user, dent-brain-data repo seeded. Option B retrofit landed 2026-05-01.
+*Outstanding: time the 5 UC queries end-to-end and write
+`FILEMAKER_FEDERATION.md` to data repo (can run alongside Phase 4).*
 
 **Phase 3 — `/dent-enrich` skill (RESHAPED 2026-05-01, v1.8)**
 
@@ -675,8 +676,9 @@ What we don't have to build because gbrain v0.25.0 ships it:
   **No materializer to build.**
 - **`src/mcp/http-transport.ts` (v0.22.7)** — bearer auth, CORS, rate
   limiting, body cap, mcp_request_log audit, last_used_at debounce,
-  DB-probing /health. Railway entrypoint becomes `dbrain serve --http
-  --port $PORT`. **No custom http-mcp wrapper to maintain.**
+  DB-probing /health. Wrapped by `src/dent/serve.ts` (Railway entrypoint:
+  `bun run src/dent/serve.ts`), which merges core + dent operations.
+  **No custom http-mcp wrapper to maintain.**
 - **`src/mcp/dispatch.ts` + `src/mcp/rate-limit.ts`** — single source of
   truth for MCP dispatch.
 - **Minions queue + `subagent` handler** — Postgres-native, `idempotency_key`
