@@ -18,6 +18,7 @@
 
     "templates": [
       "append-evidence",
+      "enrich",
       "flag-fact",
       "whoami",
       "resolve-entity",

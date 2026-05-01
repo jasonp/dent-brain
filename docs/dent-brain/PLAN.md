@@ -564,12 +564,14 @@ skill file plus tests.
 - `enrich-no-fm.test.ts` — entity without `filemaker_record_id` works
   on evidence alone.
 
-Phase 4 partial bring-forward: `/dent-append-evidence` calls
-`add_timeline_entry` on each evidence write so the timeline grows even
-when `/dent-enrich` hasn't been run since.
-
 **Gate:** all five enrich tests green. Jason runs `/dent-enrich` against
 an entity with hand-edited markdown and observes merge preserves the edit.
+
+> Earlier drafts of Phase 3 also pulled forward a "/dent-append-evidence
+> calls add_timeline_entry on each write" bring-forward. Withdrawn 2026-05-01
+> after the Phase 3 kickoff: timeline-entry wiring belongs alongside
+> entity-detection (CQ1) in Phase 4 where /dent-append-evidence is built
+> properly. Splitting it across two phases was scope-confusion, not value.
 
 > Original Phase 3 spec (server-side materializer with queue / validator /
 > snapshot table) is archived in `PLAN_AUDIT_TRAIL.md`.
