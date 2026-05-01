@@ -9,7 +9,6 @@
 import { PGLiteEngine } from '../../../src/core/pglite-engine.ts';
 import type { BrainEngine } from '../../../src/core/engine.ts';
 import type { OperationContext } from '../../../src/core/operations.ts';
-import type { DentOperationContext } from '../../../src/dent/types.ts';
 import { runDentMigrations } from '../../../src/dent/migrate.ts';
 import { dentOperations } from '../../../src/dent/operations/evidence.ts';
 
@@ -38,8 +37,8 @@ export async function seedEntityPages(
   }
 }
 
-export function makeCtx(engine: BrainEngine, author: string, dryRun = false): DentOperationContext {
-  const ctx: OperationContext = {
+export function makeCtx(engine: BrainEngine, dryRun = false): OperationContext {
+  return {
     engine,
     config: { engine: 'pglite' },
     logger: {
@@ -50,8 +49,6 @@ export function makeCtx(engine: BrainEngine, author: string, dryRun = false): De
     dryRun,
     remote: true,
   };
-  (ctx as DentOperationContext).author = author;
-  return ctx as DentOperationContext;
 }
 
 export function findOp(name: string) {

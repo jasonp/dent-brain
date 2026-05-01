@@ -30,5 +30,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null http://localhost:${PORT:-3000}/health || exit 1
 
-# Run the HTTP MCP server directly via Bun. No build step; Bun runs TS natively.
-CMD ["bun", "run", "src/dent/server/http-mcp.ts"]
+# Run the HTTP MCP server directly via Bun. sh wrapper interpolates $PORT
+# from Railway, falling back to 3000 for local `docker run`.
+CMD ["sh", "-c", "bun run src/dent/serve.ts --port ${PORT:-3000}"]

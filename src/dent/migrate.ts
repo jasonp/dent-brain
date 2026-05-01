@@ -70,6 +70,17 @@ export const DENT_MIGRATIONS: DentMigration[] = [
         ON evidence (batch_id) WHERE batch_id IS NOT NULL;
     `,
   },
+  {
+    version: 2,
+    name: 'drop_evidence_author',
+    sql: `
+      -- Per-row attribution moves to upstream's mcp_request_log (v0.22.7
+      -- HTTP transport audit row: token_name, operation, latency_ms, status,
+      -- created_at). Dent ops no longer need their own author column; the
+      -- request log is the source of truth.
+      ALTER TABLE evidence DROP COLUMN IF EXISTS author;
+    `,
+  },
 ];
 
 export const DENT_LATEST_VERSION = DENT_MIGRATIONS.length > 0

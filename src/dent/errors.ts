@@ -16,9 +16,7 @@ export type DentErrorCode =
   | 'evidence_not_found'
   | 'evidence_entity_unknown'
   | 'entity_not_found'
-  | 'auth_invalid'
   | 'fm_unreachable'
-  | 'materializer_failed'
   | 'rate_limited';
 
 export class DentOperationError extends OperationError {

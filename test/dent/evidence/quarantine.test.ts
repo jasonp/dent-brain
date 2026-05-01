@@ -57,7 +57,7 @@ describe('quarantine_batch', () => {
   }
 
   test('quarantine then un-quarantine round trip', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 3);
 
     const q = (await quarantine.handler(ctx, { batch_id: BATCH })) as { affected: number };
@@ -78,7 +78,7 @@ describe('quarantine_batch', () => {
   });
 
   test('reason recorded in metadata.quarantine_reason', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 2);
 
     await quarantine.handler(ctx, { batch_id: BATCH, reason: 'classifier rule v2 was wrong' });
@@ -94,7 +94,7 @@ describe('quarantine_batch', () => {
   });
 
   test('un-quarantine clears quarantine_reason from metadata', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 1);
 
     await quarantine.handler(ctx, { batch_id: BATCH, reason: 'temporary' });
@@ -108,10 +108,10 @@ describe('quarantine_batch', () => {
   });
 
   test('dry_run reports affected without writing', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 4);
 
-    const dryCtx = makeCtx(engine, 'jason-test', /* dryRun */ true);
+    const dryCtx = makeCtx(engine, /* dryRun */ true);
     const r = (await quarantine.handler(dryCtx, { batch_id: BATCH })) as {
       dry_run: boolean;
       would_affect: number;
@@ -125,7 +125,7 @@ describe('quarantine_batch', () => {
   });
 
   test('re-quarantining already-quarantined batch is no-op', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 2);
 
     await quarantine.handler(ctx, { batch_id: BATCH });
@@ -134,7 +134,7 @@ describe('quarantine_batch', () => {
   });
 
   test('quarantine of one batch does not affect another batch', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await seedBatch(ctx, BATCH, 2);
     await seedBatch(ctx, BATCH2, 2);
 

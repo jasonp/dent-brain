@@ -41,7 +41,7 @@ describe('get_evidence', () => {
   const get = findOp('get_evidence');
 
   test('reverse-chron: newest rows first', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     // Insert 3 records with explicit observed_at ordering, then verify order.
     await append.handler(ctx, {
       content: 'first',
@@ -74,7 +74,7 @@ describe('get_evidence', () => {
   });
 
   test('quarantined records excluded by default', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const batch_id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     await append.handler(ctx, {
       content: 'doomed',
@@ -99,7 +99,7 @@ describe('get_evidence', () => {
   });
 
   test('include_quarantined: returns soft-deleted rows', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const batch_id = '11111111-2222-3333-4444-555555555555';
     await append.handler(ctx, {
       content: 'doomed',
@@ -118,7 +118,7 @@ describe('get_evidence', () => {
   });
 
   test('only entries referencing the requested entity returned', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     await append.handler(ctx, {
       content: 'about steve',
       entity_refs: [STEVE],
@@ -145,13 +145,13 @@ describe('get_evidence', () => {
   });
 
   test('limit cap clamps at 200', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const result = (await get.handler(ctx, { entity_ref: STEVE, limit: 99999 })) as { limit: number };
     expect(result.limit).toBe(200);
   });
 
   test('limit floor clamps at 1', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const result = (await get.handler(ctx, { entity_ref: STEVE, limit: 0 })) as { limit: number };
     expect(result.limit).toBe(1);
   });

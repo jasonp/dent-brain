@@ -2,7 +2,8 @@
  * Phase 1 evidence: get_provenance test cases per PLAN.md.
  *
  * Coverage:
- *   - full source attribution returned
+ *   - full source attribution returned (author lives in mcp_request_log,
+ *     not on the row — Option B retrofit, v1.8)
  *   - EVIDENCE_NOT_FOUND on missing id
  *   - quarantine state surfaces correctly
  */
@@ -41,8 +42,8 @@ describe('get_provenance', () => {
   const provenance = findOp('get_provenance');
   const quarantine = findOp('quarantine_batch');
 
-  test('returns full source + author attribution', async () => {
-    const ctx = makeCtx(engine, 'steve');
+  test('returns full source attribution (no author field)', async () => {
+    const ctx = makeCtx(engine);
     const inserted = (await append.handler(ctx, {
       content: 'Steve hosted Dent 2025 attendees in Whistler.',
       entity_refs: [STEVE],
@@ -59,7 +60,6 @@ describe('get_provenance', () => {
       entity_refs: string[];
       source_type: string;
       source_ref: string;
-      author: string;
       observed_at: string;
       appended_at: string;
       batch_id: string;
@@ -73,7 +73,6 @@ describe('get_provenance', () => {
     expect(result.entity_refs).toEqual([STEVE]);
     expect(result.source_type).toBe('meeting');
     expect(result.source_ref).toBe('meetings/whistler-2025');
-    expect(result.author).toBe('steve');
     expect(result.observed_at.startsWith('2025-12-08')).toBe(true);
     expect(result.appended_at).toBeString();
     expect(result.batch_id).toBe(BATCH);
@@ -81,10 +80,13 @@ describe('get_provenance', () => {
     expect(result.quarantined_at).toBeNull();
     expect(result.metadata.confidence).toBe(0.9);
     expect(result.metadata.classifier_rule).toBe('meeting-notes-v1');
+    // Author column dropped in dent migration v2 — provenance no longer
+    // returns it. Per-call author lives in mcp_request_log.
+    expect(result).not.toHaveProperty('author');
   });
 
   test('quarantine state visible after batch quarantine', async () => {
-    const ctx = makeCtx(engine, 'steve');
+    const ctx = makeCtx(engine);
     const inserted = (await append.handler(ctx, {
       content: 'doomed claim',
       entity_refs: [STEVE],
@@ -105,7 +107,7 @@ describe('get_provenance', () => {
   });
 
   test('EVIDENCE_NOT_FOUND on unknown id', async () => {
-    const ctx = makeCtx(engine, 'jason');
+    const ctx = makeCtx(engine);
     let thrown: unknown;
     try {
       await provenance.handler(ctx, { evidence_id: '00000000-0000-0000-0000-000000000000' });
@@ -113,6 +115,6 @@ describe('get_provenance', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code as string).toBe('evidence_not_found');
+    expect((thrown as DentOperationError).code).toBe('evidence_not_found');
   });
 });

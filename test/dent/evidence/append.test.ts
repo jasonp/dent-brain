@@ -5,8 +5,10 @@
  *   - happy path (writes a row, returns it)
  *   - content-hash idempotency (same content + entities + source = same row)
  *   - EVIDENCE_ENTITY_UNKNOWN rejection (any unknown entity_ref → throw)
- *   - invalid auth (missing author in context → throw)
  *   - concurrent-append-doesn't-race (Promise.all with same hash → one row)
+ *
+ * Author attribution lives in mcp_request_log (Option B retrofit, v1.8) —
+ * no per-row author column, no auth_invalid path.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
@@ -43,7 +45,7 @@ describe('append_evidence', () => {
   const op = findOp('append_evidence');
 
   test('happy path: writes a row, returns it with id+content_hash', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const result = (await op.handler(ctx, {
       content: 'Steve confirmed Dent 2026 dates in our 1:1.',
       entity_refs: [STEVE],
@@ -54,7 +56,6 @@ describe('append_evidence', () => {
 
     expect(result.id).toBeString();
     expect(result.content_hash).toBeString();
-    expect(result.author).toBe('jason-test');
     expect((result.entity_refs as string[]).includes(STEVE)).toBe(true);
     expect(result.source_type).toBe('meeting');
 
@@ -85,7 +86,7 @@ describe('append_evidence', () => {
   });
 
   test('idempotency: same payload twice returns same id, only one row', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const payload = {
       content: 'Idempotent claim',
       entity_refs: [STEVE],
@@ -104,7 +105,7 @@ describe('append_evidence', () => {
   });
 
   test('EVIDENCE_ENTITY_UNKNOWN: rejects unknown entity slug', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     let thrown: unknown;
     try {
       await op.handler(ctx, {
@@ -116,12 +117,12 @@ describe('append_evidence', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code as string).toBe('evidence_entity_unknown');
+    expect((thrown as DentOperationError).code).toBe('evidence_entity_unknown');
     expect((thrown as DentOperationError).message).toContain('entities/people/nobody');
   });
 
   test('EVIDENCE_ENTITY_UNKNOWN: rejects mixed known + unknown', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     let thrown: unknown;
     try {
       await op.handler(ctx, {
@@ -133,30 +134,14 @@ describe('append_evidence', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code as string).toBe('evidence_entity_unknown');
+    expect((thrown as DentOperationError).code).toBe('evidence_entity_unknown');
     // Known one should NOT appear in the missing list.
     expect((thrown as DentOperationError).message).not.toContain(STEVE);
     expect((thrown as DentOperationError).message).toContain('entities/people/ghost');
   });
 
-  test('auth_invalid: missing author in context rejects', async () => {
-    const ctx = makeCtx(engine, ''); // empty author
-    let thrown: unknown;
-    try {
-      await op.handler(ctx, {
-        content: 'X',
-        entity_refs: [STEVE],
-        source_type: 'observation',
-      });
-    } catch (e) {
-      thrown = e;
-    }
-    expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code as string).toBe('auth_invalid');
-  });
-
   test('rejects empty entity_refs array', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     let thrown: unknown;
     try {
       await op.handler(ctx, {
@@ -171,7 +156,7 @@ describe('append_evidence', () => {
   });
 
   test('concurrent-append-doesnt-race: 5 parallel identical appends → 1 row', async () => {
-    const ctx = makeCtx(engine, 'jason-test');
+    const ctx = makeCtx(engine);
     const payload = {
       content: 'Concurrent claim',
       entity_refs: [STEVE],
@@ -190,7 +175,7 @@ describe('append_evidence', () => {
   });
 
   test('dry_run: returns preview, writes nothing', async () => {
-    const ctx = makeCtx(engine, 'jason-test', /* dryRun */ true);
+    const ctx = makeCtx(engine, /* dryRun */ true);
     const result = (await op.handler(ctx, {
       content: 'preview',
       entity_refs: [STEVE],

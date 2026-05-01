@@ -3,22 +3,21 @@
  *
  * Implements append_evidence, get_evidence, quarantine_batch, get_provenance
  * per PLAN.md Phase 1 + Eng-Review decisions A2 (GIN index), A3 (audit log
- * fields), CQ1 (entity-detection — Phase 4 will plug into this), CQ5 (error
- * taxonomy).
+ * fields via mcp_request_log), CQ1 (entity-detection — Phase 4 plugs in here),
+ * CQ5 (error taxonomy).
  *
- * These operations are exported as `dentOperations: Operation[]` and
- * concatenated with gbrain's core `operations` array by
- * `src/dent/server/http-mcp.ts`. They run against the same Postgres engine
- * gbrain uses, sharing the connection pool.
+ * These operations are exported as `dentOperations: Operation[]` and merged
+ * with gbrain's core `operations` array by `src/dent/serve.ts`. They run
+ * against the same Postgres engine gbrain uses, sharing the connection pool.
  *
- * Author identity comes from `DentOperationContext.author`, which http-mcp.ts
- * populates from the verified bearer token's `access_tokens.name`.
+ * Per-row author attribution lives in upstream's `mcp_request_log` (v0.22.7
+ * HTTP transport audit row), not in evidence rows. Dent ops use the plain
+ * OperationContext.
  */
 
 import { createHash } from 'node:crypto';
-import type { Operation } from '../../core/operations.ts';
+import type { Operation, OperationContext } from '../../core/operations.ts';
 import { DentOperationError } from '../errors.ts';
-import type { DentOperationContext } from '../types.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,7 +30,6 @@ export interface EvidenceRow {
   content: string;
   source_type: string;
   source_ref: string | null;
-  author: string;
   observed_at: string;
   appended_at: string;
   batch_id: string | null;
@@ -62,10 +60,6 @@ export function evidenceContentHash(input: {
   return createHash('sha256').update(key).digest('hex');
 }
 
-function castCtx(ctx: unknown): DentOperationContext {
-  return ctx as DentOperationContext;
-}
-
 function requireString(v: unknown, name: string): string {
   if (typeof v !== 'string' || v.length === 0) {
     throw new DentOperationError(
@@ -94,7 +88,7 @@ function requireStringArray(v: unknown, name: string): string[] {
  * appends. For Phase 1 the expectation is that callers pre-seed entity pages.
  */
 async function assertEntitiesExist(
-  ctx: DentOperationContext,
+  ctx: OperationContext,
   refs: string[],
 ): Promise<void> {
   // Distinct + non-empty by validation; one query covers all.
@@ -120,7 +114,7 @@ async function assertEntitiesExist(
 const append_evidence: Operation = {
   name: 'append_evidence',
   description:
-    "Append an evidence record to the dent-brain evidence log. Every record references one or more entity slugs, carries a content hash for idempotency, and is attributed to the authenticated user. Re-appending the same content + entity set + source returns the existing row instead of creating a duplicate.",
+    "Append an evidence record to the dent-brain evidence log. Every record references one or more entity slugs and carries a content hash for idempotency. Re-appending the same content + entity set + source returns the existing row instead of creating a duplicate. Per-call attribution (which token wrote it, when) lives in mcp_request_log.",
   params: {
     content: {
       type: 'string',
@@ -156,8 +150,7 @@ const append_evidence: Operation = {
     },
   },
   mutating: true,
-  handler: async (ctxIn, p) => {
-    const ctx = castCtx(ctxIn);
+  handler: async (ctx, p) => {
     const content = requireString(p.content, 'content');
     const entity_refs = requireStringArray(p.entity_refs, 'entity_refs');
     const source_type = requireString(p.source_type, 'source_type');
@@ -165,13 +158,6 @@ const append_evidence: Operation = {
     const observed_at = (p.observed_at as string | undefined) ?? new Date().toISOString();
     const batch_id = (p.batch_id as string | undefined) ?? null;
     const metadata = (p.metadata as Record<string, unknown> | undefined) ?? {};
-
-    if (!ctx.author) {
-      throw new DentOperationError(
-        'auth_invalid',
-        'append_evidence requires an authenticated caller (no author identity available)',
-      );
-    }
 
     await assertEntitiesExist(ctx, entity_refs);
 
@@ -185,7 +171,7 @@ const append_evidence: Operation = {
     if (ctx.dryRun) {
       return {
         dry_run: true,
-        would_insert: { content_hash, entity_refs, source_type, source_ref, author: ctx.author },
+        would_insert: { content_hash, entity_refs, source_type, source_ref },
       };
     }
 
@@ -193,14 +179,14 @@ const append_evidence: Operation = {
     // The two-statement pattern (INSERT ... ON CONFLICT DO NOTHING + SELECT) is
     // race-safe under transaction-mode PgBouncer because content_hash is UNIQUE.
     await ctx.engine.executeRaw(
-      `INSERT INTO evidence (content_hash, entity_refs, content, source_type, source_ref, author, observed_at, batch_id, metadata)
-       VALUES ($1, $2::text[], $3, $4, $5, $6, $7::timestamptz, $8::uuid, $9::jsonb)
+      `INSERT INTO evidence (content_hash, entity_refs, content, source_type, source_ref, observed_at, batch_id, metadata)
+       VALUES ($1, $2::text[], $3, $4, $5, $6::timestamptz, $7::uuid, $8::jsonb)
        ON CONFLICT (content_hash) DO NOTHING`,
-      [content_hash, entity_refs, content, source_type, source_ref, ctx.author, observed_at, batch_id, JSON.stringify(metadata)],
+      [content_hash, entity_refs, content, source_type, source_ref, observed_at, batch_id, JSON.stringify(metadata)],
     );
 
     const rows = await ctx.engine.executeRaw<EvidenceRow>(
-      `SELECT id, content_hash, entity_refs, content, source_type, source_ref, author,
+      `SELECT id, content_hash, entity_refs, content, source_type, source_ref,
               observed_at::text AS observed_at,
               appended_at::text AS appended_at,
               batch_id, quarantined_at::text AS quarantined_at, metadata
@@ -210,11 +196,7 @@ const append_evidence: Operation = {
     if (rows.length === 0) {
       throw new DentOperationError('evidence_not_found', 'append_evidence inserted but row not found on read-back (transient)');
     }
-    const row = rows[0];
-    return {
-      ...row,
-      idempotent_hit: row.author !== ctx.author || row.appended_at < observed_at, // best-effort signal
-    };
+    return rows[0];
   },
 };
 
@@ -241,15 +223,14 @@ const get_evidence: Operation = {
       description: 'Include soft-deleted records. Default false.',
     },
   },
-  handler: async (ctxIn, p) => {
-    const ctx = castCtx(ctxIn);
+  handler: async (ctx, p) => {
     const entity_ref = requireString(p.entity_ref, 'entity_ref');
     const requested = typeof p.limit === 'number' ? p.limit : 50;
     const limit = Math.max(1, Math.min(200, Math.floor(requested)));
     const includeQuarantined = !!p.include_quarantined;
 
     const sql = includeQuarantined
-      ? `SELECT id, content_hash, entity_refs, content, source_type, source_ref, author,
+      ? `SELECT id, content_hash, entity_refs, content, source_type, source_ref,
                 observed_at::text AS observed_at,
                 appended_at::text AS appended_at,
                 batch_id, quarantined_at::text AS quarantined_at, metadata
@@ -257,7 +238,7 @@ const get_evidence: Operation = {
          WHERE $1 = ANY(entity_refs)
          ORDER BY appended_at DESC
          LIMIT $2`
-      : `SELECT id, content_hash, entity_refs, content, source_type, source_ref, author,
+      : `SELECT id, content_hash, entity_refs, content, source_type, source_ref,
                 observed_at::text AS observed_at,
                 appended_at::text AS appended_at,
                 batch_id, quarantined_at::text AS quarantined_at, metadata
@@ -295,8 +276,7 @@ const quarantine_batch: Operation = {
     },
   },
   mutating: true,
-  handler: async (ctxIn, p) => {
-    const ctx = castCtx(ctxIn);
+  handler: async (ctx, p) => {
     const batch_id = requireString(p.batch_id, 'batch_id');
     const un_quarantine = !!p.un_quarantine;
     const reason = (p.reason as string | undefined) ?? null;
@@ -349,7 +329,7 @@ const quarantine_batch: Operation = {
 const get_provenance: Operation = {
   name: 'get_provenance',
   description:
-    'Return full source attribution for one evidence record by id: source_type, source_ref, author, observed_at, batch_id, content_hash, quarantine state, and metadata.',
+    'Return full source attribution for one evidence record by id: source_type, source_ref, observed_at, batch_id, content_hash, quarantine state, and metadata. Per-call author attribution lives in mcp_request_log, not on the row.',
   params: {
     evidence_id: {
       type: 'string',
@@ -357,12 +337,11 @@ const get_provenance: Operation = {
       description: 'UUID of the evidence row.',
     },
   },
-  handler: async (ctxIn, p) => {
-    const ctx = castCtx(ctxIn);
+  handler: async (ctx, p) => {
     const evidence_id = requireString(p.evidence_id, 'evidence_id');
 
     const rows = await ctx.engine.executeRaw<EvidenceRow>(
-      `SELECT id, content_hash, entity_refs, content, source_type, source_ref, author,
+      `SELECT id, content_hash, entity_refs, content, source_type, source_ref,
               observed_at::text AS observed_at,
               appended_at::text AS appended_at,
               batch_id, quarantined_at::text AS quarantined_at, metadata
@@ -382,7 +361,6 @@ const get_provenance: Operation = {
       entity_refs: row.entity_refs,
       source_type: row.source_type,
       source_ref: row.source_ref,
-      author: row.author,
       observed_at: row.observed_at,
       appended_at: row.appended_at,
       batch_id: row.batch_id,
