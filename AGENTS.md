@@ -37,15 +37,27 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
   [`docs/guides/minions-fix.md`](./docs/guides/minions-fix.md), `gbrain doctor --fix`.
 - **Migrate:** [`docs/UPGRADING_DOWNSTREAM_AGENTS.md`](./docs/UPGRADING_DOWNSTREAM_AGENTS.md),
   [`skills/migrations/`](./skills/migrations/), `gbrain apply-migrations`.
+- **Eval retrieval changes:** capture is off by default. To benchmark a
+  retrieval change against real captured queries, set
+  `GBRAIN_CONTRIBUTOR_MODE=1`, then `gbrain eval export --since 7d > base.ndjson`
+  and `gbrain eval replay --against base.ndjson`. Full guide:
+  [`docs/eval-bench.md`](./docs/eval-bench.md).
 - **Everything else:** [`./llms.txt`](./llms.txt) is the full documentation map.
   [`./llms-full.txt`](./llms-full.txt) is the same map with core docs inlined for
   single-fetch ingestion.
 
 ## Before shipping
 
-Run `bun test` plus the E2E lifecycle described in `./CLAUDE.md` (spin up the test
-Postgres container, run `bun run test:e2e`, tear it down). Ship via the `/ship` skill,
-not by hand.
+Easiest path: `bun run ci:local` runs the full CI gate inside Docker (gitleaks,
+unit tests with `DATABASE_URL` unset, then all 29 E2E files sequentially against a
+fresh pgvector container) and tears down. Use `bun run ci:local:diff` for the
+diff-aware subset during fast iteration on a focused branch. Requires Docker
+(Docker Desktop / OrbStack / Colima) and `gitleaks` (`brew install gitleaks`).
+
+Manual path: `bun test` plus the E2E lifecycle described in `./CLAUDE.md` (spin
+up the test Postgres container, run `bun run test:e2e`, tear it down).
+
+Ship via the `/ship` skill, not by hand.
 
 ## Privacy
 

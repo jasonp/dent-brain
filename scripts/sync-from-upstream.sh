@@ -129,7 +129,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Running tests..."
-if ! bun test 2>&1 | tail -20; then
+if ! bun test --timeout=60000 2>&1 | tail -20; then
   echo
   echo "WARNING: tests failed after upstream merge."
   echo "This usually means upstream changed an interface our additions depend on."

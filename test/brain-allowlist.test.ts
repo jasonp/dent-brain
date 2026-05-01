@@ -25,13 +25,13 @@ const config: GBrainConfig = { engine: 'pglite' } as GBrainConfig;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
-  await engine.connect({ databaseUrl: '' });
+  await engine.connect({ database_url: '' });
   await engine.initSchema();
-});
+}, 60_000);
 
 afterAll(async () => {
   await engine.disconnect();
-});
+}, 60_000);
 
 beforeEach(async () => {
   await engine.executeRaw('DELETE FROM pages');

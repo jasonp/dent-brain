@@ -113,6 +113,6 @@ describe('get_provenance', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code).toBe('evidence_not_found');
+    expect((thrown as DentOperationError).code as string).toBe('evidence_not_found');
   });
 });

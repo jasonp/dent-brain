@@ -28,10 +28,6 @@ export class DentOperationError extends OperationError {
     suggestion?: string,
     docs?: string,
   ) {
-    // Cast: gbrain's ErrorCode union is intentionally not extended (we keep
-    // `src/core/` untouched for upstream-merge cleanliness). The runtime only
-    // stores the string; the typed-check guarantee is preserved within
-    // `src/dent/` where we use DentErrorCode directly.
     super(code as unknown as ErrorCode, message, suggestion, docs);
     this.name = 'DentOperationError';
   }

@@ -20,24 +20,50 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================================
+-- sources: multi-brain tenancy (v0.18.0). See src/schema.sql for design notes.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sources (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  local_path    TEXT,
+  last_commit   TEXT,
+  last_sync_at  TIMESTAMPTZ,
+  config        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO sources (id, name, config)
+  VALUES ('default', 'default', '{"federated": true}'::jsonb)
+  ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
 -- pages: the core content table
 -- ============================================================
+-- v0.18.0 (Step 2): source_id scopes each page. Slugs are unique per
+-- source — see src/schema.sql for the design notes.
 CREATE TABLE IF NOT EXISTS pages (
   id            SERIAL PRIMARY KEY,
-  slug          TEXT    NOT NULL UNIQUE,
+  source_id     TEXT    NOT NULL DEFAULT 'default'
+                REFERENCES sources(id) ON DELETE CASCADE,
+  slug          TEXT    NOT NULL,
   type          TEXT    NOT NULL,
+  -- v0.19.0: markdown vs code distinction at the DB level.
+  page_kind     TEXT    NOT NULL DEFAULT 'markdown'
+                CHECK (page_kind IN ('markdown','code')),
   title         TEXT    NOT NULL,
   compiled_truth TEXT   NOT NULL DEFAULT '',
   timeline      TEXT    NOT NULL DEFAULT '',
   frontmatter   JSONB   NOT NULL DEFAULT '{}',
   content_hash  TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
 
 -- ============================================================
 -- content_chunks: chunked content with embeddings
@@ -52,12 +78,21 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   model         TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
   token_count   INTEGER,
   embedded_at   TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- v0.19.0: code chunk metadata (markdown chunks leave NULL).
+  language      TEXT,
+  symbol_name   TEXT,
+  symbol_type   TEXT,
+  start_line    INTEGER,
+  end_line      INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_page ON content_chunks(page_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
+-- v0.19.0: partial indexes for code chunk lookups.
+CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON content_chunks(symbol_name) WHERE symbol_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chunks_language ON content_chunks(language) WHERE language IS NOT NULL;
 
 -- ============================================================
 -- links: cross-references between pages
@@ -72,6 +107,8 @@ CREATE TABLE IF NOT EXISTS links (
   link_source    TEXT    CHECK (link_source IS NULL OR link_source IN ('markdown', 'frontmatter', 'manual')),
   origin_page_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,
   origin_field   TEXT,
+  -- v0.18.0 Step 4: see src/schema.sql.
+  resolution_type TEXT   CHECK (resolution_type IS NULL OR resolution_type IN ('qualified', 'unqualified')),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT links_from_to_type_source_origin_unique
     UNIQUE NULLS NOT DISTINCT (from_page_id, to_page_id, link_type, link_source, origin_page_id)
@@ -141,7 +178,7 @@ CREATE TABLE IF NOT EXISTS page_versions (
 CREATE INDEX IF NOT EXISTS idx_versions_page ON page_versions(page_id);
 
 -- ============================================================
--- ingest_log
+-- ingest_log (v0.18.0 Step 1: source_id deferred to v17, see src/schema.sql)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ingest_log (
   id            SERIAL PRIMARY KEY,
@@ -309,6 +346,51 @@ CREATE TABLE IF NOT EXISTS subagent_rate_leases (
   expires_at    TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rate_leases_key_expires ON subagent_rate_leases (key, expires_at);
+
+-- ============================================================
+-- Cycle coordination lock — v0.17 runCycle primitive
+-- ============================================================
+-- See src/schema.sql for full rationale. One row per active cycle.
+-- PGLite is single-writer, so the lock doubly protects: the DB-level
+-- row + the file lock at ~/.gbrain/cycle.lock prevent concurrent
+-- CLI invocations from racing.
+CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
+  id              TEXT        PRIMARY KEY,
+  holder_pid      INT         NOT NULL,
+  holder_host     TEXT,
+  acquired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ttl_expires_at  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires_at);
+
+-- Eval capture (v0.25.0). PGLite ignores RLS — see src/schema.sql for the
+-- cross-engine spec.
+CREATE TABLE IF NOT EXISTS eval_candidates (
+  id                    SERIAL PRIMARY KEY,
+  tool_name             TEXT         NOT NULL CHECK (tool_name IN ('query', 'search')),
+  query                 TEXT         NOT NULL CHECK (length(query) <= 51200),
+  retrieved_slugs       TEXT[]       NOT NULL DEFAULT '{}',
+  retrieved_chunk_ids   INTEGER[]    NOT NULL DEFAULT '{}',
+  source_ids            TEXT[]       NOT NULL DEFAULT '{}',
+  expand_enabled        BOOLEAN,
+  detail                TEXT         CHECK (detail IS NULL OR detail IN ('low', 'medium', 'high')),
+  detail_resolved       TEXT         CHECK (detail_resolved IS NULL OR detail_resolved IN ('low', 'medium', 'high')),
+  vector_enabled        BOOLEAN      NOT NULL,
+  expansion_applied     BOOLEAN      NOT NULL,
+  latency_ms            INTEGER      NOT NULL,
+  remote                BOOLEAN      NOT NULL,
+  job_id                INTEGER,
+  subagent_id           INTEGER,
+  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_eval_candidates_created_at ON eval_candidates(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_capture_failures (
+  id      SERIAL       PRIMARY KEY,
+  ts      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  reason  TEXT         NOT NULL CHECK (reason IN ('db_down', 'rls_reject', 'check_violation', 'scrubber_exception', 'other'))
+);
+CREATE INDEX IF NOT EXISTS idx_eval_capture_failures_ts ON eval_capture_failures(ts DESC);
 
 -- ============================================================
 -- Trigger-based search_vector (spans pages + timeline_entries)

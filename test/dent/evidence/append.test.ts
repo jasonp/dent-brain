@@ -116,7 +116,7 @@ describe('append_evidence', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code).toBe('evidence_entity_unknown');
+    expect((thrown as DentOperationError).code as string).toBe('evidence_entity_unknown');
     expect((thrown as DentOperationError).message).toContain('entities/people/nobody');
   });
 
@@ -133,7 +133,7 @@ describe('append_evidence', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code).toBe('evidence_entity_unknown');
+    expect((thrown as DentOperationError).code as string).toBe('evidence_entity_unknown');
     // Known one should NOT appear in the missing list.
     expect((thrown as DentOperationError).message).not.toContain(STEVE);
     expect((thrown as DentOperationError).message).toContain('entities/people/ghost');
@@ -152,7 +152,7 @@ describe('append_evidence', () => {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(DentOperationError);
-    expect((thrown as DentOperationError).code).toBe('auth_invalid');
+    expect((thrown as DentOperationError).code as string).toBe('auth_invalid');
   });
 
   test('rejects empty entity_refs array', async () => {

@@ -13,6 +13,8 @@ import { importFromContent } from './import-file.ts';
 import { hybridSearch } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
+import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from './eval-capture.ts';
+import type { HybridSearchMeta } from './types.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
 import * as db from './db.ts';
 
@@ -24,7 +26,8 @@ export type ErrorCode =
   | 'embedding_failed'
   | 'storage_error'
   | 'bucket_not_found'
-  | 'database_error';
+  | 'database_error'
+  | 'permission_denied';
 
 export class OperationError extends Error {
   constructor(
@@ -120,6 +123,31 @@ export function validatePageSlug(slug: string): void {
 }
 
 /**
+ * Match a slug against a list of allow-list prefix globs.
+ *
+ * Glob form: `<prefix>/*` matches any slug starting with `<prefix>/` and
+ * having at least one more segment (single or multi). Bare `<prefix>` (no
+ * trailing `/*`) matches that exact slug only. The `*` is intentionally
+ * permissive — depth is unbounded, so `wiki/originals/*` matches both
+ * `wiki/originals/idea-x` and `wiki/originals/ideas/2026-04-25-idea-y`.
+ *
+ * Used by the v0.23 dream-cycle trusted-workspace path. Order doesn't
+ * matter; the first match wins (returns true on any match).
+ */
+export function matchesSlugAllowList(slug: string, prefixes: readonly string[]): boolean {
+  for (const p of prefixes) {
+    if (p.endsWith('/*')) {
+      const base = p.slice(0, -2);
+      if (slug === base) continue;
+      if (slug.startsWith(base + '/')) return true;
+    } else if (p === slug) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Allowlist validator for uploaded file basenames. Rejects control chars, backslashes,
  * RTL overrides (\u202E), leading dot (hidden files) and leading dash (CLI flag confusion).
  * Allows extension dots and underscores. Max 255 chars.
@@ -180,6 +208,22 @@ export interface OperationContext {
   jobId?: number;
   subagentId?: number;
   viaSubagent?: boolean;
+  /**
+   * Trusted-workspace allow-list (v0.23 dream cycle). When the cycle's
+   * synthesize/patterns phases dispatch a subagent, they thread an
+   * explicit list of slug-prefix globs (e.g. "wiki/personal/reflections/*")
+   * through this field. put_page enforces it BEFORE the legacy
+   * `wiki/agents/<id>/...` namespace check.
+   *
+   * Trust comes from the SUBMITTER (subagent jobs are gated by
+   * PROTECTED_JOB_NAMES — MCP cannot submit them), not from `remote`.
+   * Every subagent tool call has `remote=true` for auto-link safety,
+   * so basing trust on `remote` is incoherent (would always reject).
+   *
+   * Empty / unset → fall back to the legacy namespace check (existing
+   * v0.15 behavior; pure addition, no regression).
+   */
+  allowedSlugPrefixes?: string[];
   /**
    * Resolved global CLI options (--quiet / --progress-json / --progress-interval).
    * CLI callers populate this from `getCliOptions()`. MCP / library callers
@@ -263,9 +307,23 @@ const put_page: Operation = {
       if (typeof ctx.subagentId !== 'number' || Number.isNaN(ctx.subagentId)) {
         throw new OperationError('permission_denied', 'put_page via subagent requires ctx.subagentId');
       }
-      const prefix = `wiki/agents/${ctx.subagentId}/`;
-      if (!slug.startsWith(prefix) || slug.length === prefix.length) {
-        throw new OperationError('permission_denied', `put_page via subagent must write under '${prefix}...'`);
+      const allowList = ctx.allowedSlugPrefixes;
+      if (allowList && allowList.length > 0) {
+        // Trusted-workspace path: explicit allow-list bounds writes.
+        // Set only by cycle.ts (synthesize/patterns) which submits subagent
+        // jobs under PROTECTED_JOB_NAMES — MCP cannot reach this branch.
+        if (!matchesSlugAllowList(slug, allowList)) {
+          throw new OperationError(
+            'permission_denied',
+            `put_page slug '${slug}' is not within the trusted-workspace allow-list (${allowList.join(', ')})`
+          );
+        }
+      } else {
+        // Legacy default: agent-namespace confinement.
+        const prefix = `wiki/agents/${ctx.subagentId}/`;
+        if (!slug.startsWith(prefix) || slug.length === prefix.length) {
+          throw new OperationError('permission_denied', `put_page via subagent must write under '${prefix}...'`);
+        }
       }
     }
 
@@ -294,7 +352,16 @@ const put_page: Operation = {
       | { skipped: 'remote' }
       | undefined;
     let autoTimeline: { created: number } | { error: string } | { skipped: 'remote' } | undefined;
-    if (ctx.remote === true) {
+    // Trusted-workspace path (v0.23 dream cycle) re-enables auto-link/timeline
+    // even though ctx.remote=true, because the allow-list bounds the slug and
+    // the synthesis prompt is itself the trusted dispatcher. Without this,
+    // the cycle's `extract` phase would have to recompute every edge, and
+    // patterns (which runs after extract) would still see the right graph
+    // but auto_timeline would never fire on synth output.
+    const trustedWorkspace = ctx.viaSubagent === true
+      && Array.isArray(ctx.allowedSlugPrefixes)
+      && ctx.allowedSlugPrefixes.length > 0;
+    if (ctx.remote === true && !trustedWorkspace) {
       autoLinks = { skipped: 'remote' };
       autoTimeline = { skipped: 'remote' };
     } else if (result.parsedPage) {
@@ -562,11 +629,38 @@ const search: Operation = {
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
   },
   handler: async (ctx, p) => {
-    const results = await ctx.engine.searchKeyword(p.query as string, {
+    const startedAt = Date.now();
+    const queryText = p.query as string;
+    const raw = await ctx.engine.searchKeyword(queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
     });
-    return dedupResults(results);
+    const results = dedupResults(raw);
+    const latency_ms = Date.now() - startedAt;
+
+    // Op-layer capture (v0.25.0). Fire-and-forget — no await on the
+    // capture call so MCP response latency is unaffected. search has
+    // no expand/detail/vector semantics so meta fields are fixed.
+    if (isEvalCaptureEnabled(ctx.config)) {
+      void captureEvalCandidate(
+        ctx.engine,
+        {
+          tool_name: 'search',
+          query: queryText,
+          results,
+          meta: { vector_enabled: false, detail_resolved: null, expansion_applied: false },
+          latency_ms,
+          remote: ctx.remote ?? false,
+          expand_enabled: null,
+          detail: null,
+          job_id: ctx.jobId ?? null,
+          subagent_id: ctx.subagentId ?? null,
+        },
+        { scrub_pii: isEvalScrubEnabled(ctx.config) },
+      );
+    }
+
+    return results;
   },
   cliHints: { name: 'search', positional: ['query'] },
 };
@@ -580,17 +674,64 @@ const query: Operation = {
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     expand: { type: 'boolean', description: 'Enable multi-query expansion (default: true)' },
     detail: { type: 'string', description: 'Result detail level: low (compiled truth only), medium (default, all with dedup), high (all chunks)' },
+    // v0.20.0 Cathedral II Layer 10 C1/C2: language + symbol-kind filters.
+    lang: { type: 'string', description: 'Filter to chunks where content_chunks.language matches (e.g., typescript, python, ruby)' },
+    symbol_kind: { type: 'string', description: 'Filter to chunks where content_chunks.symbol_type matches (e.g., function, class, method, type, interface)' },
+    // v0.20.0 Cathedral II Layer 7 (A2) / Layer 10 C3: two-pass structural expansion.
+    near_symbol: { type: 'string', description: 'Anchor retrieval at this qualified symbol name (e.g., BrainEngine.searchKeyword). Enables A2 two-pass.' },
+    walk_depth: { type: 'number', description: 'Structural walk depth 1-2. Default 0 (off). Expands anchors through code_edges with 1/(1+hop) decay.' },
   },
   handler: async (ctx, p) => {
+    const startedAt = Date.now();
     const expand = p.expand !== false;
     const detail = (p.detail as 'low' | 'medium' | 'high') || undefined;
-    return hybridSearch(ctx.engine, p.query as string, {
+    const queryText = p.query as string;
+
+    // v0.25.0 — capture meta side-channel. hybridSearch's return contract
+    // stays SearchResult[] (Cathedral II callers depend on that); meta
+    // arrives via callback so eval capture can record what actually ran.
+    let capturedMeta: HybridSearchMeta | null = null;
+    const results = await hybridSearch(ctx.engine, queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
       expansion: expand,
       expandFn: expand ? expandQuery : undefined,
       detail,
+      language: (p.lang as string) || undefined,
+      symbolKind: (p.symbol_kind as string) || undefined,
+      nearSymbol: (p.near_symbol as string) || undefined,
+      walkDepth: typeof p.walk_depth === 'number' ? (p.walk_depth as number) : undefined,
+      onMeta: (m) => { capturedMeta = m; },
     });
+    const latency_ms = Date.now() - startedAt;
+
+    // Op-layer capture (v0.25.0). Fire-and-forget. meta tells gbrain-evals
+    // what hybridSearch *actually* did so replay can distinguish "with API
+    // key" from "keyword-only fallback" and "expansion fired" from
+    // "expansion requested + silently fell back."
+    if (isEvalCaptureEnabled(ctx.config)) {
+      const meta: HybridSearchMeta = capturedMeta ?? {
+        vector_enabled: false, detail_resolved: detail ?? null, expansion_applied: false,
+      };
+      void captureEvalCandidate(
+        ctx.engine,
+        {
+          tool_name: 'query',
+          query: queryText,
+          results,
+          meta,
+          latency_ms,
+          remote: ctx.remote ?? false,
+          expand_enabled: expand,
+          detail: detail ?? null,
+          job_id: ctx.jobId ?? null,
+          subagent_id: ctx.subagentId ?? null,
+        },
+        { scrub_pii: isEvalScrubEnabled(ctx.config) },
+      );
+    }
+
+    return results;
   },
   cliHints: { name: 'query', positional: ['query'] },
 };
@@ -1289,9 +1430,9 @@ const find_orphans: Operation = {
       description: 'Include auto-generated and pseudo pages (default: false)',
     },
   },
-  handler: async (_ctx, p) => {
+  handler: async (ctx, p) => {
     const { findOrphans } = await import('../commands/orphans.ts');
-    return findOrphans((p.include_pseudo as boolean) || false);
+    return findOrphans(ctx.engine, { includePseudo: (p.include_pseudo as boolean) || false });
   },
   cliHints: { name: 'orphans', hidden: true },
 };

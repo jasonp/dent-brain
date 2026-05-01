@@ -1,5 +1,11 @@
 // Page types
-export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture';
+// email | slack | calendar-event: native Page types for inbox/chat/calendar
+// ingest (and the amara-life-v1 eval corpus in the sibling gbrain-evals repo).
+// Previously these collapsed into `source`, which lost workflow semantics
+// (e.g. "attended meetings" vs "received emails").
+// `code` (v0.19.0): tree-sitter-chunked source files; consumed by code-def /
+// code-refs / code-callers / code-callees + Cathedral II two-pass retrieval.
+export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture' | 'meeting' | 'note' | 'email' | 'slack' | 'calendar-event' | 'code';
 
 export interface Page {
   id: number;
@@ -14,6 +20,8 @@ export interface Page {
   updated_at: Date;
 }
 
+export type PageKind = 'markdown' | 'code';
+
 export interface PageInput {
   type: PageType;
   title: string;
@@ -21,6 +29,13 @@ export interface PageInput {
   timeline?: string;
   frontmatter?: Record<string, unknown>;
   content_hash?: string;
+  /**
+   * v0.19.0: distinguishes markdown vs code pages at the DB level. Defaults
+   * to 'markdown' when omitted so existing callers work unchanged. Set to
+   * 'code' by importCodeFile; drives orphans filter, auto-link bypass, and
+   * `query --lang` filtering.
+   */
+  page_kind?: PageKind;
 }
 
 export interface PageFilters {
@@ -30,6 +45,14 @@ export interface PageFilters {
   offset?: number;
   /** ISO date string (YYYY-MM-DD or full ISO timestamp). Filter to pages updated_at > value. */
   updated_after?: string;
+  /**
+   * Prefix-match filter on slug. Implemented as `WHERE slug LIKE prefix || '%'`
+   * in both engines so it uses the (source_id, slug) UNIQUE constraint's btree
+   * index for efficient range scans on large brains. Used by storage-tiering
+   * commands (gbrain storage status, gbrain export --restore-only) to scope
+   * queries to a tier directory without loading every page into memory.
+   */
+  slugPrefix?: string;
 }
 
 // Chunks
@@ -38,20 +61,63 @@ export interface Chunk {
   page_id: number;
   chunk_index: number;
   chunk_text: string;
-  chunk_source: 'compiled_truth' | 'timeline';
+  chunk_source: 'compiled_truth' | 'timeline' | 'fenced_code';
   embedding: Float32Array | null;
   model: string;
   token_count: number | null;
   embedded_at: Date | null;
+  /** v0.19.0 code metadata (NULL for markdown chunks). */
+  language?: string | null;
+  symbol_name?: string | null;
+  symbol_type?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  /** v0.20.0 Cathedral II (NULL for markdown chunks). */
+  parent_symbol_path?: string[] | null;
+  doc_comment?: string | null;
+  symbol_name_qualified?: string | null;
+}
+
+/**
+ * Lightweight row shape returned by `BrainEngine.listStaleChunks()`.
+ * Excludes the `embedding` column on purpose — only chunks needing
+ * an embedding come back, and we don't ship the (always-null on stale
+ * rows) embedding bytes over the wire. See `embed --stale` egress fix.
+ */
+export interface StaleChunkRow {
+  slug: string;
+  chunk_index: number;
+  chunk_text: string;
+  chunk_source: 'compiled_truth' | 'timeline';
+  model: string | null;
+  token_count: number | null;
 }
 
 export interface ChunkInput {
   chunk_index: number;
   chunk_text: string;
-  chunk_source: 'compiled_truth' | 'timeline';
+  chunk_source: 'compiled_truth' | 'timeline' | 'fenced_code';
   embedding?: Float32Array;
   model?: string;
   token_count?: number;
+  /**
+   * v0.19.0: optional code-chunk metadata. Populated by importCodeFile from
+   * the tree-sitter AST; NULL for markdown chunks. Drives `query --lang`,
+   * `code-def`, `code-refs`, and the new searchCodeChunks engine method.
+   */
+  language?: string;
+  symbol_name?: string;
+  symbol_type?: string;
+  start_line?: number;
+  end_line?: number;
+  /**
+   * v0.20.0 Cathedral II: qualified symbol identity + parent scope +
+   * doc-comment. All populated by importCodeFile from the AST (Layer 5/6);
+   * NULL for markdown chunks unless D2 fence extraction populated them.
+   */
+  parent_symbol_path?: string[];
+  doc_comment?: string;
+  symbol_name_qualified?: string;
 }
 
 // Search
@@ -66,6 +132,12 @@ export interface SearchResult {
   chunk_index: number;
   score: number;
   stale: boolean;
+  /**
+   * v0.18.0: the sources.id the page belongs to. Dedup composite-keys
+   * on (source_id, slug) — see src/core/search/dedup.ts. Defaults to
+   * 'default' for pre-v0.17 rows that lacked the column.
+   */
+  source_id?: string;
 }
 
 export interface SearchOpts {
@@ -73,7 +145,84 @@ export interface SearchOpts {
   offset?: number;
   type?: PageType;
   exclude_slugs?: string[];
+  /**
+   * Slug-prefix excludes — additive over DEFAULT_HARD_EXCLUDES (test/, archive/,
+   * attachments/, .raw/) and the GBRAIN_SEARCH_EXCLUDE env var. Stacks with
+   * `exclude_slugs` (exact match) — a row is filtered if it matches either set.
+   */
+  exclude_slug_prefixes?: string[];
+  /**
+   * Opt-back-in list — subtracts entries from the resolved hard-exclude set.
+   * E.g. `include_slug_prefixes: ['test/']` lets a query see test/ pages even
+   * though they're hard-excluded by default.
+   */
+  include_slug_prefixes?: string[];
   detail?: 'low' | 'medium' | 'high';
+  /**
+   * v0.20.0 Cathedral II: filter by content_chunks.language (e.g., 'typescript',
+   * 'python', 'ruby'). Used by `gbrain query --lang <lang>`. NULL/undefined
+   * returns all languages.
+   */
+  language?: string;
+  /**
+   * v0.20.0 Cathedral II: filter by content_chunks.symbol_type (e.g., 'function',
+   * 'class', 'method', 'type', 'interface'). Used by `gbrain query --symbol-kind`.
+   */
+  symbolKind?: string;
+  /**
+   * v0.20.0 Cathedral II: anchor the two-pass retrieval at a specific qualified
+   * symbol name. Pairs with walkDepth. Used by `gbrain query --near-symbol`.
+   */
+  nearSymbol?: string;
+  /**
+   * v0.20.0 Cathedral II: structural walk depth for two-pass retrieval. 0 = off
+   * (default), 1 or 2 = expand that many hops through code_edges_chunk. Capped
+   * at 2 in A2. When walkDepth > 0, dedup's per-page cap lifts to
+   * min(10, walkDepth * 5).
+   */
+  walkDepth?: number;
+  /**
+   * v0.20.0 Cathedral II: scope search to a specific source. When set,
+   * results are filtered by pages.source_id. Use '__all__' or leave
+   * undefined to search all sources.
+   */
+  sourceId?: string;
+}
+
+/**
+ * v0.20.0 Cathedral II: input for addCodeEdges. One row per edge.
+ * from_chunk_id is always known (we're extracting edges from a freshly
+ * imported chunk). to_chunk_id may be null (target symbol not yet
+ * resolved — row lands in code_edges_symbol instead of code_edges_chunk).
+ */
+export interface CodeEdgeInput {
+  from_chunk_id: number;
+  /** Resolved target chunk ID. Undefined/null → row lands in code_edges_symbol. */
+  to_chunk_id?: number | null;
+  from_symbol_qualified: string;
+  to_symbol_qualified: string;
+  /** 'calls' | 'imports' | 'extends' | 'implements' | 'mixes_in' | 'type_refs' | 'declares'. */
+  edge_type: string;
+  edge_metadata?: Record<string, unknown>;
+  source_id?: string | null;
+}
+
+/**
+ * v0.20.0 Cathedral II: result row from code edge queries (getCallersOf,
+ * getCalleesOf, getEdgesByChunk). `resolved=true` means the row came from
+ * code_edges_chunk (to_chunk_id is a known chunk); `resolved=false` means
+ * code_edges_symbol (to_chunk_id is null).
+ */
+export interface CodeEdgeResult {
+  id: number;
+  from_chunk_id: number;
+  to_chunk_id: number | null;
+  from_symbol_qualified: string;
+  to_symbol_qualified: string;
+  edge_type: string;
+  edge_metadata: Record<string, unknown>;
+  source_id: string | null;
+  resolved: boolean;
 }
 
 // Links
@@ -238,6 +387,69 @@ export interface IngestLogInput {
   source_ref: string;
   pages_updated: string[];
   summary: string;
+}
+
+// Eval capture (v0.25.0)
+// Real MCP/CLI/subagent query+search calls are captured into eval_candidates
+// so gbrain-evals can replay them as BrainBench-Real. The companion
+// eval_capture_failures table records insert failures so gbrain doctor can
+// surface silent capture drops cross-process.
+export interface EvalCandidateInput {
+  tool_name: 'query' | 'search';
+  /** Already PII-scrubbed by captureEvalCandidate before this point. */
+  query: string;
+  retrieved_slugs: string[];
+  retrieved_chunk_ids: number[];
+  source_ids: string[];
+  /** Whether multi-query Haiku expansion was enabled on the call. Null for 'search'. */
+  expand_enabled: boolean | null;
+  /** The detail level the call requested (pre-auto-detect). */
+  detail: 'low' | 'medium' | 'high' | null;
+  /** What hybridSearch actually ran (post-auto-detect). Null for 'search'. */
+  detail_resolved: 'low' | 'medium' | 'high' | null;
+  /** True when vector search actually ran (false when OPENAI_API_KEY missing or embed failed). */
+  vector_enabled: boolean;
+  /** True when Haiku expansion actually fired. */
+  expansion_applied: boolean;
+  latency_ms: number;
+  /** ctx.remote: true for MCP callers (untrusted), false for local CLI. */
+  remote: boolean;
+  job_id: number | null;
+  subagent_id: number | null;
+}
+
+export interface EvalCandidate extends EvalCandidateInput {
+  id: number;
+  created_at: Date;
+}
+
+export type EvalCaptureFailureReason =
+  | 'db_down'
+  | 'rls_reject'
+  | 'check_violation'
+  | 'scrubber_exception'
+  | 'other';
+
+export interface EvalCaptureFailure {
+  id: number;
+  ts: Date;
+  reason: EvalCaptureFailureReason;
+}
+
+/**
+ * Side-channel metadata that hybridSearch reports about what actually ran.
+ * Surfaced via the optional `onMeta` callback in HybridSearchOpts so
+ * existing SearchResult[] consumers (Cathedral II, gbrain-evals, etc.)
+ * stay unchanged. Used by op-layer eval capture to distinguish
+ * "keyword-only fallback" from "full hybrid with expansion."
+ */
+export interface HybridSearchMeta {
+  /** True iff vector search actually ran. False when OPENAI_API_KEY missing or embed failed. */
+  vector_enabled: boolean;
+  /** Post-auto-detect detail level. */
+  detail_resolved: 'low' | 'medium' | 'high' | null;
+  /** True iff multi-query expansion (Haiku) actually fired and produced variants. */
+  expansion_applied: boolean;
 }
 
 // Config
