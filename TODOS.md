@@ -557,23 +557,10 @@ keeping both skills' triggers intact for chaining.
 
 ## dent-brain (PLAN v2.0 follow-ups)
 
-### Phase 2: drop evidence table + retarget skills
-**Priority:** P1
+### ~~Phase 2: drop evidence table + retarget skills~~
+**Completed:** v0.27.0 (2026-05-02)
 
-**What:** Per PLAN_v2_MARKDOWN_CANONICAL.md Phase 2:
-1. Dent migration v3: `DROP TABLE evidence` + clean up dent_version 1/2 schema bits.
-2. Delete `src/dent/operations/evidence.ts`, evidence MCP ops, `test/dent/evidence/*`, dent-migrate v1+v2 blocks.
-3. Wipe orphaned Postgres pages (Steve's stub from 2026-05-02 + any other fake-data).
-4. Rewrite `/dent-append-evidence` skill to call `markdown_append_to_page` instead.
-5. Retarget `/dent-enrich` to call `markdown_replace_page` with `expected_prior_hash` for the merge-on-rerun path.
-6. Retarget `/dent-resolve-entity` to write stub pages via `markdown_replace_page`.
-7. Update skill contract tests — assert no skill prose mandates `## Recent Observations` / `## State` / similar mandated sections; only `## Timeline` is allowed (gbrain-native).
-
-**Why:** Phase 1 (v0.26.0) shipped the substrate but the skills still call the old Postgres-only ops. Until Phase 2 lands, agent writes still go to Postgres, not markdown.
-
-**Gate:** repeat the 2026-05-02 manual test — Cowork session writes about Steve, observe the change in `dent-brain-data` git within 60s.
-
-**Found:** 2026-05-02 alongside the v2.0 pivot.
+Migration v3 drops the `evidence` table on Railway boot via the existing schema-drift auto-migrate path. The four evidence MCP ops + their tests are deleted (~580 LOC). Three skills retargeted (v2.0): `/dent-append-evidence` writes observation bullets through `markdown_append_to_page`, `/dent-enrich` writes synthesis through `markdown_replace_page` with `expected_prior_hash` optimistic concurrency, `/dent-resolve-entity` writes new stub pages through `markdown_replace_page`. Mandated dent-specific section scaffolds (`## State`, `## Trajectory`, etc.) removed from skill prose; pages are unstructured by default per v2.0 principle 2. `## Timeline` is the one structurally-meaningful heading (gbrain-native). 13 new contract-test assertions guard the retargeting. Orphan-page cleanup ran clean against prod (no orphans found — first sync after v0.26.0 reconciled state). Manual gate test still pending: Cowork session writes about Steve, observe in `dent-brain-data` git within 60s.
 
 ### Phase 3: teammate hand-edit clone path
 **Priority:** P3

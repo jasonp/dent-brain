@@ -1,11 +1,12 @@
 ---
 name: resolve-entity
-version: 1.0.0
+version: 2.0.0
 description: |
   Disambiguate a name that resolves to 2+ FileMaker People records with
   identical Full_Name. Show the candidates, let the user pick, write the
-  chosen filemaker_record_id into a new entity page. Invoked by
-  /dent-append-evidence when the A5 escalation rule fires.
+  chosen filemaker_record_id into a new entity markdown page via
+  `markdown_replace_page`. Invoked by /dent-append-evidence when the A5
+  escalation rule fires.
 triggers:
   - "dent-resolve-entity"
   - "resolve this entity"
@@ -14,7 +15,7 @@ triggers:
 tools:
   - fm_find_records
   - fm_get_record
-  - put_page
+  - markdown_replace_page
   - get_page
   - search
 mutating: true
@@ -28,12 +29,19 @@ writes_to:
 
 Disambiguation flow for the A5 "2+ FM matches" case. The user just
 mentioned a name (say, "Mike") and FM has more than one People record
-with that `Full_Name`. The skill asks the user which one, then creates
-the entity page wired to the chosen `PK_People_ID`.
+with that `Full_Name`. The skill asks the user which one, then writes
+a new entity page in `dent-brain-data` wired to the chosen
+`PK_People_ID`.
 
 > **Invoked by:** `/dent-append-evidence` step 2, when `fm_find_records`
 > returns 2+ rows. Can also be run standalone by the admin to clean up
 > ambiguous entities.
+
+> **Storage model (PLAN v2.0, since v0.27.0):** entity pages are
+> markdown files in `dent-brain-data` git, written through
+> `markdown_replace_page` (because brand-new pages have no prior
+> content to merge against — straight write, no hash check). Postgres
+> is the rebuildable retrieval index.
 
 ---
 
@@ -93,16 +101,35 @@ observation: '<context>'. Which Mike?"
 
 ### Step 3. Apply the user's choice
 
-- **User picks 1–N (an FM candidate):** `put_page` a new entity page at
-  the appropriate slug (e.g. `entities/people/mike-cottmeyer` — derive
-  from name; use kebab-case). Frontmatter must include
-  `filemaker_record_id: <PK_People_ID>`. Body is a minimal stub — let
-  the next `/dent-enrich` run flesh it out from FM + evidence.
-- **User picks N+1 (none of these):** `put_page` a new entity page with
-  no `filemaker_record_id`. Add a note in the body that FM had matching
-  Full_Name records but none corresponded.
+- **User picks 1–N (an FM candidate):** call `markdown_replace_page` to
+  write a new entity page at the appropriate slug (e.g.
+  `entities/people/mike-cottmeyer` — derive from name; use kebab-case).
+  The `content` is a minimal markdown stub:
+  ```markdown
+  ---
+  title: Mike Cottmeyer
+  type: person
+  filemaker_record_id: 12345
+  updated: 2026-04-22
+  ---
+
+  # Mike Cottmeyer
+
+  Stub created by /dent-resolve-entity. Run /dent-enrich to flesh out
+  from FM + observations.
+  ```
+  Omit `expected_prior_hash` — this is a brand-new page, no prior
+  content to conflict with. The page is unstructured by design; the
+  next `/dent-enrich` run synthesizes a fuller body when there's
+  signal.
+
+- **User picks N+1 (none of these):** call `markdown_replace_page` with
+  the same stub shape but **no** `filemaker_record_id`. Add a one-line
+  body note: "FM had matching Full_Name records but none corresponded
+  to this person."
+
 - **User picks N+2 (skip):** Return null. The calling skill drops the
-  name from `entity_refs`.
+  name from its write list.
 
 ### Step 4. Confirm and return
 
@@ -110,23 +137,30 @@ Tell the user what landed:
 
 - New entity slug
 - Whether it's FM-linked (and the PK_People_ID if so)
+- The `commit_sha` returned by `markdown_replace_page`
 - The path forward ("/dent-enrich on this slug to fill out the page")
 
-Return the slug to the caller (`/dent-append-evidence` resumes its write
-flow with this slug added to `entity_refs`).
+Return the slug to the caller (`/dent-append-evidence` resumes its
+write flow with this slug added to its target list).
 
 ---
 
 ## Edge cases
 
-- **Slug collision:** if the natural slug already exists in the brain,
-  append a disambiguator (e.g. `mike-cottmeyer-2`) and tell the user. Do
-  NOT overwrite an existing entity page.
+- **Slug collision:** before calling `markdown_replace_page`, call
+  `get_page(slug)` to check whether the natural slug already exists in
+  the brain. If yes, append a disambiguator (e.g. `mike-cottmeyer-2`)
+  and tell the user. Do NOT overwrite an existing entity page —
+  `markdown_replace_page` without an `expected_prior_hash` will
+  clobber, which is wrong here.
 - **All candidates are dead leads:** if the user picks "none of these"
   but doesn't want a new entity either, drop everything and return null.
 - **FM unreachable:** if `fm_find_records` fails, surface the error and
-  abort. The caller should drop the name from this evidence write and
-  surface the failure to the user.
+  abort. The caller should drop the name from this write and surface
+  the failure to the user.
+- **`markdown_replace_page` returns `busy` or `rate_limited`:** retry
+  once after a short delay. Past that, surface the error — do not
+  silently lose the new entity write.
 
 ---
 
@@ -141,6 +175,10 @@ flow with this slug added to `entity_refs`).
 - **Do not call `/dent-enrich`** automatically after creating the entity
   page. The user is in the middle of `/dent-append-evidence`; let that
   finish, run enrich later when ready.
+- **Do not write to Postgres directly.** No `put_page` calls. Markdown
+  is canonical; new entity pages flow through
+  `markdown_replace_page` so the page lands as a real commit in
+  `dent-brain-data` git.
 
 ---
 
@@ -149,7 +187,8 @@ flow with this slug added to `entity_refs`).
 - `fm_find_records` — re-fetch FM People candidates
 - `fm_get_record` — pull a single record's fields if the layout's list
   view drops anything
-- `put_page` — write the new entity page with the chosen FM linkage
-- `get_page` — check for slug collisions
+- `markdown_replace_page` — write the new entity page with the chosen FM
+  linkage
+- `get_page` — check for slug collisions before writing
 - `search` — fuzzy slug resolution if a similar entity might already
   exist

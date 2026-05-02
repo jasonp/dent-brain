@@ -1,12 +1,14 @@
 ---
 name: append-evidence
-version: 1.0.0
+version: 2.0.0
 description: |
-  Capture an observation as a Dent Brain evidence record. Detects which
-  entities the observation is about, links new people to FileMaker via
-  the FM MCP, writes the evidence row, and adds a timeline entry per
-  entity. The conversational entry point to the typed `append_evidence`
-  primitive.
+  Capture an observation as a bulleted item in the relevant entity
+  markdown page(s). Detects which entities the observation is about,
+  links new people to FileMaker via the FM MCP, appends the
+  observation under `## Timeline` (when date-anchored) or wherever
+  fits the page's existing structure, and lets gbrain's post-hooks
+  derive timeline_entries + links automatically. The conversational
+  entry point to the typed `markdown_append_to_page` primitive.
 triggers:
   - "dent-append-evidence"
   - "log this"
@@ -16,10 +18,9 @@ triggers:
   - "note that"
 tools:
   - detect_entities
-  - append_evidence
-  - add_timeline_entry
+  - markdown_append_to_page
+  - markdown_replace_page
   - get_page
-  - put_page
   - search
   - query
   - fm_find_records
@@ -34,14 +35,23 @@ writes_to:
 
 # /dent-append-evidence
 
-Capture a free-form observation, link it to the right entities, write it
-to the evidence log. The user-facing handle for the `append_evidence`
-MCP primitive. Most volume in Dent Brain comes from ingest pipelines and
-`/dent-enrich` re-syntheses; this skill is for the conversational
-in-the-moment "remember this" capture.
+Capture a free-form observation, link it to the right entities, append
+it to those entities' markdown pages in `dent-brain-data`. The
+user-facing handle for the `markdown_append_to_page` MCP primitive.
+Most volume in Dent Brain comes from ingest pipelines and `/dent-enrich`
+re-syntheses; this skill is for the conversational in-the-moment
+"remember this" capture.
 
 > **Read first:** `skills/_brain-filing-rules.md` (entity slug shape) and
 > `skills/conventions/quality.md` (citation rules).
+
+> **Storage model (PLAN v2.0, since v0.27.0):** observations are bullets
+> in the entity's markdown page itself, NOT rows in a separate evidence
+> table. Date-anchored observations go under `## Timeline` (gbrain's
+> native convention; the auto-extraction post-hook surfaces them in
+> `timeline_entries` for chronological queries). Non-date-anchored
+> observations go wherever the LLM judges fits the page's existing
+> structure.
 
 ---
 
@@ -51,8 +61,9 @@ The user invokes the skill with a natural-language observation:
 
 > "Remember that Mike Cottmeyer said he's transitioning out of LeadingAgile during our 2026-04-22 1:1."
 
-The skill's job: turn that into one or more evidence rows attributed to
-the right entities, with the right `source_type` / `source_ref` / dates.
+The skill's job: turn that into one or more bullets appended to the
+right entity pages, attributed in-line, with the right date when one is
+present.
 
 ---
 
@@ -79,8 +90,8 @@ Call `detect_entities(text=<the observation>)`. Returns:
 }
 ```
 
-`matches` are confirmed brain entities — go straight into `entity_refs`
-on the evidence write. `unknowns` are name-like strings the brain hasn't
+`matches` are confirmed brain entities — collect their slugs for the
+write loop in step 4. `unknowns` are name-like strings the brain hasn't
 seen — these need the FM-lookup tier next.
 
 ### Step 2. FM lookup for unknowns (A5 escalation)
@@ -92,9 +103,9 @@ exactly:
 
 | FM result | Action |
 |---|---|
-| **0 matches** | Ask the user: "I don't recognize '<name>' — create a stub entity for them?" If yes, `put_page` a stub person/company page with minimal frontmatter (title, type, today's date) and add the slug to `entity_refs`. If no, drop the name from this evidence write. |
-| **1 match** | Auto-link. `put_page` a new entity page with `filemaker_record_id: <PK_People_ID>` in frontmatter, then add the slug to `entity_refs`. |
-| **2+ matches** | Cannot resolve mechanically. Invoke `/dent-resolve-entity` with the candidate list. After the user picks one, that skill writes the entity page; resume here and add the slug to `entity_refs`. |
+| **0 matches** | Ask the user: "I don't recognize '<name>' — create a stub entity for them?" If yes, write a stub entity page via `markdown_replace_page` with minimal frontmatter (title, type, today's date) and add the slug to the write list. If no, drop the name. |
+| **1 match** | Auto-link. Write a new entity page via `markdown_replace_page` with `filemaker_record_id: <PK_People_ID>` in frontmatter, then add the slug to the write list. |
+| **2+ matches** | Cannot resolve mechanically. Invoke `/dent-resolve-entity` with the candidate list. After the user picks one, that skill writes the entity page through `markdown_replace_page`; resume here and add the slug to the write list. |
 
 **Email disambiguation shortcut:** if the observation includes an email
 address (e.g. "from mike@leadingagile.com"), use it to disambiguate the
@@ -103,63 +114,106 @@ keys — match against any email field on the FM record.
 
 ### Step 3. Source attribution
 
-Infer `source_type` and `source_ref` from the user's phrasing. Defaults
-when ambiguous:
+Infer the source the observation came from. Defaults when ambiguous:
 
-- **`source_type`:** "observation" (manual capture from a Cowork session)
-- **`source_ref`:** the date in the user's message, or today's date as
-  ISO-8601 — never null when avoidable
+- **observation** (manual capture from a Cowork session)
+- **today's date** in ISO-8601 if the user didn't specify one
 
 If the user said "from our 1:1 yesterday" or "from yesterday's meeting,"
-prefer `source_type: "meeting"` and `source_ref` matching that meeting's
-existing slug if it's in the brain (search for it first), else a date
-string like `meetings/2026-04-22`.
+prefer a meeting reference and use the meeting's existing slug if it's
+in the brain (search for it first), else a date string like
+`meetings/2026-04-22`.
 
-If the user pasted from an email, prefer `source_type: "email"` and use
-the message-id or thread URL if available.
+If the user pasted from an email, use the message-id or thread URL if
+available.
 
-### Step 4. Write the evidence row
+The source is rendered in-line in the bullet via `[Source: …]`. See
+step 4.
 
-Call `append_evidence` with:
+### Step 4. Append to each entity page
 
-- `content`: the observation text, cleaned but minimally edited. Preserve
-  the user's voice. Strip "remember that" / "log this" framing.
-- `entity_refs`: every confirmed match slug from steps 1–2.
-- `source_type` and `source_ref` from step 3.
-- `observed_at`: ISO-8601 timestamp. If the user said "yesterday at 3pm,"
-  resolve relative to today.
-- `metadata`: `{ captured_via: "dent-append-evidence" }` — useful for
-  later filtering of conversation-captured evidence vs ingest-pipeline
-  evidence.
+For each confirmed entity slug from steps 1–2:
 
-If `append_evidence` returns the same content_hash as a prior write,
-note that to the user ("I already have that observation — same content
-+ entities + source"). Don't re-write.
+1. **Compose the bullet.** Two shapes:
+   - **Date-anchored** (the canonical case — the observation has a date):
+     ```
+     - **YYYY-MM-DD** | <one-sentence summary> [Source: <source>]
+     ```
+     Example:
+     ```
+     - **2026-04-22** | Mike said he's transitioning out of LeadingAgile [Source: meetings/2026-04-22]
+     ```
+     The `**YYYY-MM-DD** | …` shape is the gbrain-native pattern that
+     `parseTimelineEntries` recognizes — get this format right and
+     gbrain's post-hook auto-populates `timeline_entries` for free.
+   - **Non-date-anchored** (rare — opinions, standing facts):
+     ```
+     - <observation> [Source: <source>]
+     ```
 
-### Step 5. Timeline entries
+2. **Pick the section.** If the bullet is date-anchored, target
+   `## Timeline`. The `markdown_append_to_page` op will create the
+   section at EOF if the page doesn't have one. If the bullet is
+   non-date-anchored and the existing page has a section that fits
+   ("Notes", "Standing facts", whatever the page already uses), pass
+   that. Otherwise omit `section` to append at EOF.
 
-For each entity slug in `entity_refs`, call `add_timeline_entry`:
+   **Do not invent new mandated section names.** `## Timeline` is the
+   only structurally-meaningful heading in the brain. Other sections
+   exist when the page's author added them; conform to what's there.
 
-- `slug`: the entity's page slug
-- `date`: the `observed_at` date in `YYYY-MM-DD` form
-- `summary`: a one-sentence summary of the observation, third person
-  ("Mike said he's transitioning out of LeadingAgile" → "Mike said he's
-  transitioning out of LeadingAgile")
-- `detail`: leave empty for short observations; include the full content
-  for longer ones
-- `source`: matches the evidence row's `source_type:source_ref`
+3. **Call the op:**
+   ```
+   markdown_append_to_page({
+     slug: <entity slug>,
+     section: "## Timeline" | <existing section> | omit,
+     content: <the bullet>,
+     commit_note: "/dent-append-evidence: " + <one-line user prompt>
+   })
+   ```
 
-This is the part the agent does on every evidence write so the timeline
-keeps growing even when `/dent-enrich` hasn't been re-run.
+4. **Handle results:**
+   - `status: "ok"` — record the `commit_sha` for the user-facing summary.
+   - `status: "busy"` — another writer is in flight; retry once after
+     a short delay, then surface to the user.
+   - `error: "rate_limited"` — slow down. Tell the user the rate cap
+     was hit and ask whether to drop or retry.
+   - any other error — surface verbatim. Do not silently lose the
+     observation.
+
+The `markdown_append_to_page` op handles the lock + git pull/commit/push
++ Postgres re-index internally. The skill does not call `add_link` or
+`add_timeline_entry` — gbrain's post-hooks fire when `performSync`
+re-imports the page after the commit, so links and timeline entries are
+derived state.
+
+### Step 5. Idempotency
+
+Two protections, none of them via a content_hash table:
+
+1. The git layer dedups identical bullets by content. If the user runs
+   `/dent-append-evidence` twice with the same observation, the second
+   commit is a no-op (the bullet text is unchanged) and
+   `markdown_append_to_page` short-circuits with the existing HEAD as
+   `commit_sha`.
+2. `add` produces no staged change if the file is byte-identical, so
+   the second call returns `status: "ok"` without a real commit. Tell
+   the user "I already have that observation."
+
+If the user is intentionally appending the same bullet a second time
+(e.g., to a different entity), proceed — the bullet lands on the second
+entity's page, and that's a real new commit.
 
 ### Step 6. Confirm with the user
 
 Surface a one-paragraph summary:
 
-- The evidence id and the entity slugs it landed on
-- If any new stub entities were created, name them
-- If any unknowns were dropped, name them
-- If the FM lookup escalated to `/dent-resolve-entity`, link to that
+- The entity slugs the bullet landed on, with the `commit_sha` for each.
+- If any new stub entities were created, name them.
+- If any unknowns were dropped, name them.
+- If the FM lookup escalated to `/dent-resolve-entity`, link to that.
+- If two-way push retries fired (`rebased: true` in the result), mention
+  it once — useful signal that someone else is also writing concurrently.
 
 If anything looks off (wrong entity match, wrong date inference), the
 user can correct before the next write.
@@ -168,17 +222,21 @@ user can correct before the next write.
 
 ## Anti-patterns
 
-- **Do not write evidence with zero `entity_refs`.** The op rejects this
-  and so does common sense — orphan evidence is unfindable. If detection
-  + FM lookup yield no entities, ask the user to clarify who/what before
-  writing.
+- **Do not append to zero entities.** If detection + FM lookup yield no
+  entities, ask the user to clarify who/what before writing. Orphan
+  bullets in random pages are unfindable.
 - **Do not silently create stubs.** Always confirm with the user before
-  `put_page`-ing a new entity. Typo-driven stubs are how brains rot.
-- **Do not embellish.** The evidence row should be the user's
-  observation, not your interpretation. Save interpretation for
-  `/dent-enrich` synthesis.
-- **Do not skip timeline entries.** The timeline is what makes the
-  entity page legible at a glance — every evidence write adds to it.
+  writing a new entity page. Typo-driven stubs are how brains rot.
+- **Do not embellish.** The bullet should be the user's observation,
+  not your interpretation. Save interpretation for `/dent-enrich`
+  synthesis.
+- **Do not invent mandated section names.** Do NOT create
+  `## Recent Observations`, `## State`, `## Notes from agent`, or any
+  other dent-specific scaffold. The page's existing structure is
+  authoritative; if the page has no relevant section, append at EOF.
+  `## Timeline` is the one exception (gbrain-native).
+- **Do not write to Postgres directly.** No `put_page` calls. Markdown
+  is canonical; Postgres is the rebuildable index.
 
 ---
 
@@ -186,8 +244,8 @@ user can correct before the next write.
 
 - `detect_entities` — tier-1 mechanical detection (server-side)
 - `fm_find_records` / `fm_get_record` — tier-2 FM lookup (per-user FM MCP)
-- `append_evidence` — the typed write primitive
-- `add_timeline_entry` — per-entity timeline append
-- `put_page` — create stub entity pages when the user agrees
+- `markdown_append_to_page` — the canonical write primitive
+- `markdown_replace_page` — used only by step 2 when creating a brand-new
+  stub entity page (no prior content to merge against)
 - `search` / `query` — resolve ambiguous meeting/source references
 - `get_page` — verify entity pages exist before write

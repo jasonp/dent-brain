@@ -24,8 +24,7 @@ updated: 2026-05-01
 
 # Steve Broback
 
-## State
-- Founder, Dent The Future [Source: FM People #12345]
+Founder, Dent The Future [Source: FM People #12345]
 `;
 
 const PAGE_NO_FM = `---
@@ -36,8 +35,7 @@ updated: 2026-05-01
 
 # Random Person
 
-## State
-- Met at a meetup once.
+Met at a meetup once.
 `;
 
 const PAGE_FM_QUOTED = `---
@@ -141,7 +139,7 @@ describe('splitPage', () => {
     const { frontmatter, body } = splitPage(PAGE_WITH_FM);
     expect(frontmatter).toContain('filemaker_record_id: 12345');
     expect(body).toContain('# Steve Broback');
-    expect(body).toContain('## State');
+    expect(body).toContain('Founder, Dent The Future');
     expect(body).not.toContain('---'); // fences stripped
   });
 
