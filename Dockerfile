@@ -17,6 +17,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# PLAN v2.0 Phase 1: serve.ts boots a clone of dent-brain-data via
+# git+SSH using the deploy key in DENT_BRAIN_DATA_DEPLOY_KEY. The bun
+# alpine base ships neither tool. ca-certificates is required so SSH
+# verifies github.com on first contact (StrictHostKeyChecking=accept-new).
+RUN apk add --no-cache git openssh-client ca-certificates
+
 # Copy installed deps
 COPY --from=deps /app/node_modules ./node_modules
 
