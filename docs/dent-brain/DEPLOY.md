@@ -93,8 +93,66 @@ In the project's **Variables** tab, add:
 | `DATABASE_URL` | `postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres` |
 | `NODE_ENV` | `production` |
 | `PORT` | Railway sets this automatically — **do not set manually** |
+| `DENT_BRAIN_DATA_DEPLOY_KEY` | PEM-formatted SSH private key with write access to `dentthefuture/dent-brain-data` (PLAN v2.0 Phase 1). See §2.3.1 below. |
+| `DENT_BRAIN_DATA_REPO_URL` | (optional) Override clone URL. Default: `git@github.com:dentthefuture/dent-brain-data.git`. |
+| `DENT_BRAIN_DATA_PATH` | (optional) Override clone path. Default: `/app/dent-brain-data`. Set to `/tmp/dent-brain-data` for ephemeral storage. |
+| `DENT_BRAIN_GIT_NAME` | (optional) git commit author name. Default: `dent-brain-server`. |
+| `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@dentthefuture.com`. |
 
 The server reads `PORT` from env and binds to whatever Railway provides.
+
+When `DENT_BRAIN_DATA_DEPLOY_KEY` is unset, the server still boots but logs
+`DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable`
+and the new `markdown_append_to_page` / `markdown_replace_page` ops fail when
+called. All other ops (read, query, evidence, entity-detection) work normally.
+
+### 2.3.1 GitHub deploy key for the dent-brain-data clone
+
+PLAN v2.0 (markdown-canonical) writes through the markdown repo, so the Railway
+server needs an SSH key with **write** access to `dentthefuture/dent-brain-data`.
+Use a per-deployment ed25519 key, scoped to that single repo — smaller blast
+radius than a personal access token.
+
+**One-time setup:**
+
+1. Generate a fresh ed25519 keypair locally (no passphrase — Railway can't
+   prompt for one at runtime):
+   ```bash
+   ssh-keygen -t ed25519 -f /tmp/dent-brain-data-key -N '' -C 'dent-brain-server@railway'
+   ```
+2. **GitHub side.** In `dentthefuture/dent-brain-data` → **Settings** →
+   **Deploy keys** → **Add deploy key**:
+   - Title: `dent-brain-server (railway)`
+   - Key: contents of `/tmp/dent-brain-data-key.pub`
+   - **✅ Allow write access** — required; the server pushes commits.
+3. **Railway side.** In the dent-brain service → **Variables** → add a new
+   variable:
+   - Name: `DENT_BRAIN_DATA_DEPLOY_KEY`
+   - Value: paste the contents of `/tmp/dent-brain-data-key` (the PRIVATE key,
+     including the `-----BEGIN OPENSSH PRIVATE KEY-----` / `-----END ...` lines).
+     Railway accepts multi-line values — preserve newlines.
+4. **Cleanup:** delete `/tmp/dent-brain-data-key` and `/tmp/dent-brain-data-key.pub`
+   after both sides are configured. The private key now lives only in Railway's
+   secret store and on the running container at `/tmp/dent-brain-data-deploy-key`
+   (0600, written by `ensureDataRepo` at boot from the env var).
+
+**On boot the server will:**
+- Materialize the key to `/tmp/dent-brain-data-deploy-key` (0600).
+- Set `GIT_SSH_COMMAND` for child git processes.
+- Clone `dent-brain-data` to `DENT_BRAIN_DATA_PATH` (or `git pull --ff-only` if
+  the path already exists across deploys).
+- Configure local git identity for commits the server makes.
+- Upsert a `sources` row (`id='dent'`) so `gbrain sync --source dent` works.
+
+Look for these lines in the Railway deploy logs to confirm:
+```
+[dent-brain] cloning git@github.com:dentthefuture/dent-brain-data.git → /app/dent-brain-data
+[dent-brain] data repo ready: /app/dent-brain-data @ <sha> (source=dent)
+```
+
+**Rotating the key:** generate a new keypair, swap the GitHub deploy key, then
+update the Railway env var. Railway redeploys on env var change. There is no
+"refresh in place" — the env var is read once at boot.
 
 ### 2.4 Generate a public domain
 

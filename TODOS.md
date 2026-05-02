@@ -555,6 +555,61 @@ keeping both skills' triggers intact for chaining.
 
 **Found:** 2026-04-24 during v0.19.0 production-readiness review.
 
+## dent-brain (PLAN v2.0 follow-ups)
+
+### Phase 2: drop evidence table + retarget skills
+**Priority:** P1
+
+**What:** Per PLAN_v2_MARKDOWN_CANONICAL.md Phase 2:
+1. Dent migration v3: `DROP TABLE evidence` + clean up dent_version 1/2 schema bits.
+2. Delete `src/dent/operations/evidence.ts`, evidence MCP ops, `test/dent/evidence/*`, dent-migrate v1+v2 blocks.
+3. Wipe orphaned Postgres pages (Steve's stub from 2026-05-02 + any other fake-data).
+4. Rewrite `/dent-append-evidence` skill to call `markdown_append_to_page` instead.
+5. Retarget `/dent-enrich` to call `markdown_replace_page` with `expected_prior_hash` for the merge-on-rerun path.
+6. Retarget `/dent-resolve-entity` to write stub pages via `markdown_replace_page`.
+7. Update skill contract tests — assert no skill prose mandates `## Recent Observations` / `## State` / similar mandated sections; only `## Timeline` is allowed (gbrain-native).
+
+**Why:** Phase 1 (v0.26.0) shipped the substrate but the skills still call the old Postgres-only ops. Until Phase 2 lands, agent writes still go to Postgres, not markdown.
+
+**Gate:** repeat the 2026-05-02 manual test — Cowork session writes about Steve, observe the change in `dent-brain-data` git within 60s.
+
+**Found:** 2026-05-02 alongside the v2.0 pivot.
+
+### Phase 3: teammate hand-edit clone path
+**Priority:** P3
+
+**What:** `/dent-onboard-teammate` skill gains an optional "clone the repo locally" step. Document the teammate workflow in DEPLOY.md or a new TEAMMATE_GUIDE.md.
+
+**Why:** Once Phase 2 lands, distributed hand-edits become natural — but only if onboarding makes it cheap.
+
+### Phase 4: server-side cron pull
+**Priority:** P3
+
+**What:** Cron entry on the dent-brain server: every 5 min, `git pull --ff-only` + `performSync` if HEAD changed. Document the lag window for teammates.
+
+**Why:** Cross-teammate freshness via GitHub coordination — without it, teammate-side pushes don't appear in Cowork queries until the next agent write triggers a pull.
+
+### Push-rejection stuck-state recovery
+**Priority:** P3
+
+**What:** In `src/dent/markdown-writer/append.ts` and `replace.ts`: if rebase fails after a push reject, we `rebase --abort` but leave the local commit on the diverged branch. Next `markdown_*` call hits the same problem (pull-ff fails with non-FF, then we splice on top of stale state, push rejects again). Add a recovery path: detect divergence at the start of the lock'd region and `git reset --hard origin/master` if the only diverging commit is one we previously made and failed to push.
+
+**Why:** Phase 1's design accepts this as a known stuck-state. v0.x volume makes it unlikely, but the recovery story should be in code, not a manual `git reset` on the Railway shell.
+
+**Found:** 2026-05-02 self-review during /ship.
+
+### Test suite: full-bun-test produces ~65 unrelated failures under contention
+**Priority:** P2
+
+**What:** `bun test` (no path arg) reports ~65 fails + 3 errors out of 3700 tests. Same pattern documented in `docs/dent-brain/UPSTREAM_NOTES.md` (3 flaky upstream tests under full-suite parallelism), but the count grew during v0.25→v0.26 substrate upgrades. All failures are in upstream gbrain core suites, not Dent fork code (`bun test test/dent/` is 112 pass, 0 fail). Likely the same root cause: heavy PGLite `beforeAll` migrations contending for resources under Bun's full-suite parallelism.
+
+**Fix candidates:**
+- Bump per-file timeout for PGLite-heavy suites.
+- Run upstream and dent test sets serially in CI: `bun test test/ --concurrency=1` for the affected directories.
+- File upstream against `garrytan/gbrain` with a minimal repro.
+
+**Found:** 2026-05-02 during /ship for v0.26.0. Triaged as pre-existing under solo REPO_MODE; deferred to allow Phase 1 to ship.
+
 ## Completed
 
 ### ~~Checks 5 + 6 for check-resolvable~~

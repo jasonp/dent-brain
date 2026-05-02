@@ -2,6 +2,71 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.26.0] - 2026-05-02
+
+## **The Dent fork now writes through markdown first. Every agent observation lands as a real commit in `dent-brain-data`, then gets re-indexed.**
+## **PLAN v2.0 (markdown-canonical pivot) Phase 1 ships the write path; `evidence` table goes in Phase 2.**
+
+The 2026-05-02 manual gate test surfaced that the v1.8 promise — "git history of dent-brain-data IS the snapshot/revert mechanism" — was false. Cowork sessions wrote into Postgres only. `~/gh/dent-brain-data/entities/people/steve-broback.md` never moved. PLAN v2.0 reframes the architecture to upstream gbrain's actual default: markdown is canonical, Postgres is the retrieval index, the agent reads + writes through both. Phase 1 is the write path itself.
+
+The new model is **append-by-default**. Two MCP ops land:
+
+- `markdown_append_to_page(slug, content, section?, commit_note?)` — the 95% case. Splice a fragment under a `## …` heading or at EOF, commit, push, re-index. Concurrent writers commute: when two Cowork sessions append to the same entity page in the same minute, git rebase replays both bullets in order. No three-way merge primitive needed; append commutes by construction.
+- `markdown_replace_page(slug, content, expected_prior_hash?, commit_note?)` — the rare case. Full page rewrite with optimistic concurrency. The agent passes the sha256 of the markdown it read before synthesizing; if the page changed since, the op returns `page_changed` with the current text so the caller can re-synthesize. Brand-new pages skip the hash check.
+
+Both ops route through one service (`src/dent/markdown-writer/`) that holds a Postgres advisory lock keyed `dent-brain-data:write` for the duration of one write — `git pull --ff-only`, splice, write, `git add && git commit`, push (with rebase-retry on rejection), then `performSync({sourceId: 'dent', noEmbed: true})` to refresh the Postgres index. The lock keeps two agent writes from racing the working tree; rebase-retry handles divergence with another teammate's clone (Phase 3 territory). Per-token write rate limit is in-handler at 30/min/token — separate from the transport rate limit upstream already provides.
+
+Server-side, Phase 1 also adds **boot-time clone management**. The Railway server reads `DENT_BRAIN_DATA_DEPLOY_KEY` (PEM private key, deploy-key scoped to one repo), materializes it at `/tmp/dent-brain-data-deploy-key` (0600), sets `GIT_SSH_COMMAND` for child git processes, clones `dent-brain-data` to `/app/dent-brain-data` (or `git pull --ff-only` if the path persists across deploys), configures `user.name` + `user.email` for commits the server makes, and upserts a `sources` row (`id='dent'`) so `gbrain sync --source dent` and the auto-index loop both resolve. Failure to set the env var is non-fatal: the server boots and serves reads, but the new `markdown_*` ops fail with "context not initialized" until you wire the key.
+
+### The numbers that matter
+
+| Metric | v0.25.0 | v0.26.0 | Δ |
+|---|---|---|---|
+| Markdown-canonical write path | none | `markdown_append_to_page` + `markdown_replace_page` | **the whole feature** |
+| Server-side clone of `dent-brain-data` | none | yes, deploy-key auth | new at boot |
+| MCP ops | 41 core + 4 evidence + N entity-detection | + 2 markdown-write | additive |
+| Write concurrency primitive | none | per-repo Postgres advisory lock | sound |
+| Multi-writer correctness | best-effort | `git pull --rebase` + push retry on rejection | append commutes |
+| Per-token write rate limit | none | 30/min/token in-handler | runaway-loop brake |
+| Tests added | — | 25 (11 unit, 14 integration) | 100% pass |
+| Lines of net-new dent-fork code | — | ~1,560 (incl. tests + docs) | matches PLAN v2.0 audit |
+| `evidence` table fate | live | live (drops in Phase 2) | unchanged this release |
+
+### What's NOT in v0.26.0
+
+- The `evidence` table, `append_evidence` / `get_evidence` / `quarantine_batch` / `get_provenance` MCP ops — all still live. Phase 2 drops them and retargets `/dent-enrich` + `/dent-append-evidence` + `/dent-resolve-entity` to write through `markdown_append_to_page`. v0.26.0 ships the substrate; the skill prose still calls the old ops.
+- Teammate hand-edit clone path (Phase 3).
+- Server-side scheduled `git pull --ff-only` cron (Phase 4).
+- RegFox / Gmail / Granola server-side ingestors (Phase 5+).
+
+### To take advantage of v0.26.0
+
+1. Generate a fresh ed25519 deploy keypair: `ssh-keygen -t ed25519 -f /tmp/dent-brain-data-key -N '' -C 'dent-brain-server@railway'`.
+2. Add the public key to `dentthefuture/dent-brain-data` → Settings → Deploy keys → Add deploy key, **with write access**.
+3. Add the private key to Railway as `DENT_BRAIN_DATA_DEPLOY_KEY` (preserve newlines).
+4. Redeploy. Look for `[dent-brain] data repo ready: /app/dent-brain-data @ <sha> (source=dent)` in the boot logs.
+5. Optional overrides: `DENT_BRAIN_DATA_REPO_URL`, `DENT_BRAIN_DATA_PATH`, `DENT_BRAIN_GIT_NAME`, `DENT_BRAIN_GIT_EMAIL`. Defaults work for the canonical Dent deploy.
+6. Verify: run `bun run scripts/dent/test-markdown-write.ts` with `DENT_BRAIN_URL` + `DENT_BRAIN_TOKEN` exported. The script appends a bullet, fetches the page, runs a query, and expects a real commit in `dent-brain-data` master.
+
+Read the full deploy recipe in `docs/dent-brain/DEPLOY.md` §2.3.1.
+
+### Itemized changes
+
+#### Added
+- `markdown_append_to_page` MCP op — append a fragment to a page under a `## …` heading or at EOF, commit + push, re-index.
+- `markdown_replace_page` MCP op — full-page replace with `expected_prior_hash` optimistic concurrency.
+- `src/dent/markdown-writer/` service module: `paths.ts` (slug → path, traversal-guarded), `git-helpers.ts` (`git()` wrapper, `pushWithRetry()`), `lock.ts` (`withRepoLock`), `repo.ts` (`ensureDataRepo`, `setRepoContext`), `append.ts` (`appendToPage`, `spliceFragment`), `replace.ts` (`replacePage`, `hashContent`).
+- `src/dent/operations/markdown-write.ts` — MCP op handlers + per-token in-handler rate limiter (30 writes/min/token).
+- `scripts/dent/test-markdown-write.ts` — Phase 1 post-deploy gate test script.
+- 25 tests under `test/dent/markdown-writer/` — splice unit tests + bare-repo integration tests for append + replace.
+
+#### Changed
+- `src/dent/serve.ts` boots the data-repo clone via `ensureDataRepo(engine)` after the schema-drift guard when `DENT_BRAIN_DATA_DEPLOY_KEY` is set. Boot banner counts the new ops.
+- `docs/dent-brain/DEPLOY.md` documents the deploy-key recipe + new env vars (`DENT_BRAIN_DATA_DEPLOY_KEY`, `DENT_BRAIN_DATA_REPO_URL`, `DENT_BRAIN_DATA_PATH`, `DENT_BRAIN_GIT_NAME`, `DENT_BRAIN_GIT_EMAIL`).
+
+#### Removed
+- Nothing in this release. Phase 2 drops the `evidence` table and the four evidence MCP ops.
+
 ## [0.25.0] - 2026-04-26
 
 ## **Contributors can now benchmark retrieval changes against real captured queries before merging.**
