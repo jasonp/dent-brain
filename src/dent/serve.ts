@@ -35,6 +35,8 @@ import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { dentOperations } from './operations/evidence.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
+import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
+import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
 
 const DEFAULT_BODY_CAP = 1024 * 1024;
 
@@ -62,6 +64,49 @@ const sql = (engine as unknown as { sql: any }).sql;
 if (!sql) {
   console.error('FATAL: PostgresEngine has no .sql client after connect.');
   process.exit(1);
+}
+
+// Schema-drift guard: substrate sync ships source code that expects a newer
+// schema than prod, and `dbrain auth create` / dent-migrate.ts only cover
+// auth + dent migrations. Without this check, the first put_page after a
+// substrate sync explodes with a column-doesn't-exist error from inside the
+// engine. Cost: one read + (if drift) automated catch-up.
+//
+// GBRAIN_AUTOMIGRATE=skip lets ops opt out for staging environments where
+// migrations need a manual review step. Default is fail-closed (auto-migrate)
+// because production always wants to be at-version.
+{
+  const upstreamCurrent = parseInt(((await engine.getConfig('version')) || '1'), 10);
+  const dentCurrent = parseInt(((await engine.getConfig('dent_version')) || '0'), 10);
+  const upstreamDrift = upstreamCurrent < UPSTREAM_LATEST_VERSION;
+  const dentDrift = dentCurrent < DENT_LATEST_VERSION;
+
+  if (upstreamDrift || dentDrift) {
+    console.error(
+      `[dent-brain] schema drift detected — upstream ${upstreamCurrent}/${UPSTREAM_LATEST_VERSION}, dent ${dentCurrent}/${DENT_LATEST_VERSION}`
+    );
+    if (process.env.GBRAIN_AUTOMIGRATE === 'skip') {
+      console.error(
+        `[dent-brain] FATAL: GBRAIN_AUTOMIGRATE=skip and schema is behind. ` +
+        `Run \`bun run scripts/dent-migrate.ts\` and the upstream migration sequence, ` +
+        `then redeploy. Refusing to serve with stale schema.`
+      );
+      process.exit(1);
+    }
+    console.error('[dent-brain] auto-migrating (set GBRAIN_AUTOMIGRATE=skip to disable)...');
+    if (upstreamDrift) {
+      const r = await runMigrations(engine);
+      console.error(`[dent-brain] upstream migrations: applied ${r.applied}, now at ${r.current}`);
+    }
+    if (dentDrift) {
+      const r = await runDentMigrations(engine);
+      console.error(`[dent-brain] dent migrations: applied ${r.applied}, now at ${r.current}`);
+    }
+  } else {
+    console.error(
+      `[dent-brain] schema versions current — upstream ${upstreamCurrent}, dent ${dentCurrent}`
+    );
+  }
 }
 
 const limiters = buildDefaultLimiters();
@@ -239,6 +284,11 @@ async function dispatch(name: string, args: Record<string, unknown>) {
       return { content: [{ type: 'text', text: JSON.stringify(e.toJSON(), null, 2) }], isError: true };
     }
     const msg = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error ? e.stack : undefined;
+    // Always log the real error to stderr (Railway captures this) so prod
+    // failures are diagnosable. The client still gets the redacted message
+    // in production to avoid leaking internals over the wire.
+    console.error(`[mcp] handler error in op=${name}: ${msg}${stack ? `\n${stack}` : ''}`);
     const outgoing = NODE_ENV === 'production' ? 'Internal error' : msg;
     return { content: [{ type: 'text', text: `Error: ${outgoing}` }], isError: true };
   }
