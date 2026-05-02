@@ -35,6 +35,8 @@ import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { dentOperations } from './operations/evidence.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
+import { markdownWriteOperations } from './operations/markdown-write.ts';
+import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
 import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
 import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
 
@@ -51,7 +53,7 @@ if (!DATABASE_URL) {
 
 // Merged registry: upstream first, dent appended. Order matters for
 // tools/list ordering only; dispatch lookup is name-keyed.
-const allOps: Operation[] = [...operations, ...dentOperations, ...entityDetectionOperations];
+const allOps: Operation[] = [...operations, ...dentOperations, ...entityDetectionOperations, ...markdownWriteOperations];
 const opsByName = new Map(allOps.map((o) => [o.name, o]));
 
 const engine = new PostgresEngine();
@@ -107,6 +109,23 @@ if (!sql) {
       `[dent-brain] schema versions current — upstream ${upstreamCurrent}, dent ${dentCurrent}`
     );
   }
+}
+
+// PLAN v2.0 Phase 1: clone-or-pull dent-brain-data and stash the SSH env
+// + repo path so markdown_append_to_page / markdown_replace_page can run.
+// Skipped when DENT_BRAIN_DATA_DEPLOY_KEY is unset (local dev / tests with
+// no write path) — markdown_* ops will fail with "context not initialized"
+// if invoked, which is the right error.
+if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
+  try {
+    const repoCtx = await ensureDataRepo(engine);
+    setRepoContext(repoCtx);
+  } catch (e) {
+    console.error(`[dent-brain] FATAL: ensureDataRepo failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+} else {
+  console.error('[dent-brain] DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable.');
 }
 
 const limiters = buildDefaultLimiters();
@@ -429,7 +448,7 @@ const server = Bun.serve({
 console.error(`[dent-brain] HTTP MCP server listening on :${PORT} (env=${NODE_ENV}, version=${VERSION})`);
 console.error(`[dent-brain]   GET  /health`);
 console.error(`[dent-brain]   POST /mcp  (Bearer <token> required)`);
-console.error(`[dent-brain]   ops    : ${operations.length} core + ${dentOperations.length} dent + ${entityDetectionOperations.length} entity-detection = ${allOps.length}`);
+console.error(`[dent-brain]   ops    : ${operations.length} core + ${dentOperations.length} dent + ${entityDetectionOperations.length} entity-detection + ${markdownWriteOperations.length} markdown-write = ${allOps.length}`);
 if (!corsAllowlist) {
   console.error('[dent-brain]   CORS : default-deny. Set GBRAIN_HTTP_CORS_ORIGIN=https://your.app to allow browser clients.');
 } else {
