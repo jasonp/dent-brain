@@ -81,6 +81,28 @@ export const DENT_MIGRATIONS: DentMigration[] = [
       ALTER TABLE evidence DROP COLUMN IF EXISTS author;
     `,
   },
+  {
+    version: 3,
+    name: 'drop_evidence_table',
+    sql: `
+      -- PLAN v2.0 (markdown-canonical pivot) Phase 2: drop the entire
+      -- evidence table. Observations now live as bulleted items in the
+      -- entity markdown pages themselves (canonical) and surface through
+      -- gbrain hybrid search + the timeline_entries auto-extraction post-hook.
+      -- The evidence table was a v1.8 invention with no upstream parallel
+      -- and no markdown counterpart — every append_evidence row was
+      -- invisible to dent-brain-data git history.
+      --
+      -- Indexes (evidence_entity_refs_gin, evidence_active_appended_idx,
+      -- evidence_batch_id_idx) get dropped automatically with the table.
+      -- Explicit DROP INDEX IF EXISTS lines are belt-and-suspenders for
+      -- environments where the migration ran partially.
+      DROP INDEX IF EXISTS evidence_batch_id_idx;
+      DROP INDEX IF EXISTS evidence_active_appended_idx;
+      DROP INDEX IF EXISTS evidence_entity_refs_gin;
+      DROP TABLE IF EXISTS evidence;
+    `,
+  },
 ];
 
 export const DENT_LATEST_VERSION = DENT_MIGRATIONS.length > 0

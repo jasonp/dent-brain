@@ -1,26 +1,27 @@
 ---
 name: enrich
-version: 1.0.0
+version: 2.0.0
 description: |
-  Enrich Dent Brain entity pages by synthesizing FileMaker records (when
-  linked) with evidence-log observations. FM is authoritative for owned
-  fields; evidence is authoritative for unstructured context. Hand-edits
-  in the existing page are preserved across re-runs.
+  Re-synthesize a Dent Brain entity page from its current markdown,
+  the linked FileMaker record (when present), and related context
+  surfaced through hybrid search. FM is authoritative for owned
+  fields; the existing markdown body — including any human
+  hand-edits — is preserved verbatim except where new signal warrants
+  refinement. Output is written through markdown_replace_page with
+  optimistic concurrency.
 triggers:
   - "dent-enrich"
   - "enrich this person"
   - "refresh this entity"
   - "update this page from filemaker"
-  - "synthesize evidence on"
+  - "synthesize observations on"
 tools:
   - get_page
-  - put_page
-  - get_evidence
-  - get_provenance
+  - markdown_replace_page
   - search
   - query
-  - add_link
   - get_backlinks
+  - get_timeline
   - fm_get_record
   - fm_get_layout_fields
 mutating: true
@@ -44,13 +45,21 @@ This skill compiles an entity page from two sources:
    employer, registrations, payments, tags). Reached via the FM MCP tools
    (`fm_get_record`, `fm_get_layout_fields`) which the user has installed
    locally. Dent Brain's server does NOT proxy to FileMaker.
-2. **Dent Brain evidence log** — authoritative for unstructured
-   observations (meeting notes, emails, observations). Reached via
-   `get_evidence`.
+2. **The entity's existing markdown page** — authoritative for everything
+   else: prior synthesis, hand-edits, observation bullets accumulated
+   under `## Timeline`. Reached via `get_page` (which reads the
+   Postgres index that was last refreshed from `dent-brain-data` git).
 
-The output is a synthesized page written via `put_page`. The user can
-hand-edit the page afterward; the next `/dent-enrich` run will preserve
-those edits (see "Merge-on-rerun" below).
+The output is a synthesized page written through `markdown_replace_page`
+with `expected_prior_hash` for optimistic concurrency. If a teammate or
+another agent rewrote the page between read and write, the op returns
+`page_changed` with the current text and the agent re-synthesizes
+against the fresh state.
+
+> **Storage model (PLAN v2.0, since v0.27.0):** observations live as
+> bullets in the entity page itself, not in a separate evidence table.
+> "Read the evidence" now means "read the page body." Cross-page mentions
+> surface through `get_backlinks` and `query`.
 
 ---
 
@@ -58,13 +67,13 @@ those edits (see "Merge-on-rerun" below).
 
 - User mentions an entity in a Cowork session and asks to "refresh" or
   "enrich" the page.
-- User just appended significant new evidence and wants the compiled
-  page updated.
+- User just appended significant new observations and wants the
+  compiled page updated.
 - A new person entity was just created and needs its first synthesis.
 
 **Do NOT run** when the page was synthesized in the last hour and no new
-evidence has been appended. Re-running with no new signal wastes the
-user's API budget and risks drift from preserved hand-edits.
+observations have been appended. Re-running with no new signal wastes
+the user's API budget and risks drift from preserved hand-edits.
 
 ---
 
@@ -88,10 +97,14 @@ If the user says "enrich Mike Cottmeyer" with no slug, use `query` or
 Call `get_page(slug)`. The page may or may not exist yet.
 
 - **Page exists:** capture its full content (frontmatter + body) — you
-  will pass it to the synthesis prompt as "prior synthesis" in Step 5.
-- **Page does not exist:** create a stub with the page-type template
-  matching the slug prefix (`person`, `company`, `project`, etc.), then
-  proceed.
+  will pass it to the synthesis prompt as "prior synthesis" in Step 5,
+  AND you'll need the full bytes to compute `expected_prior_hash` for
+  the write in Step 6. **Save the full content as `prior` for both
+  uses.**
+- **Page does not exist:** abort with a clear message ("No page at
+  <slug>. Use `/dent-resolve-entity` to create the stub first, or
+  `/dent-append-evidence` to capture an observation that creates one.").
+  `/dent-enrich` is a re-synthesis primitive, not a stub creator.
 
 ### Step 2. Read FileMaker (if linked)
 
@@ -108,30 +121,36 @@ issue): note the failure inline in the synthesis ("FM lookup failed:
 {reason}") and continue with evidence-only. Do NOT throw away the
 existing page.
 
-### Step 3. Read the evidence log
+### Step 3. Read related context
 
-Call `get_evidence(entity_ref=slug, limit=50, include_quarantined=false)`.
-Capture every record in the response.
+The entity's own page is the primary signal. Two cheap lookups add
+texture:
 
-If the evidence log is empty for this entity, that's fine — the synthesis
-can still produce a useful page from the FM record alone. If it's empty
-AND there's no FM record, abort with: "No FM record and no evidence —
-nothing to synthesize. Append evidence first, or link the FM record id."
-
-### Step 4. (Optional) Cross-reference
-
-If the entity has rich connections, consider:
-
-- `get_backlinks(slug)` — what other pages reference this one?
-- `query("what do we know about <name>")` — RRF-ranked context from
-  related pages.
+- `get_backlinks(slug)` — what other pages reference this one? Useful
+  for "Mike was mentioned in meetings/2026-04-22 and meetings/2026-05-01"
+  cross-references.
+- `query("<entity title or other distinguishing phrase>")` — RRF-ranked
+  hits across the brain. Catches obliquely-related context (other
+  pages that mention the entity by alias, or that talk about the same
+  topic).
 
 This is texture, not authority. Keep it lightweight unless the user
-explicitly asked for a deep re-synthesis.
+explicitly asked for a deep re-synthesis. The bullets already in the
+page body are the canonical observation set; cross-page hits are
+supplemental.
+
+If the page body has no observations AND there's no FM record AND
+backlinks/query return nothing: abort with "No FM record, no observations
+in the page, no related context — nothing to synthesize. Append an
+observation first, or link the FM record id."
+
+### Step 4. (Reserved)
+
+Numbering kept for skill-version diff continuity with v1.x. No action.
 
 ### Step 5. Synthesize
 
-Compile the new page content using the inputs from steps 1–4. Apply
+Compile the new page content using the inputs from steps 1–3. Apply
 these three rules **in order**:
 
 #### 5a. FM-as-truth (when FM data is present)
@@ -145,12 +164,11 @@ For owned fields, FM wins. Owned fields include:
 - Payments / purchases
 - LinkedIn URL, location, communication preferences
 
-If Dent Brain evidence contradicts FM on an owned field, **note the
-discrepancy inline** but keep the FM value as the rendered truth.
-Example:
+If observation bullets in the page body contradict FM on an owned
+field, **note the discrepancy inline** but render the FM value as the
+truth. Example fragment:
 
 ```markdown
-## State
 - **Role:** Founder, LeadingAgile [Source: FM People #12345]
 - **Email:** mike@leadingagile.com [Source: FM People #12345]
 - (Discrepancy: 2026-04-22 meeting notes mention Mike said he was
@@ -158,9 +176,9 @@ Example:
   Verify with Mike or update FM.)
 ```
 
-For unstructured fields (What They Believe, What They're Building,
-Hobby Horses, Trajectory, Assessment), FM has nothing to say — those
-sections come entirely from evidence.
+For unstructured signal (observations, opinions, trajectory, posture),
+FM has nothing to say — that material comes entirely from the page's
+existing bullets and any cross-references surfaced in step 3.
 
 #### 5b. Merge-on-rerun (when prior synthesis exists)
 
@@ -169,14 +187,21 @@ closing frontmatter fence) to the synthesis prompt as "prior synthesis."
 Then instruct yourself, verbatim:
 
 > The prior synthesis below may contain hand-edits the user wrote
-> directly. Preserve any human-written content verbatim. Only refine
-> sections where the new FM record or new evidence adds material that
-> the prior synthesis lacked. When in doubt, keep what the user wrote.
+> directly, observation bullets logged via /dent-append-evidence, and
+> earlier /dent-enrich passes. Preserve any human-written content
+> verbatim. Preserve every bullet under `## Timeline` verbatim
+> (those are the immutable observation log). Only refine sections
+> where the new FM record or new context adds material that the prior
+> synthesis lacked. When in doubt, keep what's there.
 
-Do not parse out individual sections (`## State`, `## Trajectory`,
-etc.) and overwrite them. Trust the LLM with the whole body. This
-matches the v1.8 FM-as-truth posture: simpler primitives, accept
-residual risk on the unstructured side.
+Do not parse out individual sections and overwrite them. Trust the LLM
+with the whole body. **Conform to the page's existing structure** —
+whatever section headings the prior synthesis or hand-edit established
+are authoritative. Do NOT impose a fixed template.
+
+The only structural section name with special meaning is `## Timeline`
+(gbrain-native — its bullets get auto-extracted into `timeline_entries`
+on re-index). All other section names are page-author-chosen prose.
 
 #### 5c. Citations
 
@@ -185,35 +210,59 @@ citation:
 
 - FM-derived claims: `[Source: FM People #12345]` or
   `[Source: FM Event Registration #6789]`
-- Evidence-derived claims: `[Source: evidence #<id>]` or
-  `[Source: meeting 2026-04-22]` if the evidence has a `source_ref`
+- Observation-derived claims: `[Source: meetings/2026-04-22]` or
+  `[Source: <whatever the bullet's existing inline citation says>]`
+- Cross-reference claims (from get_backlinks / query): cite the
+  source page slug, e.g. `[Source: meetings/2026-05-01]`
 
 Section headings can drop the citation if the entire section is from a
 single source — say so once at the top of the section instead.
 
 ### Step 6. Write the page
 
-Call `put_page(slug, content)` with the synthesized content. The page's
-frontmatter MUST include:
+Compute `expected_prior_hash = sha256(prior)` (where `prior` is the
+full content captured in step 1). Then call:
 
-- `filemaker_record_id` (if step 2 found one — preserve it verbatim)
+```
+markdown_replace_page({
+  slug: <entity slug>,
+  content: <full synthesized markdown — frontmatter + body>,
+  expected_prior_hash: <hash>,
+  commit_note: "/dent-enrich"
+})
+```
+
+**Frontmatter must preserve:**
+- `filemaker_record_id` (if step 2 found one — preserve verbatim)
 - `type` (person | company | project | etc.)
 - `title` (the human-readable name)
 - `updated` (today's date, ISO-8601)
 
-`put_page` auto-creates outbound links and timeline entries via gbrain's
-post-hooks — you do not need to call `add_link` or `add_timeline_entry`
-explicitly unless the synthesis surfaces an entity that wasn't already
-linked.
+**Handle results:**
+- `status: "ok"` — record `commit_sha` for the user-facing summary.
+- `status: "page_changed"` — someone wrote between your read and
+  write. The op returns `current_content` and `current_hash`. Re-run
+  the synthesis with `current_content` as the new prior, then retry
+  the write with the new hash. Cap at 2 retries; past that, surface
+  to the user ("Page is contended — try again in a moment").
+- `status: "busy"` — repo lock held by another writer. Retry once
+  after a short delay.
+- `error: "rate_limited"` — slow down. Surface to the user.
+
+The page just written gets re-imported into Postgres as part of the
+op (`performSync` runs internally), so `get_page` will return the new
+content immediately. gbrain's post-hooks fire on the re-import, so
+`## Timeline` bullets auto-populate `timeline_entries` and any
+new entity refs in the body get extracted into the links graph.
 
 ### Step 7. Confirm with the user
 
 Surface a one-paragraph diff to the user: which sections were updated,
 which were preserved verbatim, whether any FM-evidence discrepancies
-were flagged.
+were flagged, and the resulting `commit_sha`.
 
-If the synthesis hit any failures (FM unreachable, ambiguous prior
-synthesis), name them explicitly. Do not silently degrade.
+If the synthesis hit any failures (FM unreachable, page contention),
+name them explicitly. Do not silently degrade.
 
 ---
 
@@ -222,14 +271,15 @@ synthesis), name them explicitly. Do not silently degrade.
 `/dent-enrich` does NOT use the upstream `enrich` skill's tier system
 (Tier 1 / 2 / 3). The Dent context is different: every entity in
 `entities/people/` is in the brain because Steve or another teammate put
-it there, which is itself a notability signal. There's no "skip enrichment
-for low-value entities" check. If the user asked for synthesis, run it.
+it there, which is itself a notability signal. There's no "skip
+enrichment for low-value entities" check. If the user asked for
+synthesis, run it.
 
 External-data-source lookups (Crustdata, Proxycurl, web research) are
 **out of scope** for this skill in MVP. The Dent brain is fed by
-FileMaker (structured) + Dropbox/Gmail/meeting notes (unstructured via
-evidence). External enrichment APIs are deferred to v1+ when the team
-has signal that they're worth the spend.
+FileMaker (structured) + observation bullets logged via
+`/dent-append-evidence` (unstructured). External enrichment APIs are
+deferred to v1+ when the team has signal that they're worth the spend.
 
 ---
 
@@ -241,24 +291,36 @@ has signal that they're worth the spend.
   failure in the synthesis.
 - **Do not** parse the existing page into sections and replace
   section-by-section. Trust the LLM with the full body.
-- **Do not** write the FM record itself into Dent Brain (no `put_page`
-  to a `filemaker/` namespace). FM is the canonical store; we only read
-  from it.
-- **Do not** create a page when both FM and evidence are empty. Abort
-  with a clear error message instead.
+- **Do not impose mandated section headings.** No `## State`,
+  `## Recent Observations`, `## What They Believe`, `## Trajectory`,
+  `## Assessment`, or any fixed dent-specific scaffold. If the page
+  already has those because a prior synthesis added them, keep them
+  verbatim per 5b. If the page does not have them, do not invent
+  them. `## Timeline` is the one structurally-meaningful exception
+  (gbrain-native).
+- **Do not** write the FM record itself into Dent Brain (no
+  `markdown_replace_page` to a `filemaker/` namespace). FM is the
+  canonical store; we only read from it.
+- **Do not** create a page when both FM and observations are empty.
+  Abort with a clear error message instead.
+- **Do not** call `markdown_replace_page` without
+  `expected_prior_hash` for an existing page. Optimistic concurrency
+  is the whole point — without the hash, a teammate's hand-edit gets
+  silently clobbered.
+- **Do not** write to Postgres directly. No `put_page` calls.
 
 ---
 
 ## Tools used
 
-- `get_page` — read existing page content
-- `put_page` — write the synthesized page
-- `get_evidence` — pull observations for the entity
-- `get_provenance` — look up source attribution for a specific evidence id
-  (used when surfacing the diff in step 7)
+- `get_page` — read existing page content (and compute its hash for
+  optimistic-concurrency on the write)
+- `markdown_replace_page` — write the synthesized page
 - `search` / `query` — resolve a name to a slug, or fetch related context
 - `get_backlinks` — find pages that reference this entity
-- `add_link` — create cross-references when synthesis surfaces new ones
+- `get_timeline` — pull chronological bullets if the synthesis prompt
+  needs them surfaced separately from the page body (rare; the body
+  already contains them)
 - `fm_get_record` — fetch the authoritative FM record (per-user FM auth)
 - `fm_get_layout_fields` — discover field structure when the layout is
   unfamiliar

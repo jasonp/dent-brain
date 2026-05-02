@@ -33,7 +33,6 @@ import { loadConfig } from '../core/config.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
-import { dentOperations } from './operations/evidence.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
 import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
@@ -53,7 +52,7 @@ if (!DATABASE_URL) {
 
 // Merged registry: upstream first, dent appended. Order matters for
 // tools/list ordering only; dispatch lookup is name-keyed.
-const allOps: Operation[] = [...operations, ...dentOperations, ...entityDetectionOperations, ...markdownWriteOperations];
+const allOps: Operation[] = [...operations, ...entityDetectionOperations, ...markdownWriteOperations];
 const opsByName = new Map(allOps.map((o) => [o.name, o]));
 
 const engine = new PostgresEngine();
@@ -448,7 +447,7 @@ const server = Bun.serve({
 console.error(`[dent-brain] HTTP MCP server listening on :${PORT} (env=${NODE_ENV}, version=${VERSION})`);
 console.error(`[dent-brain]   GET  /health`);
 console.error(`[dent-brain]   POST /mcp  (Bearer <token> required)`);
-console.error(`[dent-brain]   ops    : ${operations.length} core + ${dentOperations.length} dent + ${entityDetectionOperations.length} entity-detection + ${markdownWriteOperations.length} markdown-write = ${allOps.length}`);
+console.error(`[dent-brain]   ops    : ${operations.length} core + ${entityDetectionOperations.length} entity-detection + ${markdownWriteOperations.length} markdown-write = ${allOps.length}`);
 if (!corsAllowlist) {
   console.error('[dent-brain]   CORS : default-deny. Set GBRAIN_HTTP_CORS_ORIGIN=https://your.app to allow browser clients.');
 } else {

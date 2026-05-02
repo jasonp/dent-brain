@@ -2,6 +2,75 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.27.0] - 2026-05-02
+
+## **The Dent fork drops the `evidence` table. Observations now live as bullets in the entity markdown pages, written through `markdown_append_to_page`.**
+## **Three skills retargeted: `/dent-append-evidence`, `/dent-enrich`, `/dent-resolve-entity`. The Postgres-only evidence write path is gone.**
+
+PLAN v2.0 Phase 2 lands. v0.26.0 shipped the markdown-canonical write substrate (`markdown_append_to_page` + `markdown_replace_page` + boot-time clone). This release retargets the three Cowork-side skills onto that substrate and removes the dead Postgres-only evidence path.
+
+The `evidence` table — a v1.8 invention with no upstream parallel and no markdown counterpart — is dropped via dent migration v3 (auto-applies on Railway boot). The four MCP ops that operated on it (`append_evidence`, `get_evidence`, `quarantine_batch`, `get_provenance`) are deleted. The entity-detection op stays untouched.
+
+Skills now write through the canonical primitives:
+
+- `/dent-append-evidence` (v2.0): detect entities → for each entity, append a bulleted observation under `## Timeline` (date-anchored) or wherever fits the existing page structure (otherwise) via `markdown_append_to_page`. Bullet shape is `- **YYYY-MM-DD** | <text> [Source: …]`, the gbrain-native pattern that `parseTimelineEntries` auto-extracts into `timeline_entries` on the next `performSync` post-hook. No more `add_timeline_entry` calls — timeline rows are derived state from the markdown.
+- `/dent-enrich` (v2.0): synthesis output flows through `markdown_replace_page` with `expected_prior_hash` (sha256 of the markdown the agent read before synthesizing). On `page_changed` the agent re-synthesizes against the current text and retries. `get_evidence` / `get_provenance` calls are gone — observations are read from the page body itself (where they now live as bullets), with `get_backlinks` + `query` for cross-page texture.
+- `/dent-resolve-entity` (v2.0): new entity stub pages route through `markdown_replace_page` (no `expected_prior_hash` needed for brand-new pages) so they land as real commits in `dent-brain-data` git, not just Postgres rows.
+
+The mandated dent-specific section scaffold is gone, too. v1.x's `## State` / `## What They Believe` / `## Trajectory` / `## Hobby Horses` / `## Assessment` / `## Recent Observations` were a fixed template that every entity page was forced into. PLAN v2.0 principle 2 says pages are unstructured. The retargeted skills explicitly forbid inventing those sections; agents conform to whatever structure the existing page has, or none at all. `## Timeline` is the one structurally-meaningful heading because gbrain's auto-extraction post-hook depends on it.
+
+### The numbers that matter
+
+| Metric | v0.26.0 | v0.27.0 | Δ |
+|---|---|---|---|
+| `evidence` table | live | dropped via dent migration v3 | the table goes |
+| Evidence MCP ops | 4 (append, get, quarantine, provenance) | 0 | −4 |
+| Skills writing through markdown | 0 (Phase 1 substrate only) | 3 (`/dent-append-evidence`, `/dent-enrich`, `/dent-resolve-entity`) | the whole point |
+| Mandated dent-specific section scaffolds | 6 (`State`, `Trajectory`, etc.) | 0 (only `## Timeline` is structurally meaningful) | unstructured-by-default |
+| Skill-prose contract tests | 26 | 39 (+13 v2.0 assertions) | wider coverage of the retargeted surface |
+| Lines of dent-fork code deleted | — | ~580 (`evidence.ts` op + 5 evidence test files) | net code shrink |
+| `add_timeline_entry` calls in skills | 1 (in `/dent-append-evidence` step 5) | 0 (derived from `## Timeline` bullets via `parseTimelineEntries`) | one less moving part |
+| `bun run test:dent` | not present | 100 pass / 0 fail / 23s | new convenience scope |
+
+### The 2026-05-02 manual gate test (re-run target)
+
+The pivot was triggered by a manual gate test that surfaced the v1.8 promise — "git history of dent-brain-data IS the snapshot/revert mechanism" — was false. v0.27.0 closes that loop. The re-run protocol:
+
+1. Open a Cowork session.
+2. Trigger `/dent-append-evidence` with an observation about Steve Broback (e.g., "remember that Steve confirmed Dent 2026 dates in our 2026-05-02 1:1").
+3. Within 60 seconds, `git log` in `~/gh/dent-brain-data` should show a commit authored by `dent-brain-server <noreply@dentthefuture.com>` with message `agent: append entities/people/steve-broback`. The commit's diff should add a bullet under `## Timeline` matching the observation.
+4. Run `query "Steve Broback Dent 2026"` from the same Cowork session — the appended bullet should surface in the hybrid-search results, sourced from the Postgres index that was refreshed via `performSync` inside the op.
+5. Visual: open `entities/people/steve-broback.md` in the local clone — the new bullet should be there.
+
+### To take advantage of v0.27.0
+
+1. Pull v0.27.0 to Railway (the deploy below). Boot logs will show:
+   ```
+   [dent-brain] dent migration 3 applied: drop_evidence_table
+   ```
+   The drop is automatic via the existing schema-drift auto-migrate path. Nothing to run by hand.
+2. Pull the new skill files into your Cowork install. The frontmatter in each skill bumped to `version: 2.0.0`; the new tools (`markdown_append_to_page`, `markdown_replace_page`) replace the dropped ones (`append_evidence`, `add_timeline_entry`, `get_evidence`, `get_provenance`).
+3. If you have any code or scripts outside this repo that called `mcp__dent-brain__append_evidence` or the other dropped ops, replace them with the markdown-write equivalents. The CLI surface didn't change.
+
+### Itemized changes
+
+#### Added
+- Dent migration v3: drops `evidence` table + its three indexes. Auto-applies on Railway boot via the existing schema-drift catch-up path.
+- `bun run test:dent` npm script — runs `test/dent/` (100 pass) without the upstream-substrate full-suite contention that produces ~65 unrelated flakes documented in TODOS as P2.
+- `scripts/dent/wipe-orphan-pages.ts` — one-shot for finding Postgres pages with no markdown counterpart in `dent-brain-data` (used during the Phase 2 cutover; ran clean against prod, so no rows deleted).
+- 13 new contract-test assertions across the three retargeted skills, including pins for "no mandated section scaffold," "uses `markdown_*` tools, not the dropped evidence ops," and "writes optimistic-concurrency hash on re-synthesis."
+
+#### Changed
+- `/dent-append-evidence` skill (v2.0) — observations are now bullets in entity pages via `markdown_append_to_page`.
+- `/dent-enrich` skill (v2.0) — synthesis flows through `markdown_replace_page` with `expected_prior_hash`; reads observations from the page body, not a separate table.
+- `/dent-resolve-entity` skill (v2.0) — new entity stubs are written through `markdown_replace_page` so they land as commits in `dent-brain-data`.
+- `src/dent/serve.ts` — removed `dentOperations` from the merged op registry. Boot banner now reads `41 core + 1 entity-detection + 2 markdown-write = 44`.
+
+#### Removed
+- `src/dent/operations/evidence.ts` (the four evidence MCP ops).
+- `test/dent/evidence/` (5 test files: helpers, append, query, quarantine, provenance).
+- The mandated dent-specific section scaffold (`## State`, `## Trajectory`, etc.) from skill prose. Pages are unstructured by default.
+
 ## [0.26.0] - 2026-05-02
 
 ## **The Dent fork now writes through markdown first. Every agent observation lands as a real commit in `dent-brain-data`, then gets re-indexed.**
