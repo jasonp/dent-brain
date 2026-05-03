@@ -2,6 +2,90 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.30.0] - 2026-05-03
+
+## **The plugin install actually reaches Cowork now. v0.29.0's freeform copy worked for Claude Code but Cowork ignored it; the marketplace path is the real shipping channel.**
+## **`bash plugin/dist/install.sh` registers a local Claude Code marketplace, installs `dent-brain@dent-brain`, and Cowork picks up the slash commands on next restart.**
+
+v0.29.0 shipped a build script that copied skill files into `~/.claude/skills/`. Claude Code happily read them, but Cowork ignored that directory entirely — the install showed up in Code mode but failed in Cowork with "Unknown skill: dent-append-evidence". Cowork only loads skills that came in via a Claude Code marketplace install. v0.30.0 rewrites the build to produce a real local marketplace + plugin, the install runs `claude plugin marketplace add` + `claude plugin install`, and the cache lands at `~/.claude/plugins/cache/dent-brain/dent-brain/<version>/.claude/skills/<name>/SKILL.md` — the path Cowork actually reads.
+
+The new build (`scripts/build-plugin.ts`) produces:
+
+```
+plugin/dist/
+  .claude-plugin/
+    marketplace.json          declares the dent-brain plugin
+  dent-brain/
+    .claude-plugin/
+      plugin.json             declares "skills": "./.claude/skills"
+    .claude/
+      skills/
+        dent-append-evidence/SKILL.md
+        dent-enrich/SKILL.md
+        dent-resolve-entity/SKILL.md
+        dent-onboard-teammate/SKILL.md
+    README.md
+  install.sh                   runs claude plugin marketplace add + install
+  uninstall.sh                 runs claude plugin uninstall + marketplace remove
+  INSTALL.md                   human-readable instructions
+  manifest.lock.json           build provenance
+  fm-mcp/                      vendored FileMaker MCP (separate install)
+```
+
+`claude plugin validate plugin/dist` returns `✔ Validation passed` against Anthropic's marketplace schema.
+
+The install script also cleans up any legacy freeform `~/.claude/skills/dent-*` directories from a previous v0.29.0 install — single source of truth, no duplicate skill prose.
+
+### What this unblocks
+
+PLAN v2.0 success criterion #1: agent-side writes via Cowork visible in `dent-brain-data` git within 60s. The substrate has been ready since v0.26.0; the skill prose has been ready since v0.27.0. The piece that was always missing was getting Cowork to actually load that prose. v0.30.0 ships the working install path. After Claude Desktop restart + a fresh Cowork chat, `/dent-append-evidence` is a real slash command.
+
+### The numbers that matter
+
+| Metric | v0.29.0 | v0.30.0 | Δ |
+|---|---|---|---|
+| Cowork sees the dent skills | no (freeform copy ignored) | yes (marketplace install) | the whole point |
+| Install command | direct `cp -R` to `~/.claude/skills/` | `claude plugin marketplace add` + `claude plugin install` | the right channel |
+| Marketplace structure | n/a | full `marketplace.json` + per-plugin `plugin.json` | spec-compliant |
+| `claude plugin validate plugin/dist` | n/a | passes | self-checks the manifest |
+| Idempotent install | yes (with backups) | yes (no backups needed; `claude plugin install` is the dedup) | simpler |
+| Legacy cleanup on install | no | yes (removes `~/.claude/skills/dent-*` from v0.29 installs) | one source of truth |
+
+### To take advantage of v0.30.0
+
+```bash
+cd ~/gh/dent-brain
+git pull --ff-only
+bun run build:plugin
+bash plugin/dist/install.sh
+```
+
+Then **quit Claude Desktop completely (Cmd+Q)**, relaunch, and start a fresh Cowork chat. Try:
+
+```
+/dent-append-evidence remember that Steve confirmed Dent 2026 dates would be Sept 13-15 in our 2026-05-02 1:1
+```
+
+The agent should now route through the skill prose: detect Steve as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/steve-broback.md` via `markdown_append_to_page`, and produce a real commit in `dent-brain-data` git within seconds.
+
+If the slash command doesn't autocomplete in Cowork, you skipped the Cmd+Q. Window-close isn't enough on macOS.
+
+### Itemized changes
+
+#### Added
+- `scripts/build-plugin.ts` rewritten to produce a Claude Code-compatible marketplace at `plugin/dist/`. Validates against Anthropic's marketplace schema (`claude plugin validate plugin/dist` passes).
+- `plugin/dist/.claude-plugin/marketplace.json` (generated) — declares the `dent-brain` plugin.
+- `plugin/dist/dent-brain/.claude-plugin/plugin.json` (generated) — declares `"skills": "./.claude/skills"`.
+- `plugin/dist/dent-brain/README.md` (generated) — plugin-side install context.
+- `plugin/dist/install.sh` (generated) — runs `claude plugin marketplace add` + `claude plugin install`, with legacy-freeform cleanup as step 1.
+- `plugin/dist/uninstall.sh` (generated) — runs `claude plugin uninstall` + `claude plugin marketplace remove`.
+
+#### Changed
+- `INSTALL.md` (generated) updated for the marketplace flow + the "no, really, Cmd+Q is required" troubleshooting section.
+
+#### Removed
+- The freeform `~/.claude/skills/dent-*` install path from v0.29.0. The new `install.sh` cleans those up if they exist (they're a Claude-Code-only ghost install that doesn't reach Cowork).
+
 ## [0.29.0] - 2026-05-03
 
 ## **The Dent plugin builds. `bun run build:plugin` produces an installable bundle, and `bash plugin/dist/install.sh` drops the four `/dent-*` skills into Cowork.**
