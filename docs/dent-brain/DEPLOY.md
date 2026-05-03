@@ -99,6 +99,11 @@ In the project's **Variables** tab, add:
 | `DENT_BRAIN_GIT_NAME` | (optional) git commit author name. Default: `dent-brain-server`. |
 | `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@dentthefuture.com`. |
 | `DENT_BRAIN_PULL_INTERVAL_SECONDS` | (optional, PLAN v2.0 Phase 4) Interval for the scheduled `git pull --ff-only` + `performSync` against `dent-brain-data`. Default: `300` (5 minutes). Set to `0` to disable (e.g., for staging or single-writer debug runs). |
+| `DENT_BRAIN_REGFOX_API_KEY` | (optional, Phase 5.1) Webconnex API key for the RegFox polling ingestor. When set, the server polls `/search/registrants` every `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` and translates each new registration into a markdown bullet on the right entity page. See `docs/dent-brain/ingestors/regfox.md` for the full guide. |
+| `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` | (optional, default `300`) Tick interval for the RegFox cron. Set `0` to disable. |
+| `DENT_BRAIN_REGFOX_FORM_IDS` | (optional, default poll-all) Comma-separated form IDs to scope polling. |
+| `DENT_BRAIN_REGFOX_PRODUCT` | (optional, default `regfox.com`) Webconnex product. |
+| `DENT_BRAIN_REGFOX_DISCOUNT_FIELD_PATH` | (optional) Override path inside `fieldData` where the discount code lives. |
 
 The server reads `PORT` from env and binds to whatever Railway provides.
 

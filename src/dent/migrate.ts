@@ -103,6 +103,21 @@ export const DENT_MIGRATIONS: DentMigration[] = [
       DROP TABLE IF EXISTS evidence;
     `,
   },
+  {
+    version: 4,
+    name: 'regfox_ingest_state',
+    sql: `
+      -- Phase 5.1 RegFox polling ingestor. Per-form cursor state.
+      -- form_id = 0 is reserved for the "all forms (no formId filter)" cursor
+      -- used when DENT_BRAIN_REGFOX_FORM_IDS is unset.
+      CREATE TABLE IF NOT EXISTS regfox_ingest_state (
+        form_id        BIGINT      PRIMARY KEY,
+        last_seen_id   BIGINT      NOT NULL DEFAULT 0,
+        last_polled_at TIMESTAMPTZ,
+        last_status    TEXT
+      );
+    `,
+  },
 ];
 
 export const DENT_LATEST_VERSION = DENT_MIGRATIONS.length > 0
