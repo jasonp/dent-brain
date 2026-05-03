@@ -244,6 +244,54 @@ content:
 
 This is the breadcrumb. If a token is ever compromised, we know who issued it, when, and via what channel.
 
+### Phase 9 (optional): Hand-edit clone for the markdown-canonical mode
+
+PLAN v2.0 (since v0.27.0) makes markdown the canonical store; `dent-brain-data` is a real git repo, and any teammate who wants to edit pages directly in their editor can clone it. **This phase is optional** — Cowork-only is the default, and most teammates never need it. Run it only when:
+
+- The teammate explicitly asked to edit markdown directly, or
+- They've expressed a preference for "I'd rather just open the file in my editor."
+
+The contract:
+
+- The teammate is added as a collaborator on `dentthefuture/dent-brain-data` (admin grants this — does NOT happen automatically).
+- The teammate clones the repo locally. Frequency-of-pull is on them; the server's scheduled pull (Phase 4) handles their pushes within ~5 min.
+- The full workflow + conflict guidance lives in `docs/dent-brain/TEAMMATE_GUIDE.md` § Mode 2. Point them at it; do NOT inline the whole doc into the install message.
+
+Steps for the admin:
+
+1. **Add the teammate as a collaborator** on `dentthefuture/dent-brain-data`:
+   - GitHub → repo Settings → Collaborators → Add people → `<their GitHub username>`.
+   - Choose **Write** access (they need to push commits).
+2. **Send a follow-up install message** to the teammate:
+
+   ```
+   Hi <FullName>, optional follow-up: you can hand-edit pages in
+   dent-brain-data directly if you'd rather work in a code editor than
+   dictate to Cowork.
+
+   1. Confirm you got the GitHub email inviting you to
+      `dentthefuture/dent-brain-data` and accept it.
+   2. Read docs/dent-brain/TEAMMATE_GUIDE.md (in this repo) — it walks
+      through clone, edit, push, and the git-native conflict workflow.
+   3. Pull-before-edit, push-when-done. The server picks up your
+      pushes every ~5 minutes and re-indexes them so they show up in
+      Cowork queries.
+
+   You don't have to use this mode. Cowork-only works for everything.
+   This is for moments where you want to write the prose exactly right
+   or work offline.
+   ```
+
+3. **Verify (after they confirm they cloned and pushed something):**
+
+   ```bash
+   gh api repos/dentthefuture/dent-brain-data/commits/master --jq '.commit.author'
+   ```
+
+   If the most recent commit is by them and the server's `mcp_request_log` shows a `tools/call:query` from any token within the lag window after their push, the loop is closed.
+
+If the teammate declines or has no use for it, skip this phase entirely. There is no penalty — the brain works the same either way.
+
 ## Anti-patterns
 
 - ❌ Issuing a generic token name like `team`, `claude`, `cowork`, or `shared`. Breaks per-user audit. Pick a real human handle.

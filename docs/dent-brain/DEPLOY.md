@@ -98,6 +98,7 @@ In the project's **Variables** tab, add:
 | `DENT_BRAIN_DATA_PATH` | (optional) Override clone path. Default: `/app/dent-brain-data`. Set to `/tmp/dent-brain-data` for ephemeral storage. |
 | `DENT_BRAIN_GIT_NAME` | (optional) git commit author name. Default: `dent-brain-server`. |
 | `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@dentthefuture.com`. |
+| `DENT_BRAIN_PULL_INTERVAL_SECONDS` | (optional, PLAN v2.0 Phase 4) Interval for the scheduled `git pull --ff-only` + `performSync` against `dent-brain-data`. Default: `300` (5 minutes). Set to `0` to disable (e.g., for staging or single-writer debug runs). |
 
 The server reads `PORT` from env and binds to whatever Railway provides.
 

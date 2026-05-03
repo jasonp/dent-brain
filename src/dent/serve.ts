@@ -36,6 +36,7 @@ import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
 import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
+import { startScheduledPull, DEFAULT_PULL_INTERVAL_SECONDS, type ScheduledPullHandle } from './markdown-writer/cron.ts';
 import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
 import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
 
@@ -115,6 +116,7 @@ if (!sql) {
 // Skipped when DENT_BRAIN_DATA_DEPLOY_KEY is unset (local dev / tests with
 // no write path) — markdown_* ops will fail with "context not initialized"
 // if invoked, which is the right error.
+let scheduledPull: ScheduledPullHandle | null = null;
 if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
   try {
     const repoCtx = await ensureDataRepo(engine);
@@ -122,6 +124,21 @@ if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
   } catch (e) {
     console.error(`[dent-brain] FATAL: ensureDataRepo failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
+  }
+
+  // PLAN v2.0 Phase 4: scheduled pull. Surfaces teammate-side hand-edits
+  // pushed to dent-brain-data master without waiting for the next agent
+  // write to trigger an internal pull. Set DENT_BRAIN_PULL_INTERVAL_SECONDS=0
+  // to disable (e.g. for staging or for debugging).
+  const pullIntervalSec = Number.parseInt(
+    process.env.DENT_BRAIN_PULL_INTERVAL_SECONDS ?? String(DEFAULT_PULL_INTERVAL_SECONDS),
+    10,
+  );
+  if (Number.isFinite(pullIntervalSec) && pullIntervalSec > 0) {
+    scheduledPull = startScheduledPull(engine, pullIntervalSec * 1000);
+    console.error(`[dent-brain] scheduled-pull: every ${pullIntervalSec}s`);
+  } else {
+    console.error('[dent-brain] scheduled-pull: disabled (DENT_BRAIN_PULL_INTERVAL_SECONDS=0)');
   }
 } else {
   console.error('[dent-brain] DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable.');
@@ -458,6 +475,7 @@ if (!corsAllowlist) {
 const shutdown = async (signal: string) => {
   console.error(`[dent-brain] received ${signal}, shutting down gracefully`);
   try {
+    if (scheduledPull) scheduledPull.stop();
     server.stop(false);
     await engine.disconnect();
     console.error('[dent-brain] shutdown complete');
