@@ -143,10 +143,10 @@ bash plugin/dist/install.sh
 Then **quit Claude Desktop completely (Cmd+Q)**, relaunch, and start a fresh Cowork chat. Try:
 
 ```
-/dent-append-evidence remember that Steve confirmed Dent 2026 dates would be Sept 13-15 in our 2026-05-02 1:1
+/dent-append-evidence remember that the founder confirmed the 2026 conference dates in our 1:1
 ```
 
-The agent should now route through the skill prose: detect Steve as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/steve-broback.md` via `markdown_append_to_page`, and produce a real commit in `dent-brain-data` git within seconds.
+The agent should now route through the skill prose: detect the founder as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/founder.md` via `markdown_append_to_page`, and produce a real commit in `<your>-brain-data` git within seconds.
 
 If the slash command doesn't autocomplete in Cowork, you skipped the Cmd+Q. Window-close isn't enough on macOS.
 
@@ -222,10 +222,10 @@ bash plugin/dist/install.sh
 Then quit Claude Desktop (Cmd+Q), relaunch, start a fresh Cowork chat, and try:
 
 ```
-/dent-append-evidence remember that Steve confirmed Dent 2026 dates would be Sept 13-15 in our 2026-05-02 1:1
+/dent-append-evidence remember that the founder confirmed the 2026 conference dates in our 1:1
 ```
 
-The agent should now route through the skill prose: detect Steve as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/steve-broback.md` via `markdown_append_to_page`, and you should see a real commit in `dent-brain-data` git within seconds.
+The agent should now route through the skill prose: detect the founder as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/founder.md` via `markdown_append_to_page`, and you should see a real commit in `<your>-brain-data` git within seconds.
 
 That's the v2.0 thesis test — agent-side write visible in git within 60s. The substrate has been ready since v0.26.0; this release ships the last mile.
 
@@ -334,10 +334,10 @@ The mandated dent-specific section scaffold is gone, too. v1.x's `## State` / `#
 The pivot was triggered by a manual gate test that surfaced the v1.8 promise — "git history of dent-brain-data IS the snapshot/revert mechanism" — was false. v0.27.0 closes that loop. The re-run protocol:
 
 1. Open a Cowork session.
-2. Trigger `/dent-append-evidence` with an observation about Steve Broback (e.g., "remember that Steve confirmed Dent 2026 dates in our 2026-05-02 1:1").
-3. Within 60 seconds, `git log` in `~/gh/dent-brain-data` should show a commit authored by `dent-brain-server <noreply@dentthefuture.com>` with message `agent: append entities/people/steve-broback`. The commit's diff should add a bullet under `## Timeline` matching the observation.
-4. Run `query "Steve Broback Dent 2026"` from the same Cowork session — the appended bullet should surface in the hybrid-search results, sourced from the Postgres index that was refreshed via `performSync` inside the op.
-5. Visual: open `entities/people/steve-broback.md` in the local clone — the new bullet should be there.
+2. Trigger `/dent-append-evidence` with an observation about a seeded entity (e.g., "remember that the founder confirmed the 2026 conference dates in our 1:1").
+3. Within 60 seconds, `git log` in `~/gh/dent-brain-data` should show a commit authored by `dent-brain-server <noreply@dentthefuture.com>` with message `agent: append entities/people/founder`. The commit's diff should add a bullet under `## Timeline` matching the observation.
+4. Run `query "the founder 2026 conference"` from the same Cowork session — the appended bullet should surface in the hybrid-search results, sourced from the Postgres index that was refreshed via `performSync` inside the op.
+5. Visual: open `entities/people/founder.md` in the local clone — the new bullet should be there.
 
 ### To take advantage of v0.27.0
 
@@ -373,7 +373,7 @@ The pivot was triggered by a manual gate test that surfaced the v1.8 promise —
 ## **The Dent fork now writes through markdown first. Every agent observation lands as a real commit in `dent-brain-data`, then gets re-indexed.**
 ## **PLAN v2.0 (markdown-canonical pivot) Phase 1 ships the write path; `evidence` table goes in Phase 2.**
 
-The 2026-05-02 manual gate test surfaced that the v1.8 promise — "git history of dent-brain-data IS the snapshot/revert mechanism" — was false. Cowork sessions wrote into Postgres only. `~/gh/dent-brain-data/entities/people/steve-broback.md` never moved. PLAN v2.0 reframes the architecture to upstream gbrain's actual default: markdown is canonical, Postgres is the retrieval index, the agent reads + writes through both. Phase 1 is the write path itself.
+The 2026-05-02 manual gate test surfaced that the v1.8 promise — "git history of dent-brain-data IS the snapshot/revert mechanism" — was false. Cowork sessions wrote into Postgres only. `~/gh/dent-brain-data/entities/people/founder.md` never moved. PLAN v2.0 reframes the architecture to upstream gbrain's actual default: markdown is canonical, Postgres is the retrieval index, the agent reads + writes through both. Phase 1 is the write path itself.
 
 The new model is **append-by-default**. Two MCP ops land:
 

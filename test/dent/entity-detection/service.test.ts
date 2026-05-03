@@ -56,31 +56,31 @@ beforeEach(async () => {
 
 describe('detectEntities', () => {
   test('exact full-name match on a person page returns confidence 1.0', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback', {
+    await seedPage('entities/people/founder', 'person', 'the founder', {
       filemaker_record_id: '12345',
     });
-    await seedPage('entities/people/mike-cottmeyer', 'person', 'Mike Cottmeyer');
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example');
 
-    const r = await detectEntities('Met with Steve Broback at the conference.', makeCtx());
+    const r = await detectEntities('Met with the founder at the conference.', makeCtx());
     expect(r.matches.length).toBe(1);
-    expect(r.matches[0].slug).toBe('entities/people/steve-broback');
+    expect(r.matches[0].slug).toBe('entities/people/founder');
     expect(r.matches[0].confidence).toBe(1.0);
     expect(r.matches[0].rule).toBe('exact-title');
     expect(r.matches[0].fm_id).toBe('12345');
   });
 
   test('FM id surfaces from frontmatter when present, null when absent', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback', {
+    await seedPage('entities/people/founder', 'person', 'the founder', {
       filemaker_record_id: '12345',
     });
-    await seedPage('entities/people/mike-cottmeyer', 'person', 'Mike Cottmeyer'); // no fm id
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example'); // no fm id
 
-    const r = await detectEntities('Steve Broback and Mike Cottmeyer.', makeCtx());
+    const r = await detectEntities('the founder and Alice Example.', makeCtx());
     expect(r.matches.length).toBe(2);
-    const steve = r.matches.find(m => m.slug.includes('steve'));
-    const mike = r.matches.find(m => m.slug.includes('mike'));
-    expect(steve!.fm_id).toBe('12345');
-    expect(mike!.fm_id).toBeNull();
+    const founderMatch = r.matches.find(m => m.slug.includes('founder'));
+    const aliceMatch = r.matches.find(m => m.slug.includes('alice'));
+    expect(founderMatch!.fm_id).toBe('12345');
+    expect(aliceMatch!.fm_id).toBeNull();
   });
 
   test('alias from frontmatter matches', async () => {
@@ -96,41 +96,41 @@ describe('detectEntities', () => {
   });
 
   test('first-name fallback fires only when full name not in text, lower confidence', async () => {
-    await seedPage('entities/people/mike-cottmeyer', 'person', 'Mike Cottmeyer');
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example');
 
-    const r = await detectEntities('Talked to Mike yesterday.', makeCtx());
+    const r = await detectEntities('Talked to Alice yesterday.', makeCtx());
     expect(r.matches.length).toBe(1);
     expect(r.matches[0].rule).toBe('first-name-fallback');
     expect(r.matches[0].confidence).toBe(0.7);
   });
 
   test('full name match suppresses first-name fallback for same person', async () => {
-    await seedPage('entities/people/mike-cottmeyer', 'person', 'Mike Cottmeyer');
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example');
 
-    const r = await detectEntities('Mike Cottmeyer told Mike to rest.', makeCtx());
-    // Should match Mike Cottmeyer once via exact-title; the trailing
+    const r = await detectEntities('Alice Example told Mike to rest.', makeCtx());
+    // Should match Alice Example once via exact-title; the trailing
     // "Mike" should NOT produce a duplicate first-name-fallback hit
     // (we already have a high-confidence match for the same slug).
     const slugs = r.matches.map(m => m.slug);
-    expect(slugs).toEqual(['entities/people/mike-cottmeyer']);
+    expect(slugs).toEqual(['entities/people/alice-example']);
   });
 
   test('multi-word match wins over single-word when both could fire', async () => {
     await seedPage('entities/people/mike', 'person', 'Mike'); // unusual — title is just "Mike"
-    await seedPage('entities/people/mike-cottmeyer', 'person', 'Mike Cottmeyer');
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example');
 
-    const r = await detectEntities('Mike Cottmeyer at the meeting.', makeCtx());
-    // The longer "Mike Cottmeyer" should consume the range; bare "Mike"
+    const r = await detectEntities('Alice Example at the meeting.', makeCtx());
+    // The longer "Alice Example" should consume the range; bare "Mike"
     // shouldn't double-match.
     const slugs = r.matches.map(m => m.slug);
-    expect(slugs).toContain('entities/people/mike-cottmeyer');
+    expect(slugs).toContain('entities/people/alice-example');
     expect(slugs).not.toContain('entities/people/mike');
   });
 
   test('company-type pages match', async () => {
-    await seedPage('entities/companies/leadingagile', 'company', 'LeadingAgile');
+    await seedPage('entities/companies/acme-co', 'company', 'Acme Co');
 
-    const r = await detectEntities('Mike works at LeadingAgile.', makeCtx());
+    const r = await detectEntities('Mike works at Acme Co.', makeCtx());
     expect(r.matches.length).toBe(1);
     expect(r.matches[0].type).toBe('company');
   });
@@ -145,9 +145,9 @@ describe('detectEntities', () => {
   });
 
   test('first-name fallback does NOT fire for non-person pages', async () => {
-    await seedPage('entities/companies/leadingagile', 'company', 'LeadingAgile');
+    await seedPage('entities/companies/acme-co', 'company', 'Acme Co');
 
-    // Single token "LeadingAgile" does match exact-title (one-word title).
+    // Single token "Acme Co" does match exact-title (one-word title).
     // But a substring like "Leading" should NOT first-name-fallback into
     // the company. Verify by giving text with a different word.
     const r = await detectEntities('We are leading the field.', makeCtx());
@@ -155,31 +155,31 @@ describe('detectEntities', () => {
   });
 
   test('case-insensitive matching', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback');
+    await seedPage('entities/people/alice-example', 'person', 'Alice Example');
 
-    const r = await detectEntities('STEVE BROBACK was there. steve broback returned.', makeCtx());
+    const r = await detectEntities('ALICE EXAMPLE was there. alice example returned.', makeCtx());
     expect(r.matches.length).toBe(2);
-    expect(r.matches.every(m => m.slug === 'entities/people/steve-broback')).toBe(true);
+    expect(r.matches.every(m => m.slug === 'entities/people/alice-example')).toBe(true);
   });
 
   test('whole-word boundary — substring inside a longer word does not match', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve');
+    await seedPage('entities/people/bob', 'person', 'Bob');
 
-    const r = await detectEntities('Stevedore was unloading.', makeCtx());
+    const r = await detectEntities('Bobsled was a sport.', makeCtx());
     expect(r.matches.length).toBe(0);
   });
 
   test('unknowns: capitalized name-like spans not matching any entity', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback');
+    await seedPage('entities/people/founder', 'person', 'the founder');
 
-    const r = await detectEntities('Steve Broback met Mike Cottmeyer at LeadingAgile.', makeCtx());
-    // Steve matches; Mike Cottmeyer and LeadingAgile do not.
-    // LeadingAgile is a single capitalized word — but "LeadingAgile" would
+    const r = await detectEntities('the founder met Alice Example at Acme Co.', makeCtx());
+    // the founder matches; Alice Example and Acme Co do not.
+    // Acme Co is a single capitalized word — but "Acme Co" would
     // need to match the regex /[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}/ — it
     // does NOT (no internal lowercase before second cap). So it won't
     // appear in unknowns. That's fine; CamelCase company names are a
     // known limitation for tier-1.
-    expect(r.unknowns).toContain('Mike Cottmeyer');
+    expect(r.unknowns).toContain('Alice Example');
   });
 
   test('unknowns: stopwords like Tuesday and Dent are filtered out', async () => {
@@ -190,11 +190,11 @@ describe('detectEntities', () => {
   });
 
   test('unknowns: do not include spans already consumed by a match', async () => {
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback');
+    await seedPage('entities/people/founder', 'person', 'the founder');
 
-    const r = await detectEntities('Steve Broback was here.', makeCtx());
+    const r = await detectEntities('the founder was here.', makeCtx());
     expect(r.matches.length).toBe(1);
-    expect(r.unknowns).not.toContain('Steve Broback');
+    expect(r.unknowns).not.toContain('the founder');
     expect(r.unknowns).not.toContain('Steve');
     expect(r.unknowns).not.toContain('Broback');
   });
@@ -221,11 +221,11 @@ describe('detectEntities', () => {
     // putPage stores the frontmatter as-is; if a page were created via
     // raw markdown parsing the FM id might come through as a string
     // with quotes. detectEntities should still extract it cleanly.
-    await seedPage('entities/people/steve-broback', 'person', 'Steve Broback', {
+    await seedPage('entities/people/founder', 'person', 'the founder', {
       filemaker_record_id: '"abc-123"', // with embedded quotes
     });
 
-    const r = await detectEntities('Steve Broback called.', makeCtx());
+    const r = await detectEntities('the founder called.', makeCtx());
     // We don't strip quotes here — that's caller territory. But the
     // value should round-trip without crashing.
     expect(r.matches[0].fm_id).toBe('"abc-123"');

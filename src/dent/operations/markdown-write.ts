@@ -84,7 +84,7 @@ const markdown_append_to_page: Operation = {
     slug: {
       type: 'string',
       required: true,
-      description: 'Page slug (e.g. "entities/people/steve-broback"). Resolves to <repo>/<slug>.md.',
+      description: 'Page slug (e.g. "entities/people/founder"). Resolves to <repo>/<slug>.md.',
     },
     content: {
       type: 'string',

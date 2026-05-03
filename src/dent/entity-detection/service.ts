@@ -174,7 +174,7 @@ export async function detectEntities(
   const consumedRanges: Array<[number, number]> = [];
 
   // Pass 1+2: exact title and alias match (multi-word forms first).
-  // Sort by name length descending so "Mike Cottmeyer" wins over "Mike"
+  // Sort by name length descending so "Alice Example" wins over "Mike"
   // when both could match.
   const fullNameTargets: Array<{ entity: IndexedEntity; name: string }> = [];
   for (const e of index) {

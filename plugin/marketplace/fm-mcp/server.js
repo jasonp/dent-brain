@@ -7,8 +7,8 @@
  * ~/RegFox MCP/.
  *
  * Environment variables (required):
- *   FM_HOST       - FileMaker Server hostname, e.g. "sea-17.fmsdb.com"
- *   FM_DATABASE   - Database name, e.g. "DentCRM2025"
+ *   FM_HOST       - FileMaker Server hostname, e.g. "your-fm-host.example.com"
+ *   FM_DATABASE   - Database name, e.g. "YourFMDatabase"
  *   FM_USERNAME   - Account name with fmrest extended privilege
  *   FM_PASSWORD   - Password for that account
  *
