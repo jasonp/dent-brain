@@ -30,6 +30,10 @@ eval/data/amara-life-v1/_cache/
 test/.cache/
 
 .claude/
+# Exception: the built plugin marketplace's `.claude/skills/` is the
+# committed plugin payload — Cowork pulls this from GitHub.
+!plugin/marketplace/.claude/
+!plugin/marketplace/.claude/**
 export/
 
 # Tier 3 PGLite snapshot fixture (built on demand by build:pglite-snapshot)
