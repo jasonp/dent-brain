@@ -9,7 +9,8 @@
     "deploy_id": "dent-brain-prod",
     "server_url": "https://dent-brain.dentthefuture.com/mcp",
     "server_url_dev": "http://localhost:3000/mcp",
-    "data_repo": "github.com/dentthefuture/dent-brain-data"
+    "data_repo": "github.com/dentthefuture/dent-brain-data",
+    "code_repo": "jasonp/dent-brain"
   },
 
   "skills": {
@@ -17,15 +18,17 @@
     "_example": "Template: append-evidence → Built: /dent-append-evidence (Dent deploy) or /yc-append-evidence (hypothetical YC deploy)",
 
     "templates": [
+      "setup",
       "append-evidence",
       "enrich",
+      "resolve-entity",
+      "onboard-teammate",
+      "add-ingestor",
       "flag-fact",
       "whoami",
-      "resolve-entity",
       "update-dbrain",
       "setup-filemaker-mcp",
-      "signal-detector",
-      "onboard-teammate"
+      "signal-detector"
     ]
   },
 

@@ -1,5 +1,5 @@
 ---
-name: resolve-entity
+name: {{prefix}}-resolve-entity
 version: 2.0.0
 description: |
   Disambiguate a name that resolves to 2+ FileMaker People records with
