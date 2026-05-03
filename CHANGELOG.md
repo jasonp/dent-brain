@@ -2,6 +2,85 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.29.0] - 2026-05-03
+
+## **The Dent plugin builds. `bun run build:plugin` produces an installable bundle, and `bash plugin/dist/install.sh` drops the four `/dent-*` skills into Cowork.**
+## **Phase 2.5 closes the missing onboarding gap. v2.0 success criterion #1 is now reachable.**
+
+PLAN v2.0 Phases 1–4 shipped the storage model. The piece that was always missing — getting the dent skills loaded into Claude Desktop / Cowork — finally lands as a real build artifact + install script. No clawhub, no marketplace dependency, no OAuth dance. Two commands and you're running.
+
+The build (`scripts/build-plugin.ts`) reads `plugin/manifest.json`, walks `skills/dent/`, substitutes `{{prefix}}` where present, and writes prefix-namespaced skill directories to `plugin/dist/skills/`. The install script (generated alongside) copies those into `~/.claude/skills/`, where Claude Code, Claude Desktop's Code mode, and Cowork mode all read on session start. Existing `dent-*` directories get backed up to `~/.dent-brain/backups/` before overwrite, so re-running install after a rebuild is a no-risk operation.
+
+The model is: every admin who runs the dent-brain repo locally can rebuild the plugin from current master and ship it to themselves. Teammates who want skill-driven Cowork use can either receive the built `plugin/dist/` tarball from the admin, or clone the repo and rebuild themselves. The MCP connector registration (the bearer-token path that's been working since v0.24) stays separate — it's a different config file, different lifecycle, and `/dent-onboard-teammate` already covers it.
+
+### What `bun run build:plugin` produces
+
+```
+plugin/dist/
+  install.sh                     # idempotent installer with backup
+  uninstall.sh                   # removes dent-* dirs (preserves backups)
+  INSTALL.md                     # human-readable instructions + troubleshooting
+  manifest.lock.json             # what got built (versions, file count, deploy id)
+  skills/
+    dent-append-evidence/SKILL.md
+    dent-enrich/SKILL.md
+    dent-resolve-entity/SKILL.md
+    dent-onboard-teammate/SKILL.md
+  fm-mcp/                        # vendored FileMaker MCP server (separate install path)
+```
+
+`plugin/dist/` is gitignored — regenerate it anytime with `bun run build:plugin`. The skill templates declared in the manifest but not yet on disk (`flag-fact`, `whoami`, `update-dbrain`, `setup-filemaker-mcp`, `signal-detector`) are noted by the build but do not block — they get built when their templates land.
+
+### The numbers that matter
+
+| Metric | v0.28.0 | v0.29.0 | Δ |
+|---|---|---|---|
+| Plugin build script | none | `scripts/build-plugin.ts` (~250 LOC) | new |
+| Install workflow | manual "copy SKILL.md by hand" | `bash plugin/dist/install.sh` (idempotent + backup) | one command |
+| Skills in `plugin/dist/skills/` | n/a | 4 (`dent-append-evidence`, `dent-enrich`, `dent-resolve-entity`, `dent-onboard-teammate`) | the canonical set |
+| `bun run build:plugin` runtime | n/a | sub-second | trivially re-runnable |
+| Claude Desktop / Cowork can call `/dent-*` slash commands | no | yes (after install + restart) | unblocks v2.0 success criterion #1 |
+| Lines of net-new code | — | ~250 build script + ~200 generated install/uninstall/readme | additive |
+
+### Verified install path
+
+Built locally on the admin Mac, ran `bash plugin/dist/install.sh`, observed the four `dent-*` directories appear under `~/.claude/skills/`. Claude Code's available-skills list (this session, post-install) now includes `dent-append-evidence`, `dent-enrich`, `dent-resolve-entity`, and `dent-onboard-teammate`. Cowork picks them up after the standard "quit Claude Desktop fully + new chat" cycle that every gstack-style skill install requires.
+
+### To take advantage of v0.29.0
+
+```bash
+cd ~/gh/dent-brain
+git pull --ff-only
+bun run build:plugin
+bash plugin/dist/install.sh
+```
+
+Then quit Claude Desktop (Cmd+Q), relaunch, start a fresh Cowork chat, and try:
+
+```
+/dent-append-evidence remember that Steve confirmed Dent 2026 dates would be Sept 13-15 in our 2026-05-02 1:1
+```
+
+The agent should now route through the skill prose: detect Steve as an entity, append a date-anchored bullet under `## Timeline` in `entities/people/steve-broback.md` via `markdown_append_to_page`, and you should see a real commit in `dent-brain-data` git within seconds.
+
+That's the v2.0 thesis test — agent-side write visible in git within 60s. The substrate has been ready since v0.26.0; this release ships the last mile.
+
+### Itemized changes
+
+#### Added
+- `scripts/build-plugin.ts` — reads `plugin/manifest.json`, applies `{{prefix}}` substitution, copies `skills/dent/<name>/SKILL.md` → `plugin/dist/skills/dent-<name>/SKILL.md`, copies `plugin/fm-mcp/` (when enabled), writes `install.sh`, `uninstall.sh`, `INSTALL.md`, and `manifest.lock.json`.
+- `bun run build:plugin` npm script.
+- `plugin/dist/install.sh` (generated) — idempotent installer with timestamped backups in `~/.dent-brain/backups/`.
+- `plugin/dist/uninstall.sh` (generated) — removes the dent-* skill directories from `~/.claude/skills/` (preserves backups).
+- `plugin/dist/INSTALL.md` (generated) — install steps, troubleshooting, rebuild loop.
+- `plugin/dist/manifest.lock.json` (generated) — lockfile capturing what got built (deploy id, prefix, version, server URL, per-skill byte counts, build timestamp).
+
+#### Changed
+- `.gitignore` — adds `plugin/dist/` so build output stays local.
+
+#### Note
+- The 5 manifest-declared templates that don't yet exist on disk (`flag-fact`, `whoami`, `update-dbrain`, `setup-filemaker-mcp`, `signal-detector`) are logged by the build but skipped silently. They become first-class build outputs as soon as the templates land in `skills/dent/`.
+
 ## [0.28.0] - 2026-05-03
 
 ## **Teammates can now hand-edit pages in `dent-brain-data` directly. The Dent server pulls every 5 minutes, re-indexes, and Cowork queries pick up the change.**

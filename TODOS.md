@@ -572,6 +572,11 @@ Migration v3 drops the `evidence` table on Railway boot via the existing schema-
 
 `src/dent/markdown-writer/cron.ts` ships `pullAndSyncOnce()` + `startScheduledPull()`. `setInterval`-driven loop running inside `serve.ts` after `ensureDataRepo`. Default interval 300s, configurable via `DENT_BRAIN_PULL_INTERVAL_SECONDS` (set to `0` to disable). Reuses `withRepoLock` so contention with agent writes is benign — busy ticks no-op and the next tick catches up. 4 new integration tests against a separate "teammate" working clone fixture cover: no-op tick, teammate-push pickup, second-tick no-op, sub-namespace pickup. Errors caught at the boundary so an interval timer never dies on transient git/network/postgres hiccups.
 
+### ~~Phase 2.5: dent plugin build + install workflow~~
+**Completed:** v0.29.0 (2026-05-03)
+
+`scripts/build-plugin.ts` reads `plugin/manifest.json`, applies `{{prefix}}` substitution, walks `skills/dent/`, writes prefix-namespaced skill folders + idempotent `install.sh` / `uninstall.sh` / `INSTALL.md` / `manifest.lock.json` to `plugin/dist/`. Install drops the four `dent-*` skill folders into `~/.claude/skills/` where Claude Code, Code mode, and Cowork all read them on session start. Verified end-to-end on the admin Mac — Claude Code's available-skills list now includes the dent skills post-install. Cowork picks them up after the standard "quit Claude Desktop fully + new chat" cycle. `plugin/dist/` is gitignored (regenerable). 5 manifest-declared templates not yet on disk are skipped silently (`flag-fact`, `whoami`, `update-dbrain`, `setup-filemaker-mcp`, `signal-detector`) — they become first-class build outputs when their templates land.
+
 ### Push-rejection stuck-state recovery
 **Priority:** P3
 
