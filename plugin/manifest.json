@@ -35,8 +35,8 @@
   "fm_mcp": {
     "_note": "FileMaker MCP config is org-specific and goes here. Each deploy that uses FM federation fills these in.",
     "enabled": true,
-    "host": "sea-17.fmsdb.com",
-    "database": "DentCRM2025",
+    "host": "your-fm-host.example.com",
+    "database": "YourFMDatabase",
     "account_prefix": "mcp_",
     "privilege_set": "MCP Read And Edit Records",
     "vendored_server_path": "plugin/fm-mcp/",

@@ -12,7 +12,7 @@
 
 /** A name in the input text resolved to a brain entity page. */
 export interface EntityMatch {
-  /** Slug of the matched page (e.g. "entities/people/steve-broback"). */
+  /** Slug of the matched page (e.g. "entities/people/founder"). */
   slug: string;
   /** Page title. */
   title: string;

@@ -59,7 +59,7 @@ re-syntheses; this skill is for the conversational in-the-moment
 
 The user invokes the skill with a natural-language observation:
 
-> "Remember that Mike Cottmeyer said he's transitioning out of LeadingAgile during our 2026-04-22 1:1."
+> "Remember that Alice Example said he's transitioning out of Acme Co during our 2026-04-22 1:1."
 
 The skill's job: turn that into one or more bullets appended to the
 right entity pages, attributed in-line, with the right date when one is
@@ -77,16 +77,16 @@ Call `detect_entities(text=<the observation>)`. Returns:
 {
   "matches": [
     {
-      "slug": "entities/people/mike-cottmeyer",
-      "title": "Mike Cottmeyer",
+      "slug": "entities/people/alice-example",
+      "title": "Alice Example",
       "type": "person",
       "fm_id": "12345",
       "confidence": 1.0,
       "rule": "exact-title",
-      "matched_text": "Mike Cottmeyer"
+      "matched_text": "Alice Example"
     }
   ],
-  "unknowns": ["LeadingAgile"]
+  "unknowns": ["Acme Co"]
 }
 ```
 
@@ -108,7 +108,7 @@ exactly:
 | **2+ matches** | Cannot resolve mechanically. Invoke `/dent-resolve-entity` with the candidate list. After the user picks one, that skill writes the entity page through `markdown_replace_page`; resume here and add the slug to the write list. |
 
 **Email disambiguation shortcut:** if the observation includes an email
-address (e.g. "from mike@leadingagile.com"), use it to disambiguate the
+address (e.g. "from alice@acme-example.com"), use it to disambiguate the
 2+ matches case before escalating. FM treats secondary emails as lookup
 keys — match against any email field on the FM record.
 
@@ -141,7 +141,7 @@ For each confirmed entity slug from steps 1–2:
      ```
      Example:
      ```
-     - **2026-04-22** | Mike said he's transitioning out of LeadingAgile [Source: meetings/2026-04-22]
+     - **2026-04-22** | Alice said he's transitioning out of Acme Co [Source: meetings/2026-04-22]
      ```
      The `**YYYY-MM-DD** | …` shape is the gbrain-native pattern that
      `parseTimelineEntries` recognizes — get this format right and

@@ -1,6 +1,6 @@
 # FileMaker MCP
 
-Custom MCP server for querying DentCRM2025 on `sea-17.fmsdb.com` via the FileMaker Data API.
+Custom MCP server for querying YourFMDatabase on `your-fm-host.example.com` via the FileMaker Data API.
 
 Built because the third-party `filemaker-connector` DXT extension was
 silently failing with "Invalid FileMaker Data API token" despite credentials
@@ -21,8 +21,8 @@ That's it. No build step — it's plain ES modules.
 The MCP inspector gives you a browser UI to call the tools directly:
 
 ```bash
-FM_HOST=sea-17.fmsdb.com \
-FM_DATABASE=DentCRM2025 \
+FM_HOST=your-fm-host.example.com \
+FM_DATABASE=YourFMDatabase \
 FM_USERNAME=mcp_claude \
 FM_PASSWORD='your-password' \
 npm run inspect
@@ -41,8 +41,8 @@ Inside the existing `"mcpServers"` block, add:
   "command": "node",
   "args": ["/Users/sb3/FileMaker MCP/server.js"],
   "env": {
-    "FM_HOST": "sea-17.fmsdb.com",
-    "FM_DATABASE": "DentCRM2025",
+    "FM_HOST": "your-fm-host.example.com",
+    "FM_DATABASE": "YourFMDatabase",
     "FM_USERNAME": "mcp_claude",
     "FM_PASSWORD": "your-password-here"
   }

@@ -16,13 +16,13 @@ import {
 } from '../../../src/dent/enrich/helpers.ts';
 
 const PAGE_WITH_FM = `---
-title: Steve Broback
+title: the founder
 type: person
 filemaker_record_id: 12345
 updated: 2026-05-01
 ---
 
-# Steve Broback
+# the founder
 
 Founder, Dent The Future [Source: FM People #12345]
 `;
@@ -120,9 +120,9 @@ describe('pageHasFmId', () => {
 describe('extractFrontmatter', () => {
   test('returns the YAML block between the fences', () => {
     const fm = extractFrontmatter(PAGE_WITH_FM);
-    expect(fm).toContain('title: Steve Broback');
+    expect(fm).toContain('title: the founder');
     expect(fm).toContain('filemaker_record_id: 12345');
-    expect(fm).not.toContain('# Steve Broback'); // body not included
+    expect(fm).not.toContain('# the founder'); // body not included
   });
 
   test('returns null when no frontmatter exists', () => {
@@ -138,7 +138,7 @@ describe('splitPage', () => {
   test('returns frontmatter + body for fenced page', () => {
     const { frontmatter, body } = splitPage(PAGE_WITH_FM);
     expect(frontmatter).toContain('filemaker_record_id: 12345');
-    expect(body).toContain('# Steve Broback');
+    expect(body).toContain('# the founder');
     expect(body).toContain('Founder, Dent The Future');
     expect(body).not.toContain('---'); // fences stripped
   });

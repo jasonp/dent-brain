@@ -1,7 +1,7 @@
 {
   "name": "filemaker-mcp",
   "version": "0.1.0",
-  "description": "Custom MCP server for DentCRM2025 on FileMaker Server",
+  "description": "Custom MCP server for YourFMDatabase on FileMaker Server",
   "type": "module",
   "main": "server.js",
   "scripts": {

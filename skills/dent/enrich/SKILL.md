@@ -81,11 +81,11 @@ the user's API budget and risks drift from preserved hand-edits.
 
 The skill takes one argument: the **entity slug**. Examples:
 
-- `entities/people/steve-broback`
+- `entities/people/founder`
 - `entities/companies/microsoft`
 - `entities/projects/dent-blend-austin`
 
-If the user says "enrich Mike Cottmeyer" with no slug, use `query` or
+If the user says "enrich Alice Example" with no slug, use `query` or
 `search` to resolve the slug first, then proceed.
 
 ---
@@ -169,10 +169,10 @@ field, **note the discrepancy inline** but render the FM value as the
 truth. Example fragment:
 
 ```markdown
-- **Role:** Founder, LeadingAgile [Source: FM People #12345]
-- **Email:** mike@leadingagile.com [Source: FM People #12345]
-- (Discrepancy: 2026-04-22 meeting notes mention Mike said he was
-  "transitioning out" of LeadingAgile, but FM still lists him as Founder.
+- **Role:** Founder, Acme Co [Source: FM People #12345]
+- **Email:** alice@acme-example.com [Source: FM People #12345]
+- (Discrepancy: 2026-04-22 meeting notes mention Alice said he was
+  "transitioning out" of Acme Co, but FM still lists him as Founder.
   Verify with Mike or update FM.)
 ```
 

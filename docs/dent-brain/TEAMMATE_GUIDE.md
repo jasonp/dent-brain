@@ -86,7 +86,7 @@ Done. From now on, the workflow is git-native.
      simple top-level prose paragraph.
    - Date-anchored bullets go under `## Timeline` in this exact format:
      ```
-     - **2026-05-02** | Steve confirmed Dent 2026 dates would be Sept 13–15. [Source: meetings/2026-05-02]
+     - **2026-05-02** | The founder confirmed the 2026 conference dates in our 1:1. [Source: meetings/2026-05-02]
      ```
      The `- **YYYY-MM-DD** | …` shape is what gbrain's
      `parseTimelineEntries` recognizes and auto-extracts into a
@@ -97,7 +97,7 @@ Done. From now on, the workflow is git-native.
 
    ```bash
    git add path/to/edited-file.md
-   git commit -m "Update Steve's page with Dent 2026 dates"
+   git commit -m "Update the founder's page with 2026 dates"
    git push origin master
    ```
 
@@ -111,7 +111,7 @@ Done. From now on, the workflow is git-native.
 
 5. **Verify** by asking Cowork:
 
-   > "What do we know about Steve's role at Dent 2026?"
+   > "What do we know about the founder's role at the 2026 conference?"
 
    The new content should surface in the answer.
 

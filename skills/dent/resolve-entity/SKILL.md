@@ -84,8 +84,8 @@ single match (or null), and let `/dent-append-evidence` resume.
 Show the candidates as a numbered list. Each line:
 
 ```
-1. Mike Cottmeyer (mike@leadingagile.com) — Founder, LeadingAgile — last seen 2026-03-14
-2. Mike Coté (mike@adventium.io) — CTO, Adventium — last seen 2025-11-02
+1. Mike Example (mike@acme-example.com) — Founder, Acme Co — last seen 2026-03-14
+2. Mike Foster (mike@widget-co.example) — CTO, Widget Co — last seen 2025-11-02
 3. Mike Smith (msmith@example.com) — VP Eng, Example Corp — no recent activity
 ```
 
@@ -103,17 +103,17 @@ observation: '<context>'. Which Mike?"
 
 - **User picks 1–N (an FM candidate):** call `markdown_replace_page` to
   write a new entity page at the appropriate slug (e.g.
-  `entities/people/mike-cottmeyer` — derive from name; use kebab-case).
+  `entities/people/mike-example` — derive from name; use kebab-case).
   The `content` is a minimal markdown stub:
   ```markdown
   ---
-  title: Mike Cottmeyer
+  title: Mike Example
   type: person
   filemaker_record_id: 12345
   updated: 2026-04-22
   ---
 
-  # Mike Cottmeyer
+  # Mike Example
 
   Stub created by /dent-resolve-entity. Run /dent-enrich to flesh out
   from FM + observations.
@@ -149,7 +149,7 @@ write flow with this slug added to its target list).
 
 - **Slug collision:** before calling `markdown_replace_page`, call
   `get_page(slug)` to check whether the natural slug already exists in
-  the brain. If yes, append a disambiguator (e.g. `mike-cottmeyer-2`)
+  the brain. If yes, append a disambiguator (e.g. `alice-example-2`)
   and tell the user. Do NOT overwrite an existing entity page —
   `markdown_replace_page` without an `expected_prior_hash` will
   clobber, which is wrong here.
