@@ -2,6 +2,60 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.28.0] - 2026-05-03
+
+## **Teammates can now hand-edit pages in `dent-brain-data` directly. The Dent server pulls every 5 minutes, re-indexes, and Cowork queries pick up the change.**
+## **PLAN v2.0 Phases 3 + 4 ship together. Markdown is canonical, and the loop closes from both ends.**
+
+PLAN v2.0's two remaining server-side phases land. The agent-write half (Phases 1 + 2) was already proven via the v0.26.0 + v0.27.0 ships. This release closes the loop on the human-write half:
+
+- **Phase 3 — teammate hand-edit clone path.** A new `docs/dent-brain/TEAMMATE_GUIDE.md` walks teammates through cloning `dent-brain-data` locally, hand-editing markdown pages in their editor, and pushing back through GitHub. The `/dent-onboard-teammate` skill gains an optional Phase 9 that admins run when a teammate explicitly wants the markdown-mode workflow. The default onboarding path is still Cowork-only — hand-edit clone is opt-in.
+- **Phase 4 — server-side scheduled pull.** A new `src/dent/markdown-writer/cron.ts` adds a `setInterval`-driven pull-and-sync loop that runs inside `serve.ts` after `ensureDataRepo`. Every `DENT_BRAIN_PULL_INTERVAL_SECONDS` seconds (default 300 = 5 min), the server runs `git pull --ff-only origin master` against the local clone. If HEAD advanced, it follows up with `performSync({sourceId: 'dent', noEmbed: true})` to refresh the Postgres index for the new commits. Set the env var to `0` to disable (useful for staging or single-writer debug runs).
+
+The cron piggybacks on the same `withRepoLock` primitive agent writes use, so a tick that fires while `markdown_append_to_page` holds the lock just no-ops and lets the next tick catch up. Lock contention is benign — append commutes by construction, and the cron is purely additive (read-only on the Postgres side except for the index refresh).
+
+Together, the two phases make the v2.0 thesis observably true from both directions:
+
+| Path | Before v0.28.0 | After v0.28.0 |
+|---|---|---|
+| Agent appends a bullet via Cowork | commit lands in `dent-brain-data` within ~1s (Phase 1) | unchanged |
+| Teammate hand-edits a page locally + pushes | server never sees it until next agent write | server pulls + re-indexes within ~5 min |
+| Cowork query against teammate-pushed content | "no result" until next agent write | hits the new content within the lag window |
+
+### The numbers that matter
+
+| Metric | v0.27.0 | v0.28.0 | Δ |
+|---|---|---|---|
+| Server-side scheduled pull | none | `setInterval` running every 300s by default | new background loop |
+| `withRepoLock` participants | 2 (`markdown_append_to_page`, `markdown_replace_page`) | 3 (+ scheduled pull) | additive, benign-on-contention |
+| Tests added | — | 4 (cron integration: no-op tick, teammate-push pickup, second-tick no-op, sub-namespace) | bare-repo + working-clone fixture matches Phase 1 pattern |
+| Skill files updated | 0 | 1 (`/dent-onboard-teammate` Phase 9) | optional clone path documented |
+| New docs | — | `docs/dent-brain/TEAMMATE_GUIDE.md` (workflow + conflict guidance) | mode 1 (Cowork) vs mode 2 (hand-edit) called out |
+| New env var | — | `DENT_BRAIN_PULL_INTERVAL_SECONDS` (default 300) | tunable + disable-able |
+| `bun run test:dent` | 100 / 0 | 104 / 0 | +4 cron tests |
+
+### To take advantage of v0.28.0
+
+1. **For admins**: pull v0.28.0 to Railway. Boot logs will show:
+   ```
+   [dent-brain] scheduled-pull: every 300s
+   ```
+   No new GitHub side configuration needed — the existing deploy key from v0.26.0 works for the cron pull (read access alone is sufficient; the cron never pushes).
+2. **For teammates who want hand-edit access**: see `docs/dent-brain/TEAMMATE_GUIDE.md`. The admin grants you collaborator (Write) on `dentthefuture/dent-brain-data`, you clone, edit, push. Your push reaches Cowork queries within ~5 min.
+3. **Tuning**: set `DENT_BRAIN_PULL_INTERVAL_SECONDS=120` for tighter freshness (every 2 min) or `60` for near-real-time at the cost of slightly more git/network traffic. `0` disables — useful when debugging a stuck cron.
+
+### Itemized changes
+
+#### Added
+- `src/dent/markdown-writer/cron.ts` — `pullAndSyncOnce(engine)` (one tick) + `startScheduledPull(engine, intervalMs)` (the loop). All errors are caught at the boundary; an interval timer never dies on transient git/network/postgres hiccups.
+- `test/dent/markdown-writer/cron.test.ts` — 4 integration tests against a separate "teammate" working clone of the bare remote (no SSH, no docker; just local git fixtures).
+- `docs/dent-brain/TEAMMATE_GUIDE.md` — workflow doc for hand-edit teammates: setup, pull-before-edit, push, conflict handling, the `parseTimelineEntries` bullet-shape gotcha, what NOT to do.
+- `/dent-onboard-teammate` Phase 9 — optional follow-up step the admin runs when a teammate wants hand-edit access. Includes the GitHub-collaborator add + a follow-up message template.
+
+#### Changed
+- `src/dent/serve.ts` — starts the scheduled pull after `ensureDataRepo`, gated on `DENT_BRAIN_DATA_DEPLOY_KEY`. Graceful shutdown stops the cron alongside the HTTP server.
+- `docs/dent-brain/DEPLOY.md` — documents `DENT_BRAIN_PULL_INTERVAL_SECONDS`.
+
 ## [0.27.0] - 2026-05-02
 
 ## **The Dent fork drops the `evidence` table. Observations now live as bullets in the entity markdown pages, written through `markdown_append_to_page`.**
