@@ -37,6 +37,7 @@ import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
 import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
 import { startScheduledPull, DEFAULT_PULL_INTERVAL_SECONDS, type ScheduledPullHandle } from './markdown-writer/cron.ts';
+import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
 import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
 import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
 
@@ -142,6 +143,42 @@ if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
   }
 } else {
   console.error('[dent-brain] DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable.');
+}
+
+// Phase 5.1 RegFox ingestor. Starts only if API key is set AND the data repo
+// is wired (markdown writes need the repo context). Keys + form scoping are
+// configured via env vars; everything else is sensible defaults.
+let regfoxCron: RegfoxCronHandle | null = null;
+if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
+  const intervalSec = Number.parseInt(
+    process.env.DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS ?? String(DEFAULT_REGFOX_POLL_INTERVAL_SECONDS),
+    10,
+  );
+  if (Number.isFinite(intervalSec) && intervalSec > 0) {
+    const formIds = (process.env.DENT_BRAIN_REGFOX_FORM_IDS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => Number.parseInt(s, 10))
+      .filter((n) => Number.isFinite(n));
+    regfoxCron = startRegfoxCron(
+      engine,
+      {
+        apiKey: process.env.DENT_BRAIN_REGFOX_API_KEY,
+        product: process.env.DENT_BRAIN_REGFOX_PRODUCT ?? 'regfox.com',
+        formIds: formIds.length > 0 ? formIds : undefined,
+        discountFieldPath: process.env.DENT_BRAIN_REGFOX_DISCOUNT_FIELD_PATH,
+      },
+      intervalSec * 1000,
+    );
+    console.error(
+      `[dent-brain] regfox-ingestor: every ${intervalSec}s, forms=${formIds.length > 0 ? formIds.join(',') : 'all'}`,
+    );
+  } else {
+    console.error('[dent-brain] regfox-ingestor: disabled (DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS=0)');
+  }
+} else if (!process.env.DENT_BRAIN_REGFOX_API_KEY) {
+  console.error('[dent-brain] regfox-ingestor: not started (DENT_BRAIN_REGFOX_API_KEY unset)');
 }
 
 const limiters = buildDefaultLimiters();
@@ -476,6 +513,7 @@ const shutdown = async (signal: string) => {
   console.error(`[dent-brain] received ${signal}, shutting down gracefully`);
   try {
     if (scheduledPull) scheduledPull.stop();
+    if (regfoxCron) regfoxCron.stop();
     server.stop(false);
     await engine.disconnect();
     console.error('[dent-brain] shutdown complete');

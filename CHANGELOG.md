@@ -2,6 +2,63 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.32.0] - 2026-05-03
+
+## **First server-side ingestor. RegFox registrations flow into the brain every 5 minutes — new attendees get fresh entity pages, returning attendees get a Timeline bullet on their existing page.**
+## **Phase 5.1 of PLAN v2.0. Polling-based, no webhooks, no FileMaker dependency.**
+
+The Cowork-driven write path (Phases 1–4) covered conversational input. v0.32.0 adds the first **automated** input — a server-side cron that pulls new registrations from RegFox every 5 minutes and translates them into markdown bullets on the right entity page in `dent-brain-data`.
+
+The dedup is intentionally simple. No FileMaker dependency, no service-account dance:
+
+- **Email match** (an existing brain page has `email: <orderEmail>` in frontmatter) → confident merge. Append the bullet to that page's `## Timeline`.
+- **Name match without email match** (page exists at the kebab-cased name slug but no email match) → ambiguous. Could be the same person registering with a new email, or two different people with the same name. The ingestor refuses to guess; writes a checklist row to `<data-repo>/_ingest/pending_regfox.md` for human review.
+- **No match** → creates a new stub page with rich frontmatter (email, regfox_registrant_id, regfox_form_id, etc.) and the bullet as the first Timeline entry.
+
+Polling, not webhooks. Trade-off explicitly chosen: no HMAC verification, no inbound HTTP route, no idempotency layer for retries, no queue-and-drain for bursts. The cursor (per form, `greaterThanId`) only advances on successful processing — natural dedup. RegFox's burst limit (900 / 15 min) is read live via the `X-Burst-Remaining` header; the tick halts early if it drops below 10. At default settings, normal volume burns ~12 requests / hour, well under the cap.
+
+The bullet is gbrain-canonical date-anchored:
+
+```
+- **2026-04-22** | Registered for Dent 2026 ($1495.00 USD with discount code EARLYBIRD). [Source: regfox/1440/12345]
+```
+
+`parseTimelineEntries` recognizes that shape and auto-populates `timeline_entries` on the next sync, so the registration shows up in chronological queries for free.
+
+### What ships
+
+- `src/dent/ingestors/regfox/` (~700 LOC): `types.ts`, `api-client.ts`, `state.ts`, `translator.ts` (pure), `ingest.ts` (orchestrator), `cron.ts`.
+- Dent migration v4: `regfox_ingest_state` table.
+- `src/dent/serve.ts`: starts the cron at boot when `DENT_BRAIN_REGFOX_API_KEY` is set. Graceful shutdown stops it.
+- `docs/dent-brain/ingestors/regfox.md`: admin wiring guide.
+- `DEPLOY.md`: 5 new env vars documented (API key, interval, form IDs, product, discount field path).
+- 25 new tests (translator pure-function tests + ingestor integration tests against mocked API + real PGLite + bare-repo fixture).
+
+### Numbers
+
+| Metric | v0.31.0 | v0.32.0 | Δ |
+|---|---|---|---|
+| Server-side ingestors | 0 | 1 (RegFox) | first concrete signal source |
+| New env vars | — | 5 | all optional except API key |
+| Dent migrations | 3 | 4 | `regfox_ingest_state` table |
+| Tests | 104 | 129 | +25 |
+
+### To take advantage of v0.32.0
+
+1. Get a RegFox API key (RegFox dashboard → Pages → Extras → Integrations → API Keys).
+2. `railway variables --set "DENT_BRAIN_REGFOX_API_KEY=<key>"`
+3. Redeploy. Boot logs show `[dent-brain] regfox-ingestor: every 300s, forms=all`.
+4. Wait 5 min. Logs show `[regfox-ingestor] tick ok: processed=N created=M appended=K pendingReview=J skipped=L`.
+5. Watch `dent-brain-data` git for autopopulated entity-page commits.
+
+### What's NOT in this release (followups in TODOS)
+
+- Webhook mode (sub-second freshness — polling at 5min is plenty for now).
+- Status-change detection via `dateUpdated` cursor (refunds, cancellations).
+- Custom-field translation beyond discount code.
+- FileMaker dedup using PK_People_ID (Phase 5.1.2 if/when needed).
+- Dedicated audit table for ingestor calls.
+
 ## [0.31.0] - 2026-05-03
 
 ## **The dbrain repo is now a fork-and-deploy template. `bun run setup` walks an admin through customizing for any org; the repo doubles as a Cowork-installable marketplace at `github:<owner>/<repo>`.**
