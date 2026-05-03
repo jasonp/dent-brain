@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dent-brain",
+  "description": "Dent The Future, Inc. markdown-canonical brain. Cowork plugin: agent-side observation logging via /dent-append-evidence, page synthesis via /dent-enrich, entity disambiguation via /dent-resolve-entity, teammate onboarding via /dent-onboard-teammate.",
+  "owner": {
+    "name": "Dent The Future, Inc.",
+    "url": "https://dentthefuture.com"
+  },
+  "plugins": [
+    {
+      "name": "dent-brain",
+      "description": "Dent The Future, Inc. brain skills.",
+      "version": "0.31.0",
+      "source": "./plugin/marketplace",
+      "category": "productivity",
+      "author": {
+        "name": "Dent The Future, Inc.",
+        "url": "https://dentthefuture.com"
+      },
+      "homepage": "https://dentthefuture.com"
+    }
+  ]
+}

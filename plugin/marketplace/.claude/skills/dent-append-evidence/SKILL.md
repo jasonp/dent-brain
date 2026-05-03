@@ -1,5 +1,5 @@
 ---
-name: {{prefix}}-append-evidence
+name: dent-append-evidence
 version: 2.0.0
 description: |
   Capture an observation as a bulleted item in the relevant entity

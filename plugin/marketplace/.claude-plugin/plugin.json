@@ -1,0 +1,19 @@
+{
+  "name": "dent-brain",
+  "version": "0.31.0",
+  "description": "Dent The Future, Inc. brain skills. Markdown-canonical writes through the dent-brain MCP.",
+  "author": {
+    "name": "Dent The Future, Inc.",
+    "url": "https://dentthefuture.com"
+  },
+  "homepage": "https://dentthefuture.com",
+  "repository": "https://github.com/jasonp/dent-brain",
+  "license": "MIT",
+  "keywords": [
+    "dent-brain",
+    "markdown",
+    "mcp",
+    "cowork"
+  ],
+  "skills": "./.claude/skills"
+}

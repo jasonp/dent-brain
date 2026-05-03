@@ -572,6 +572,11 @@ Migration v3 drops the `evidence` table on Railway boot via the existing schema-
 
 `src/dent/markdown-writer/cron.ts` ships `pullAndSyncOnce()` + `startScheduledPull()`. `setInterval`-driven loop running inside `serve.ts` after `ensureDataRepo`. Default interval 300s, configurable via `DENT_BRAIN_PULL_INTERVAL_SECONDS` (set to `0` to disable). Reuses `withRepoLock` so contention with agent writes is benign — busy ticks no-op and the next tick catches up. 4 new integration tests against a separate "teammate" working clone fixture cover: no-op tick, teammate-push pickup, second-tick no-op, sub-namespace pickup. Errors caught at the boundary so an interval timer never dies on transient git/network/postgres hiccups.
 
+### ~~Phase 2.5c: fork-and-deploy template + guided install~~
+**Completed:** v0.31.0 (2026-05-03)
+
+The dbrain repo is now a fork-and-deploy template. `bun run setup` walks an admin through customizing for any org (org_prefix, org_name, server_url, data_repo, etc.), rewrites `plugin/manifest.json`, renames `skills/<old>/` → `skills/<new>/`, and rebuilds `plugin/marketplace/` + `.claude-plugin/marketplace.json` so the repo doubles as a Cowork-installable marketplace. Two new skills (`/dent-setup` for guided first-run + `/dent-add-ingestor` for Phase 5+ wiring). `docs/dent-brain/SETUP.md` is the end-to-end admin walkthrough (10 steps + TL;DR). Slash command name bug fixed: frontmatter `name:` field now uses `{{prefix}}-…` so commands are properly namespaced. Plugin name is `${prefix}-brain` (was hardcoded `dent-brain`).
+
 ### ~~Phase 2.5: dent plugin build + install workflow~~
 **Completed:** v0.30.0 (2026-05-03)
 

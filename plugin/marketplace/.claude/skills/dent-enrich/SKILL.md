@@ -1,5 +1,5 @@
 ---
-name: {{prefix}}-enrich
+name: dent-enrich
 version: 2.0.0
 description: |
   Re-synthesize a Dent Brain entity page from its current markdown,

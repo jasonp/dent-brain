@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "description": "Postgres-native organizational knowledge brain. Open-source distribution of the substrate that powers Dent Brain. Forked from gbrain (github.com/garrytan/gbrain); the npm package identity tracks upstream (`name: gbrain`) for upstream-test compatibility, while the CLI binary is `dbrain` (with a `gbrain` alias) so personal and organizational installs can coexist on the same machine.",
   "type": "module",
   "main": "src/core/index.ts",
@@ -39,6 +39,7 @@
     "build:llms": "bun run scripts/build-llms.ts",
     "build:pglite-snapshot": "bun run scripts/build-pglite-snapshot.ts",
     "build:plugin": "bun run scripts/build-plugin.ts",
+    "setup": "bun run scripts/setup.ts",
     "test": "scripts/check-privacy.sh && scripts/check-jsonb-pattern.sh && scripts/check-progress-to-stdout.sh && scripts/check-trailing-newline.sh && scripts/check-wasm-embedded.sh && scripts/check-exports-count.sh && bun run typecheck && bun test --timeout=60000",
     "check:wasm": "scripts/check-wasm-embedded.sh",
     "check:newlines": "scripts/check-trailing-newline.sh",

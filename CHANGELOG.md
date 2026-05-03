@@ -2,6 +2,86 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.31.0] - 2026-05-03
+
+## **The dbrain repo is now a fork-and-deploy template. `bun run setup` walks an admin through customizing for any org; the repo doubles as a Cowork-installable marketplace at `github:<owner>/<repo>`.**
+## **Mirrors the gbrain/gstack model — guided setup, one decision at a time, end with a working brain.**
+
+The Dent fork's plumbing has been org-specific (skill prose says `/dent-…`, deploy URL is `dent-brain.dentthefuture.com`, etc.). This release makes that all configurable at fork time. Run `bun run setup`, answer 7 questions, and the manifest + skill prose + plugin metadata + slash commands all rewrite to your org's prefix.
+
+### What ships
+
+**Top-level marketplace at the repo root.** A new `.claude-plugin/marketplace.json` is generated at the repo root by `bun run build:plugin`. This is the file Claude Code (and Cowork) read when someone runs `claude plugin marketplace add github:<owner>/<repo>`. Before this release the marketplace was at `plugin/dist/.claude-plugin/marketplace.json` (gitignored); it didn't reach Cowork because Cowork pulls from GitHub, not local paths. Now both the marketplace and the built plugin source (`plugin/marketplace/`) are committed to git, so a fork's pushed repo IS the marketplace.
+
+**`bun run setup` interactive bootstrap.** A new `scripts/setup.ts` asks the admin:
+
+| Field | Example |
+|---|---|
+| `org_prefix` | `acme` (becomes `/acme-append-evidence`, etc.) |
+| `org_full_name` | `Acme, Inc.` |
+| `org_email_domain` | `acme.com` |
+| `deploy_id` | `acme-brain-prod` |
+| `server_url` | `https://acme-brain.acme.com/mcp` |
+| `data_repo` | `github.com/acme/acme-brain-data` |
+| `code_repo` | `acme/acme-brain` (auto-detected from `git remote get-url origin`) |
+
+The script rewrites `plugin/manifest.json`, renames `skills/dent/` → `skills/<prefix>/` if needed, and runs the plugin build to regenerate everything downstream. Re-runnable; each invocation pre-fills the previous answers.
+
+**Two new skills.** `/dent-setup` (the conversational wrapper around the above for first-run admins inside Cowork) and `/dent-add-ingestor` (Phase 5+ checklist for wiring RegFox / Gmail / Granola / Dropbox signal sources). Both ship with `{{prefix}}` placeholders in the frontmatter `name:` field — forks get `/acme-setup` / `/acme-add-ingestor` etc. automatically after `bun run setup`.
+
+**Comprehensive `docs/dent-brain/SETUP.md`.** End-to-end fork-to-running guide, ten steps with a TL;DR. Cross-references DEPLOY.md (Supabase + Railway specifics) and TEAMMATE_GUIDE.md (mode 2 hand-edit clone path). The first thing a forking admin reads.
+
+**Plugin name + slash command name fixes.** All four existing skills had bare frontmatter `name:` fields (`name: append-evidence`, etc.) so Code mode registered the slash commands as `/append-evidence` instead of `/dent-append-evidence` — collisions waiting to happen. v0.31.0 templates the frontmatter with `{{prefix}}-` so the generated skill files have `name: dent-append-evidence` (or `acme-append-evidence` etc. for forks). The plugin name is `${prefix}-brain` so `dent-brain@dent-brain` is the install string for the Dent fork; `acme-brain@acme-brain` for an Acme fork.
+
+### What this enables
+
+A new org can now go from clean fork to working brain in roughly 30 minutes: 5 min for `bun run setup`, 10 min for Supabase + Railway provisioning, 5 min for deploy key + secrets, 5 min for Cowork plugin install, 5 min for first smoke-test. Most of that time is waiting for Railway builds. The actual decision points are 7 questions in the setup script.
+
+### Numbers that matter
+
+| Metric | v0.30.0 | v0.31.0 | Δ |
+|---|---|---|---|
+| Repo doubles as marketplace | no (dist gitignored) | yes (`.claude-plugin/marketplace.json` at repo root) | unblocks Cowork install |
+| `claude plugin marketplace add github:<owner>/<repo>` works | no | yes | the right install path |
+| Slash command name | `/append-evidence` (collision risk) | `/<prefix>-append-evidence` | namespaced |
+| Setup steps for a new org | hand-edit several files in several places | `bun run setup` (7 questions) | one entry point |
+| Skills in the plugin | 4 | 6 (+`/dent-setup`, +`/dent-add-ingestor`) | guided onboarding + ingestor scaffolding |
+| Documented end-to-end fork-to-running | no | `docs/dent-brain/SETUP.md` (10 steps + TL;DR) | answers "where do I start?" |
+| Plugin install validates | passes | passes | clean |
+
+### To take advantage of v0.31.0
+
+For the Dent fork specifically (no rebrand needed, just pull):
+```bash
+cd ~/gh/dent-brain
+git pull --ff-only
+bun run build:plugin                  # regenerates plugin/marketplace/ + .claude-plugin/marketplace.json
+bash plugin/marketplace/install-local.sh   # Code mode reinstall
+```
+
+Then in Cowork: *"Add a custom marketplace from `github:jasonp/dent-brain` and install the `dent-brain` plugin."*
+
+For a new org forking dbrain: see `docs/dent-brain/SETUP.md`.
+
+### Itemized changes
+
+#### Added
+- `scripts/setup.ts` — interactive bootstrap that rewrites `plugin/manifest.json` and renames `skills/<old>/` → `skills/<new>/` based on org_prefix.
+- `bun run setup` npm script.
+- `skills/dent/setup/SKILL.md` — `/dent-setup` skill (Cowork-side wrapper over the bootstrap, walks admins through Supabase/Railway/deploy-key/etc.).
+- `skills/dent/add-ingestor/SKILL.md` — `/dent-add-ingestor` skill (Phase 5+ checklist for RegFox / Gmail / Granola / Dropbox).
+- `docs/dent-brain/SETUP.md` — end-to-end admin fork-to-running guide.
+- `.claude-plugin/marketplace.json` (committed, generated) — top-level marketplace makes the repo Cowork-installable.
+- `plugin/marketplace/` (committed, generated) — built plugin artifact: per-skill SKILL.md, plugin.json, README.md, install-local.sh, uninstall-local.sh, manifest.lock.json, fm-mcp/.
+
+#### Changed
+- `scripts/build-plugin.ts` — outputs to `plugin/marketplace/` (committed) + `.claude-plugin/marketplace.json` (committed) instead of `plugin/dist/` (gitignored). Plugin name is now `${prefix}-brain` (was hardcoded `dent-brain`). Reads skill source from `skills/<manifest.deploy.org_prefix>/` so forks rename the dir during setup.
+- `plugin/manifest.json` — added `code_repo: "jasonp/dent-brain"`. Templates list reordered to put `setup` first; added `add-ingestor`.
+- All four existing skill SKILL.md files — frontmatter `name:` field now uses `{{prefix}}-…` so generated skills have correct namespaced slash commands.
+
+#### Removed (sort of)
+- `plugin/dist/` is no longer used — the build writes to `plugin/marketplace/` (committed) instead. The .gitignore line stays as defense against legacy build runs.
+
 ## [0.30.0] - 2026-05-03
 
 ## **The plugin install actually reaches Cowork now. v0.29.0's freeform copy worked for Claude Code but Cowork ignored it; the marketplace path is the real shipping channel.**
