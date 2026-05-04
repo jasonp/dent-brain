@@ -253,12 +253,30 @@ interface EmailMatch {
 }
 
 async function findPageByEmail(engine: BrainEngine, email: string): Promise<EmailMatch | null> {
-  // Postgres JSONB lookup against `frontmatter->>'email'`. Lowercased for
-  // case-insensitive comparison since translator.normalizeEmail also lowercases.
-  // If multiple pages share the email (data error), pick the most recently updated.
+  // Postgres JSONB lookup against the page's frontmatter. Two shapes supported:
+  //   1. `email: <string>`           — single primary email (most pages).
+  //   2. `emails: [<a>, <b>, ...]`   — array of all addresses for people with
+  //                                    multiple emails (Jason added these
+  //                                    during the manual backfill).
+  // Both are checked, lowercased for case-insensitive comparison since
+  // translator.normalizeEmail also lowercases. If multiple pages share an
+  // email (data error), pick the most recently updated.
+  //
+  // Why not just `emails:`-everywhere: the single-string `email:` is what
+  // most pages have today + matches the canonical CRM convention of "primary
+  // email is THE email." `emails:` is an additive list that exists only for
+  // people who actually have multiple. Pages without `emails:` skip the
+  // array check via the jsonb_typeof guard.
   const rows = await engine.executeRaw<{ slug: string }>(
     `SELECT slug FROM pages
        WHERE LOWER(frontmatter->>'email') = $1
+          OR (
+            jsonb_typeof(frontmatter->'emails') = 'array'
+            AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(frontmatter->'emails') AS e
+              WHERE LOWER(e) = $1
+            )
+          )
        ORDER BY updated_at DESC
        LIMIT 1`,
     [email],
