@@ -142,4 +142,47 @@ describe('ingestOne — end-to-end against real fixtures', () => {
     const page = await fx.engine.getPage('entities/people/alice-example');
     expect(page?.compiled_truth ?? '').toContain('with discount code EARLYBIRD');
   });
+
+  test('case 2 array shape: page with emails: list matches by any address in the list', async () => {
+    // Pre-create an entity with a primary email + a separate `emails:` list
+    // (the YAML pattern used during the manual backfill for multi-email people).
+    await fx.engine.putPage('entities/people/multi-email-person', {
+      type: 'person',
+      title: 'Multi Email Person',
+      compiled_truth: '# Multi Email Person\n\nPage with multiple known emails.\n',
+      frontmatter: {
+        type: 'person',
+        title: 'Multi Email Person',
+        email: 'primary@example.com',
+        emails: ['primary@example.com', 'secondary@example.com', 'tertiary@example.com'],
+      },
+    });
+
+    // Registrant uses one of the SECONDARY emails — should still email-match.
+    const outcome = await ingestOne(fx.engine, baseRegistrant({ orderEmail: 'secondary@example.com' }));
+    expect(outcome).toBe('appended');
+
+    // Bullet appended to the existing page, NOT a new alice-example stub.
+    const newSlugCheck = await fx.engine.getPage('entities/people/alice-example');
+    expect(newSlugCheck).toBeNull();
+    const matched = await fx.engine.getPage('entities/people/multi-email-person');
+    expect(matched?.compiled_truth ?? '').toContain('Registered for Test Conf 2026');
+  });
+
+  test('case 2 array shape: case-insensitive within the emails: list', async () => {
+    await fx.engine.putPage('entities/people/casey-example', {
+      type: 'person',
+      title: 'Casey Example',
+      compiled_truth: '# Casey Example\n',
+      frontmatter: {
+        type: 'person',
+        title: 'Casey Example',
+        emails: ['Casey@Example.com'], // mixed case in the list
+      },
+    });
+
+    // Registrant uses lowercase variant.
+    const outcome = await ingestOne(fx.engine, baseRegistrant({ orderEmail: 'casey@example.com' }));
+    expect(outcome).toBe('appended');
+  });
 });
