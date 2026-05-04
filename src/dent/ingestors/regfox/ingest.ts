@@ -20,9 +20,6 @@
 import type { BrainEngine } from '../../../core/engine.ts';
 import { appendToPage } from '../../markdown-writer/append.ts';
 import { replacePage, hashContent } from '../../markdown-writer/replace.ts';
-import { getRepoContext } from '../../markdown-writer/repo.ts';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
 import { RegfoxClient } from './api-client.ts';
 import { translateRegistrant, kebabize, type TranslatedRegistrant, type TranslatorOptions } from './translator.ts';
 import { readCursor, writeCursor, ALL_FORMS_CURSOR_KEY } from './state.ts';
@@ -185,7 +182,7 @@ export async function ingestOne(
     // The slug exists, but we got here because no email match took us in case 1.
     // Could be: same person registered with new email, OR two different people
     // with same kebab-cased name. Defer to human review.
-    await writePendingReview(t, registrant, `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`);
+    await writePendingReview(engine, t, registrant, `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`);
     return 'pending_review';
   }
 
@@ -286,29 +283,31 @@ function serializeFrontmatter(fm: Record<string, string | number | boolean>): st
 }
 
 async function writePendingReview(
+  engine: BrainEngine,
   t: TranslatedRegistrant,
   registrant: RegfoxRegistrant,
   reason: string,
 ): Promise<void> {
-  // Write a checklist line to <data-repo>/_ingest/pending_regfox.md.
-  // No git commit here — the next scheduled git pass picks it up. Idempotent
-  // by content: if the same line already exists, we don't add a duplicate.
-  const repo = getRepoContext();
-  const filePath = join(repo.repoPath, '_ingest', 'pending_regfox.md');
-  mkdirSync(dirname(filePath), { recursive: true });
-  const headerLine = '# RegFox ingestor — pending human review\n\nEach unchecked line is a registrant the ingestor could not auto-place. Review and either:\n  - tick the box (and resolve manually: edit the right entity page, or create a new one), or\n  - delete the line.\n\nThe ingestor will skip already-listed registrants on subsequent ticks.\n\n---\n';
+  // Append a checklist line to <data-repo>/_ingest/pending_regfox.md via the
+  // markdown-writer infrastructure — gets locking + git commit + push for
+  // free, same way agent writes do.
+  //
+  // Idempotency: pre-check the existing page (via Postgres index, refreshed
+  // every time the page is written via performSync inside appendToPage) for
+  // the registrant's ID tag. If already listed, skip silently. The id tag
+  // is unique per registrant.
   const idTag = `regfox-id:${registrant.id}`;
-  const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
-
-  let existing = '';
-  if (existsSync(filePath)) {
-    existing = readFileSync(filePath, 'utf-8');
-    if (existing.includes(idTag)) return; // already listed
-  } else {
-    existing = headerLine;
+  const slug = '_ingest/pending_regfox';
+  const existing = await engine.getPage(slug);
+  if (existing && (existing.compiled_truth ?? '').includes(idTag)) {
+    return;
   }
-  const next = existing.endsWith('\n') ? existing + line + '\n' : existing + '\n' + line + '\n';
-  writeFileSync(filePath, next, 'utf-8');
+  const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
+  await appendToPage(engine, {
+    slug,
+    content: line,
+    commitNote: `regfox-ingestor: pending review for registrant ${registrant.id}`,
+  });
 }
 
 // Re-export kebabize for tests.
