@@ -165,7 +165,7 @@ export async function ingestOne(
   if (t.email) {
     const emailMatch = await findPageByEmail(engine, t.email);
     if (emailMatch) {
-      const result = await appendToPage(engine, {
+      const result = await appendWithBusyRetry(engine, {
         slug: emailMatch.slug,
         section: '## Timeline',
         content: t.bullet,
@@ -191,7 +191,7 @@ export async function ingestOne(
 
   // 3. No match — create new stub with the timeline bullet baked in.
   const fullContent = serializeFrontmatter(t.stubFrontmatter) + '\n' + t.stubBody;
-  const result = await replacePage(engine, {
+  const result = await replaceWithBusyRetry(engine, {
     slug: proposedSlug,
     content: fullContent,
     commitNote: `regfox-ingestor: new entity from registrant ${registrant.id}`,
@@ -202,7 +202,7 @@ export async function ingestOne(
   // the same slug between our get_page check and replacePage), re-check and
   // try to append.
   if (result.status === 'page_changed') {
-    const append = await appendToPage(engine, {
+    const append = await appendWithBusyRetry(engine, {
       slug: proposedSlug,
       section: '## Timeline',
       content: t.bullet,
@@ -213,6 +213,42 @@ export async function ingestOne(
   const errMsg = result.status === 'error' ? result.error : `status=${result.status}`;
   process.stderr.write(`[regfox-ingestor] failed to land registrant id=${registrant.id}: ${errMsg}\n`);
   return 'transient_error';
+}
+
+/**
+ * Wrappers that retry on the markdown-writer's `busy` status (lock held
+ * by another writer — typically the scheduled-pull cron when its tick
+ * collides with the regfox cron tick). Up to 5 attempts with 2s linear
+ * backoff. Other statuses pass through unchanged.
+ */
+const BUSY_RETRY_ATTEMPTS = 5;
+const BUSY_RETRY_BACKOFF_MS = 2000;
+
+async function appendWithBusyRetry(
+  engine: BrainEngine,
+  args: Parameters<typeof appendToPage>[1],
+): Promise<Awaited<ReturnType<typeof appendToPage>>> {
+  for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
+    const result = await appendToPage(engine, args);
+    if (result.status !== 'busy') return result;
+    if (attempt === BUSY_RETRY_ATTEMPTS - 1) return result;
+    await new Promise((r) => setTimeout(r, BUSY_RETRY_BACKOFF_MS));
+  }
+  // unreachable
+  return appendToPage(engine, args);
+}
+
+async function replaceWithBusyRetry(
+  engine: BrainEngine,
+  args: Parameters<typeof replacePage>[1],
+): Promise<Awaited<ReturnType<typeof replacePage>>> {
+  for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
+    const result = await replacePage(engine, args);
+    if (result.status !== 'busy') return result;
+    if (attempt === BUSY_RETRY_ATTEMPTS - 1) return result;
+    await new Promise((r) => setTimeout(r, BUSY_RETRY_BACKOFF_MS));
+  }
+  return replacePage(engine, args);
 }
 
 interface EmailMatch {
