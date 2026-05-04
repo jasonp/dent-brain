@@ -21,6 +21,24 @@ name contains 'Smith'" in plain English.
 
 ---
 
+## Operating principle for Cowork
+
+**Cowork: do everything you possibly can on your own. Only stop and ask the user when you genuinely cannot proceed without them.**
+
+You have a shell tool. Use it to run `node --version`, `which npm`, `npm install`, `curl` health checks, JSON validation, and the config edit. **Edit `claude_desktop_config.json` yourself** — don't paste a JSON snippet and ask the user to merge it manually. Read the file, parse it, splice in the `filemaker` entry, write it back, validate.
+
+Things only the user can do:
+- **Provide secrets** (the FileMaker password they just set).
+- **Operate FileMaker Pro UI** (Manage Security → New Account, etc.).
+- **Locate the `FileMaker-MCP-for-<handle>.zip` from the admin** (Slack, email, etc.).
+- **Cmd+Q + relaunch Claude Desktop**.
+- **Start a new chat** to verify the install (the current chat's tool registry is cached).
+- **State preferences** (handle name for the FileMaker account).
+
+Everything else: you run it.
+
+---
+
 ## 0. What you'll need from the admin
 
 Before starting, confirm with the admin (Jason today) that they've sent
@@ -41,225 +59,190 @@ If you don't have all three, stop and ask the admin before continuing.
 
 ## 1. Prerequisites
 
-### Cowork prompt
+### Cowork actions
 
-Ask the user:
+1. **FileMaker Pro check** — ask the user: "Is FileMaker Pro installed and can you log into DentCRM with a full-access account (your own named account, not `Guest`)?" If no, surface to the admin; you can't install FileMaker Pro for them.
 
-1. "Do you have FileMaker Pro installed?" — If no: install via Apple
-   FileMaker Cloud / your DentCRM provisioner. This walkthrough assumes
-   yes.
-2. "Do you have a full-access account on DentCRM (e.g. your own named
-   account, not just `Guest`)?" — If no: ask the admin to provision one.
-   You need full-access to create the MCP-scoped account in Step 2.
-3. "Run `node --version` in Terminal. What does it print?" Need Node 18+.
-   - If 18+: ✅ continue.
-   - If older or missing: `brew install node` (assumes Homebrew). Re-run
-     `node --version` to confirm.
-4. "Run `which npm`. Does it print a path?" If no: same fix — `brew install node`
-   includes npm.
+2. **Node check** — run `node --version` yourself. Need Node 18+.
+   - If 18+: ✅ continue silently.
+   - If older or missing: run `brew install node` yourself. If `brew` is missing too, point the user at https://brew.sh and pause.
+
+3. **npm check** — run `which npm` yourself. If it returns a path, ✅. If not, the Node install didn't include npm — re-run `brew install node`.
 
 ---
 
 ## 2. Create your FileMaker account
 
-### Cowork prompt
+This step is FileMaker Pro UI only — Cowork can't drive it. Walk the user through clearly, then verify in §3.
 
-Ask the user: **"What handle do you want to use for the FileMaker account? (Suggested: `mcp_<yourfirstname>`)"**
+### Cowork actions
 
-Use the answer as `<MCP_HANDLE>` below.
+1. Ask: **"What handle do you want for the FileMaker MCP account? Suggested: `mcp_<yourfirstname>` (e.g. `mcp_robin`, `mcp_jeff`). Pick something stable; this becomes your audit-log identity inside DentCRM."** Save the answer as `<MCP_HANDLE>`.
 
-Then walk them through:
+2. Tell the user (in one message, not multiple back-and-forth):
 
-Open DentCRM in FileMaker Pro, logged in as your full-access account.
+> **In FileMaker Pro:**
+>
+> 1. Open DentCRM, logged in as your full-access account.
+> 2. **File → Manage → Security**.
+> 3. Click **+ New** (bottom left).
+> 4. Fill in:
+>    - **Account Name:** `<MCP_HANDLE>`
+>    - **Password:** click the pencil icon → set a strong one → save it in a password manager labeled `FileMaker MCP — DentCRM`. You'll paste it back to me in a moment.
+>    - **Require password change on next sign-in:** UNCHECKED (critical — checked breaks API login).
+>    - **Active:** ✅
+>    - **Privilege Set:** `MCP Read And Edit Records`
+> 5. Click **OK** to close Manage Security.
+> 6. FileMaker will prompt for full-access credentials to commit — enter your own full-access password.
+>
+> Tell me when you're done.
 
-1. **File → Manage → Security**
-2. Click **+ New** (bottom left) to add an account
-3. Fill in:
-   - **Account Name:** `<MCP_HANDLE>`
-   - **Password:** click the pencil icon and set a strong one. Save it
-     somewhere — you'll need it in Step 4. A password manager entry
-     labeled `FileMaker MCP — DentCRM` works well.
-   - **Require password change on next sign-in:** leave UNCHECKED
-     (critical — checked will break API login).
-   - **Active:** ✅
-   - **Privilege Set:** `MCP Read And Edit Records`
-4. Click **OK** to close Manage Security.
-5. FileMaker will prompt for full-access credentials to commit — enter
-   your own full-access password.
+3. Wait for confirmation, then continue to §3.
 
 ---
 
 ## 3. Verify the account works via curl
 
-Before touching Claude Desktop, confirm the new account can authenticate.
+### Cowork actions
 
-### Cowork prompt
+1. Ask the user: **"Paste the password you just set for `<MCP_HANDLE>` here. I'll use it to test the FileMaker API auth and then to write the Claude Desktop config — I won't display it back to you and it stays in this session only."**
 
-Tell the user to open Terminal and run (substituting their handle and the
-password they just set):
+2. Wait for the password. Save it as `<FM_PASSWORD>` for §3 and §5.
 
-```bash
-curl -X POST https://sea-17.fmsdb.com/fmi/data/v1/databases/DentCRM2025/sessions \
-  -H "Content-Type: application/json" \
-  -u '<MCP_HANDLE>:<YOUR_PASSWORD>' \
-  -d '{}'
-```
+3. Run the curl yourself, substituting the values. **Keep the single quotes around `-u`** so passwords with `!`, `$`, or backticks don't get mangled by the shell:
 
-Expected output (one line of JSON):
+   ```bash
+   curl -s -X POST https://sea-17.fmsdb.com/fmi/data/v1/databases/DentCRM2025/sessions \
+     -H "Content-Type: application/json" \
+     -u '<MCP_HANDLE>:<FM_PASSWORD>' \
+     -d '{}'
+   ```
 
-```
-{"response":{"token":"..."},"messages":[{"code":"0","message":"OK"}]}
-```
+4. Parse the response:
+   - **`code: 0, message: OK`** with a `token` field → ✅ continue to §4.
+   - **`code: 212`** → password mismatch. Tell the user, ask them to re-paste the password (they may have a typo). Retry.
+   - **`code: 9`** → privilege set is wrong on the account. Tell the user to go back to §2 and re-verify the `MCP Read And Edit Records` privilege set is selected.
+   - **SSL / connection refused** → network issue. Surface to the user; route to admin.
 
-If you get:
-- **`code: 212`** — password mismatch. Retype the curl carefully; passwords
-  with `!` or `$` need single quotes around `-u '...'` (which the example
-  has — keep them).
-- **`code: 9`** — privilege set is wrong. Go back to Step 2.4 and verify
-  `MCP Read And Edit Records` is selected.
-- **SSL or connection refused error** — network issue. Ping the admin.
-
-Don't proceed until you see `code: 0, message: OK`.
+Don't proceed until you see `code: 0`.
 
 ---
 
 ## 4. Install the MCP server
 
-### Cowork prompt
+### Cowork actions
 
-Tell the user to:
+1. Ask the user: **"Where is the `FileMaker-MCP-for-<yourhandle>.zip` from the admin? Give me its full path (e.g. `~/Downloads/FileMaker-MCP-for-robin.zip`). If you don't have it yet, ping the admin and pause."**
 
-1. Locate the `FileMaker-MCP-for-<yourhandle>.zip` from the admin.
-2. Unzip it into their home directory so the result is `~/FileMaker MCP/`
-   containing `server.js`, `package.json`, `README.md`.
-3. Run the install:
+2. Run the unzip and install yourself, substituting `<ZIP_PATH>`:
 
-```bash
-cd ~/FileMaker\ MCP
-npm install
-```
+   ```bash
+   mkdir -p ~/"FileMaker MCP"
+   unzip -o <ZIP_PATH> -d ~/"FileMaker MCP"
+   ls ~/"FileMaker MCP"
+   ```
 
-Takes ~20 seconds. "added 91 packages" or similar is success. Warnings
-about deprecated packages are normal — ignore them.
+   Expected: `server.js`, `package.json`, `README.md` (and possibly more). Confirm the three core files exist before moving on.
+
+3. Install dependencies:
+
+   ```bash
+   cd ~/"FileMaker MCP" && npm install
+   ```
+
+   ~20s. "added N packages" is success. Deprecation warnings are normal — ignore. If the install errors, surface to the user.
 
 ---
 
 ## 5. Wire into Claude Desktop
 
-### Cowork prompt
+This is a config-file merge, not a "tell the user to edit JSON manually" step. **Cowork edits the file directly.**
 
-Quit Claude Desktop completely (Cmd+Q) before editing the config.
+### Cowork actions
 
-Tell the user to find their Mac username:
+1. Tell the user: **"I'm about to edit your `claude_desktop_config.json` to add the FileMaker entry. I'll back up the existing file first to `~/.dent-brain/backups/`. You'll need to Cmd+Q Claude Desktop completely after I finish — confirm when you're ready and I'll proceed."**
 
-```bash
-whoami
-```
+2. Once the user confirms, run a Python block (yourself, via your shell tool) that:
+   - Backs up the existing config to `~/.dent-brain/backups/claude_desktop_config.json.<timestamp>.bak`
+   - Reads the JSON
+   - Splices the `filemaker` entry into `mcpServers` (creating the block if missing, preserving any other entries like `dent-brain`)
+   - Writes back with valid JSON
+   - Validates the result
 
-Use the output as `<MAC_USERNAME>` below.
+   Substitute `<MCP_HANDLE>` and `<FM_PASSWORD>` with values from earlier sections:
 
-Then open the config file:
+   ```bash
+   FM_USER='<MCP_HANDLE>' FM_PASS='<FM_PASSWORD>' python3 <<'PY'
+   import json, os, shutil, time
+   HOME = os.path.expanduser("~")
+   cfg_path = os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+   bk_dir = os.path.join(HOME, ".dent-brain", "backups")
+   os.makedirs(bk_dir, exist_ok=True)
+   stamp = time.strftime("%Y%m%d-%H%M%S")
 
-```bash
-open -e ~/Library/Application\ Support/Claude/claude_desktop_config.json
-```
+   if os.path.exists(cfg_path):
+       shutil.copy(cfg_path, os.path.join(bk_dir, f"claude_desktop_config.json.{stamp}.bak"))
+       with open(cfg_path) as f: cfg = json.load(f)
+   else:
+       os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+       cfg = {}
 
-What's already in there determines the merge approach:
+   cfg.setdefault("mcpServers", {})
+   cfg["mcpServers"]["filemaker"] = {
+       "command": "node",
+       "args": [os.path.join(HOME, "FileMaker MCP", "server.js")],
+       "env": {
+           "FM_HOST": "sea-17.fmsdb.com",
+           "FM_DATABASE": "DentCRM2025",
+           "FM_USERNAME": os.environ["FM_USER"],
+           "FM_PASSWORD": os.environ["FM_PASS"],
+       },
+   }
 
-### Case A: File is empty or doesn't have an `mcpServers` block
+   with open(cfg_path, "w") as f:
+       json.dump(cfg, f, indent=2)
+       f.write("\n")
+   with open(cfg_path) as f: json.load(f)  # validate
+   print(f"wrote: {cfg_path}")
+   PY
+   ```
 
-Replace the whole file with this (substituting `<MAC_USERNAME>`,
-`<MCP_HANDLE>`, `<YOUR_PASSWORD>`):
+3. Validate explicitly after the write:
 
-```json
-{
-  "mcpServers": {
-    "filemaker": {
-      "command": "node",
-      "args": ["/Users/<MAC_USERNAME>/FileMaker MCP/server.js"],
-      "env": {
-        "FM_HOST": "sea-17.fmsdb.com",
-        "FM_DATABASE": "DentCRM2025",
-        "FM_USERNAME": "<MCP_HANDLE>",
-        "FM_PASSWORD": "<YOUR_PASSWORD>"
-      }
-    }
-  },
-  "preferences": {
-    "coworkWebSearchEnabled": true
-  }
-}
-```
+   ```bash
+   python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json > /dev/null && echo "VALID JSON ✓"
+   ```
 
-### Case B: File already has an `mcpServers` block (e.g. dent-brain entry)
+4. If validation fails: restore the backup, surface the error, route to admin.
 
-Add the `filemaker` key inside the existing `mcpServers` object. JSON
-comma rules: every entry except the last gets a trailing comma. Result
-should look like:
-
-```json
-{
-  "mcpServers": {
-    "dent-brain": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "...", "..."]
-    },
-    "filemaker": {
-      "command": "node",
-      "args": ["/Users/<MAC_USERNAME>/FileMaker MCP/server.js"],
-      "env": {
-        "FM_HOST": "sea-17.fmsdb.com",
-        "FM_DATABASE": "DentCRM2025",
-        "FM_USERNAME": "<MCP_HANDLE>",
-        "FM_PASSWORD": "<YOUR_PASSWORD>"
-      }
-    }
-  },
-  "preferences": { ... }
-}
-```
-
-If unsure about the comma placement, ask Cowork to validate the merged
-JSON before saving.
-
-### Validate
-
-Before relaunching Claude Desktop, confirm the JSON is valid:
-
-```bash
-python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json > /dev/null && echo "VALID JSON ✓"
-```
-
-Should print `VALID JSON ✓`. If it errors, the JSON is broken and Claude
-Desktop will silently skip ALL MCP servers — fix before proceeding.
+5. On success, tell the user: **"Config updated. Now Cmd+Q Claude Desktop completely and relaunch. Tell me when you're back."**
 
 ---
 
 ## 6. Test it
 
-Relaunch Claude Desktop. **In a NEW chat** (not an existing one — tool
-registries cache per-chat), ask:
+Cowork can't test the install from the current chat (tool registry was cached at chat-start, before FileMaker MCP was wired up). User has to start a new chat to verify.
 
-> *"Ping my FileMaker database."*
+### Cowork actions
 
-Expected: Claude calls the `fm_ping` tool and returns:
+1. Tell the user: **"Open a NEW Cowork chat and ask: *'Ping my FileMaker database.'* Tell me whether it returns a JSON blob with `ok: true` or whether it errors."**
 
-```json
-{
-  "ok": true,
-  "host": "sea-17.fmsdb.com",
-  "database": "DentCRM2025",
-  "username": "<MCP_HANDLE>",
-  "tokenPreview": "a1b2c3d4…"
-}
-```
+2. Wait for confirmation. On success, response should include:
+   ```json
+   {
+     "ok": true,
+     "host": "sea-17.fmsdb.com",
+     "database": "DentCRM2025",
+     "username": "<MCP_HANDLE>",
+     "tokenPreview": "a1b2c3d4…"
+   }
+   ```
 
-If that works, try:
+3. On `ok: true` → ✅ done. Suggest follow-up tests they can try in that new chat:
+   - *"What layouts are in my FileMaker database?"*
+   - *"Find people in DentCRM whose last name contains 'Smith'."*
 
-- *"What layouts are in my FileMaker database?"*
-- *"Find people in DentCRM whose last name contains 'Smith'."*
-
-If it works, you're done.
+4. On error → triage via the troubleshooting section below.
 
 ---
 
