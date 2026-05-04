@@ -19,7 +19,8 @@
 
 import type { BrainEngine } from '../../../core/engine.ts';
 import { appendToPage } from '../../markdown-writer/append.ts';
-import { replacePage, hashContent } from '../../markdown-writer/replace.ts';
+import { replacePage } from '../../markdown-writer/replace.ts';
+import { withBatch, type BatchHandle } from '../../markdown-writer/batch.ts';
 import { RegfoxClient } from './api-client.ts';
 import { translateRegistrant, kebabize, type TranslatedRegistrant, type TranslatorOptions } from './translator.ts';
 import { readCursor, writeCursor, ALL_FORMS_CURSOR_KEY } from './state.ts';
@@ -68,71 +69,194 @@ export async function runIngestTick(
   let skipped = 0;
   let transientErrors = 0;
   const perFormCursors: Record<number, number> = {};
+  let batchError: string | undefined;
 
-  try {
-    for (const formId of formIds) {
-      const cursor = await readCursor(engine, formId);
-      let lastSeenId = cursor.lastSeenId;
-      let hasMore = true;
-      let halted = false;
-      while (hasMore && processed < maxPerTick && !halted) {
-        const result = await client.fetchRegistrants({
-          formId: formId === ALL_FORMS_CURSOR_KEY ? undefined : formId,
-          greaterThanId: lastSeenId,
-          limit: pageLimit,
-          sort: 'asc',
-        });
+  // Run the entire tick inside one repo-lock-batch: lock, pull, splice every
+  // edit, single commit, single push, single Postgres re-sync. That collapses
+  // 50 tick-internal git commits into 1 and removes the contention window
+  // with the scheduled-pull cron.
+  //
+  // Within-batch dedup: if registrant A and B share an email, the email
+  // lookup against Postgres for B won't see the page A just created (no
+  // sync yet). We track newly-staged email→slug locally so the second one
+  // appends instead of duplicating.
+  const stagedEmailToSlug = new Map<string, string>();
 
-        if (result.rateLimit.burstRemaining != null && result.rateLimit.burstRemaining < burstFloor) {
-          process.stderr.write(`[regfox-ingestor] burst-remaining ${result.rateLimit.burstRemaining} < floor ${burstFloor}; halting tick early\n`);
-          break;
-        }
+  const batchResult = await withBatch(engine, async (batch): Promise<void> => {
+    try {
+      for (const formId of formIds) {
+        const cursor = await readCursor(engine, formId);
+        let lastSeenId = cursor.lastSeenId;
+        let hasMore = true;
+        let halted = false;
+        while (hasMore && processed < maxPerTick && !halted) {
+          const result = await client.fetchRegistrants({
+            formId: formId === ALL_FORMS_CURSOR_KEY ? undefined : formId,
+            greaterThanId: lastSeenId,
+            limit: pageLimit,
+            sort: 'asc',
+          });
 
-        for (const registrant of result.registrants) {
-          if (processed >= maxPerTick) break;
-          processed++;
-          let outcome: 'appended' | 'created' | 'pending_review' | 'skipped' | 'transient_error';
-          try {
-            outcome = await ingestOne(engine, registrant, { discountFieldPath: opts.discountFieldPath });
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            process.stderr.write(`[regfox-ingestor] exception on registrant id=${registrant.id}: ${msg}\n`);
-            transientErrors++;
-            // Halt the tick — cursor stays at the previous successful registrant
-            // so the next tick retries this one.
-            halted = true;
+          if (result.rateLimit.burstRemaining != null && result.rateLimit.burstRemaining < burstFloor) {
+            process.stderr.write(`[regfox-ingestor] burst-remaining ${result.rateLimit.burstRemaining} < floor ${burstFloor}; halting tick early\n`);
             break;
           }
-          if (outcome === 'transient_error') {
-            transientErrors++;
-            // Halt — same logic as exception. Cursor does NOT advance past this registrant.
-            halted = true;
-            break;
+
+          for (const registrant of result.registrants) {
+            if (processed >= maxPerTick) break;
+            processed++;
+            let outcome: IngestOneOutcome;
+            try {
+              outcome = await ingestOneInBatch(batch, engine, registrant, stagedEmailToSlug, { discountFieldPath: opts.discountFieldPath });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              process.stderr.write(`[regfox-ingestor] exception on registrant id=${registrant.id}: ${msg}\n`);
+              transientErrors++;
+              halted = true;
+              break;
+            }
+            if (outcome === 'transient_error') {
+              transientErrors++;
+              halted = true;
+              break;
+            }
+            if (outcome === 'created') created++;
+            else if (outcome === 'appended') appended++;
+            else if (outcome === 'pending_review') pendingReview++;
+            else skipped++;
+            if (registrant.id > lastSeenId) lastSeenId = registrant.id;
+            if (sleepBetweenWritesMs > 0 && processed < maxPerTick) {
+              await new Promise((r) => setTimeout(r, sleepBetweenWritesMs));
+            }
           }
-          if (outcome === 'created') created++;
-          else if (outcome === 'appended') appended++;
-          else if (outcome === 'pending_review') pendingReview++;
-          else skipped++;
-          // Only advance cursor on successful (or deliberately-skipped) outcomes.
-          if (registrant.id > lastSeenId) lastSeenId = registrant.id;
-          if (sleepBetweenWritesMs > 0 && processed < maxPerTick) {
-            await new Promise((r) => setTimeout(r, sleepBetweenWritesMs));
-          }
+          hasMore = result.hasMore && !halted;
         }
-        hasMore = result.hasMore && !halted;
+        perFormCursors[formId] = lastSeenId;
       }
-      perFormCursors[formId] = lastSeenId;
-      await writeCursor(engine, formId, lastSeenId, halted ? 'halted-on-transient' : 'ok');
+      // Set the final commit message now that we have real counts.
+      const parts: string[] = [];
+      if (created > 0) parts.push(`${created} created`);
+      if (appended > 0) parts.push(`${appended} appended`);
+      if (pendingReview > 0) parts.push(`${pendingReview} pending`);
+      if (skipped > 0) parts.push(`${skipped} skipped`);
+      const summary = parts.join(', ') || 'no-op';
+      batch.setCommitMessage(
+        `regfox-ingestor: ${processed} registrants (${summary})`,
+        `cursors: ${Object.entries(perFormCursors).map(([f, id]) => `form=${f} → id=${id}`).join('; ')}`,
+      );
+    } catch (e) {
+      batchError = e instanceof Error ? e.message : String(e);
+      throw e;
     }
-    return { ok: true, processed, created, appended, pendingReview, skipped, transientErrors, perFormCursors };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // Persist whatever cursors we did advance.
-    for (const [formId, lastSeenId] of Object.entries(perFormCursors)) {
-      await writeCursor(engine, Number(formId), lastSeenId, `error: ${msg.slice(0, 200)}`).catch(() => { /* best effort */ });
-    }
-    return { ok: false, processed, created, appended, pendingReview, skipped, transientErrors, error: msg, perFormCursors };
+  });
+
+  if (batchResult.status === 'busy') {
+    return { ok: false, processed, created, appended, pendingReview, skipped, transientErrors, error: 'batch_busy', perFormCursors };
   }
+  if (batchResult.status === 'error') {
+    // Cursors NOT persisted — next tick replays the same registrants.
+    return { ok: false, processed, created, appended, pendingReview, skipped, transientErrors, error: batchError ?? batchResult.error, perFormCursors };
+  }
+
+  // Commit + push succeeded. Persist cursors.
+  for (const [formIdStr, lastSeenId] of Object.entries(perFormCursors)) {
+    const formId = Number(formIdStr);
+    await writeCursor(engine, formId, lastSeenId, transientErrors > 0 ? 'halted-on-transient' : 'ok').catch(() => { /* best effort */ });
+  }
+  return { ok: true, processed, created, appended, pendingReview, skipped, transientErrors, perFormCursors };
+}
+
+type IngestOneOutcome = 'appended' | 'created' | 'pending_review' | 'skipped' | 'transient_error';
+
+/**
+ * In-batch variant of ingestOne. Same dedup logic, but writes go through
+ * the batch handle (no commit/push/sync per call). Tracks an
+ * email→staged-slug map so two registrants in the same tick that share
+ * an email merge instead of producing duplicate stubs.
+ */
+async function ingestOneInBatch(
+  batch: BatchHandle,
+  engine: BrainEngine,
+  registrant: RegfoxRegistrant,
+  stagedEmailToSlug: Map<string, string>,
+  opts: TranslatorOptions = {},
+): Promise<IngestOneOutcome> {
+  const t = translateRegistrant(registrant, opts);
+
+  if (t.email == null && t.fullName == null) {
+    process.stderr.write(`[regfox-ingestor] skip registrant id=${registrant.id}: no email and no name\n`);
+    return 'skipped';
+  }
+
+  // 1. Email match — DB first, then within-batch staged map.
+  if (t.email) {
+    const dbMatch = await findPageByEmail(engine, t.email);
+    const stagedSlug = stagedEmailToSlug.get(t.email);
+    const matchedSlug = dbMatch?.slug ?? stagedSlug;
+    if (matchedSlug) {
+      const r = batch.appendToPage({
+        slug: matchedSlug,
+        section: '## Timeline',
+        content: t.bullet,
+        commitNote: `regfox-ingestor: registrant ${registrant.id}`,
+      });
+      if (r.status === 'error') {
+        process.stderr.write(`[regfox-ingestor] batch append to ${matchedSlug} failed: ${r.error}\n`);
+        return 'transient_error';
+      }
+      stagedEmailToSlug.set(t.email, matchedSlug);
+      return 'appended';
+    }
+  }
+
+  // 2. Name match — slug existence check via filesystem (post-pull, post-stage).
+  const proposedSlug = `entities/people/${t.proposedSlug}`;
+  const existingByName = batch.readSlug(proposedSlug);
+  if (existingByName != null) {
+    // Pending-review row goes through the same batch.
+    const idTag = `regfox-id:${registrant.id}`;
+    const pendingSlug = '_ingest/pending_regfox';
+    const existingPending = batch.readSlug(pendingSlug);
+    if (existingPending && existingPending.includes(idTag)) {
+      return 'pending_review';
+    }
+    const reason = `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`;
+    const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
+    const r = batch.appendToPage({ slug: pendingSlug, content: line });
+    if (r.status === 'error') {
+      process.stderr.write(`[regfox-ingestor] batch pending-write failed: ${r.error}\n`);
+      return 'transient_error';
+    }
+    return 'pending_review';
+  }
+
+  // 3. Create new stub.
+  const fullContent = serializeFrontmatter(t.stubFrontmatter) + '\n' + t.stubBody;
+  const r = batch.replacePage({
+    slug: proposedSlug,
+    content: fullContent,
+    commitNote: `regfox-ingestor: new entity from registrant ${registrant.id}`,
+  });
+  if (r.status === 'ok') {
+    if (t.email) stagedEmailToSlug.set(t.email, proposedSlug);
+    return 'created';
+  }
+  if (r.status === 'page_changed') {
+    // Race: between our slug check and replace, another writer landed.
+    // Fall back to append.
+    const ar = batch.appendToPage({
+      slug: proposedSlug,
+      section: '## Timeline',
+      content: t.bullet,
+      commitNote: `regfox-ingestor: registrant ${registrant.id} (race-recovered)`,
+    });
+    if (ar.status === 'ok') {
+      if (t.email) stagedEmailToSlug.set(t.email, proposedSlug);
+      return 'appended';
+    }
+  }
+  process.stderr.write(`[regfox-ingestor] failed to land registrant id=${registrant.id}: ${r.status === 'error' ? r.error : r.status}\n`);
+  return 'transient_error';
 }
 
 /**
