@@ -2,6 +2,28 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.32.5] - 2026-05-04
+
+## **One commit per RegFox tick instead of N. Less log noise, less push contention, simpler history.**
+
+Before, the polling ingestor wrote one git commit per registrant. At 50 registrants per tick that's 50 commits and 50 pushes against `dent-brain-data` every five minutes. The history wall was full of `agent: append entities/people/<slug>` and the cron contended hard with the scheduled-pull cron and any human edit window.
+
+After, one tick = one commit. `regfox-ingestor: 47 registrants (3 created, 44 appended)`. One push. One Postgres re-sync at the end. The cursor advances only after the push lands, so partial-commit failures replay cleanly on the next tick.
+
+There's a new `withBatch(engine, fn)` primitive in `markdown-writer/` that any future bulk path (legacy SQL importer, Dropbox bulk ingestion, future cron jobs) can reuse. It takes the repo lock once, pulls once, lets the callback splice N files, then commits/pushes once if dirty. Empty batch = no commit. Callback throws = working tree reset.
+
+Within-batch dedup also got fixed. If two registrants in the same tick share an email, they now merge to one page. The Postgres email index doesn't refresh until end-of-tick, so the second registrant used to fall through to "no match" and create a duplicate stub. The batch now tracks an email→staged-slug map alongside the DB lookup.
+
+### To take advantage of v0.32.5
+
+No migration. The change is internal to the regfox cron. Redeploy and the next tick uses the batch path.
+
+### Itemized changes
+
+- `src/dent/markdown-writer/batch.ts` — new `withBatch(engine, fn, opts)` + `BatchHandle` interface (`appendToPage`, `replacePage`, `readSlug`, `setCommitMessage`).
+- `src/dent/ingestors/regfox/ingest.ts` — `runIngestTick` rewritten around `withBatch`; new `ingestOneInBatch` helper; standalone `ingestOne` unchanged for tests + single-shot callers.
+- `test/dent/markdown-writer/batch.test.ts` — 6 cases proving 1-commit-per-batch, empty/throw paths, and message override.
+
 ## [0.32.0] - 2026-05-03
 
 ## **First server-side ingestor. RegFox registrations flow into the brain every 5 minutes — new attendees get fresh entity pages, returning attendees get a Timeline bullet on their existing page.**
