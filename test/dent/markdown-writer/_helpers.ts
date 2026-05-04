@@ -86,6 +86,7 @@ export async function setupMarkdownWriter(): Promise<MdWriterFixture> {
     repoPath: cloneRepo,
     headCommit,
     gitEnv: process.env,
+    branch: 'master', // fixture creates the bare repo with -b master
   });
   __resetWriteRateForTests();
 

@@ -146,7 +146,7 @@ export async function appendToPage(
   const lockResult = await withRepoLock(engine, async (): Promise<AppendResult> => {
     // 1. Pull latest.
     try {
-      git(repo.repoPath, ['pull', '--ff-only', 'origin', 'master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['pull', '--ff-only', 'origin', repo.branch], { env: repo.gitEnv });
     } catch (e) {
       // Non-FF or transient — log and proceed; push step will catch real divergence.
       const msg = e instanceof Error ? e.message : String(e);
@@ -197,12 +197,12 @@ export async function appendToPage(
     let rebased = false;
     let pushed = false;
     try {
-      git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
       pushed = true;
     } catch {
       try {
-        git(repo.repoPath, ['pull', '--rebase', 'origin', 'master'], { env: repo.gitEnv });
-        git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+        git(repo.repoPath, ['pull', '--rebase', 'origin', repo.branch], { env: repo.gitEnv });
+        git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
         rebased = true;
         pushed = true;
       } catch (e2) {

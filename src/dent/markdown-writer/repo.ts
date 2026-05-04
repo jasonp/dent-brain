@@ -34,6 +34,9 @@ export interface EnsureDataRepoResult {
   repoPath: string;
   headCommit: string;
   gitEnv: NodeJS.ProcessEnv;
+  /** Default branch on the data repo. Defaults to `main` (set via
+   *  DENT_BRAIN_DATA_BRANCH env). All git pull/push refspecs use this. */
+  branch: string;
 }
 
 function readEnv(name: string, fallback?: string): string {
@@ -93,6 +96,7 @@ export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRep
   const repoPath = readEnv('DENT_BRAIN_DATA_PATH', '/app/dent-brain-data');
   const commitName = readEnv('DENT_BRAIN_GIT_NAME', 'dent-brain-server');
   const commitEmail = readEnv('DENT_BRAIN_GIT_EMAIL', 'noreply@dentthefuture.com');
+  const branch = readEnv('DENT_BRAIN_DATA_BRANCH', 'main');
 
   const gitEnvOverlay = materializeDeployKey();
   const gitEnv: NodeJS.ProcessEnv = { ...process.env, ...gitEnvOverlay };
@@ -100,9 +104,9 @@ export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRep
   // Clone or pull.
   const dotGit = `${repoPath}/.git`;
   if (existsSync(dotGit)) {
-    console.error(`[dent-brain] data repo present at ${repoPath}; running git pull --ff-only`);
+    console.error(`[dent-brain] data repo present at ${repoPath}; running git pull --ff-only origin ${branch}`);
     try {
-      git(repoPath, ['pull', '--ff-only', 'origin', 'master'], { env: gitEnv });
+      git(repoPath, ['pull', '--ff-only', 'origin', branch], { env: gitEnv });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[dent-brain] git pull failed (${msg.slice(0, 200)}). Continuing with local state — next write will retry.`);
@@ -125,8 +129,8 @@ export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRep
 
   await upsertDentSource(engine, repoPath);
 
-  console.error(`[dent-brain] data repo ready: ${repoPath} @ ${headCommit.slice(0, 8)} (source=${DENT_SOURCE_ID})`);
-  return { repoPath, headCommit, gitEnv };
+  console.error(`[dent-brain] data repo ready: ${repoPath} @ ${headCommit.slice(0, 8)} branch=${branch} (source=${DENT_SOURCE_ID})`);
+  return { repoPath, headCommit, gitEnv, branch };
 }
 
 /** Singleton holder so the writer ops can reach the resolved env without

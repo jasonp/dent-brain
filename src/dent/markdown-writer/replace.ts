@@ -66,7 +66,7 @@ export async function replacePage(
 
   const lockResult = await withRepoLock(engine, async (): Promise<ReplaceResult> => {
     try {
-      git(repo.repoPath, ['pull', '--ff-only', 'origin', 'master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['pull', '--ff-only', 'origin', repo.branch], { env: repo.gitEnv });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[markdown-writer] pull warning for ${args.slug}: ${msg.slice(0, 200)}`);
@@ -103,11 +103,11 @@ export async function replacePage(
 
     let rebased = false;
     try {
-      git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
     } catch {
       try {
-        git(repo.repoPath, ['pull', '--rebase', 'origin', 'master'], { env: repo.gitEnv });
-        git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+        git(repo.repoPath, ['pull', '--rebase', 'origin', repo.branch], { env: repo.gitEnv });
+        git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
         rebased = true;
       } catch (e2) {
         try { git(repo.repoPath, ['rebase', '--abort'], { env: repo.gitEnv }); } catch { /* noop */ }

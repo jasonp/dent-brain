@@ -2,6 +2,28 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.32.6] - 2026-05-04
+
+## **`main` is the default branch now. Hardcoded `master` strings are gone.**
+
+The data repo (`dent-brain-data`) and the code repo (`dent-brain`) both move to `main`. Same content, modern naming, one less mental detail to track. The hardcoded `'master'` refspec in 17 places across `markdown-writer/` is replaced by `repo.branch`, fed by a new `DENT_BRAIN_DATA_BRANCH` env (default `main`).
+
+### To take advantage of v0.32.6
+
+If `DENT_BRAIN_DATA_BRANCH` is unset, the server uses `main` automatically. Existing deployments need:
+
+1. The data repo's GitHub default branch flipped to `main` (one-time admin action via Settings).
+2. Redeploy. The `git pull --ff-only origin main` at boot picks up the new branch.
+
+If for any reason a fork still wants `master`, set `DENT_BRAIN_DATA_BRANCH=master` and behavior is unchanged.
+
+### Itemized changes
+
+- `src/dent/markdown-writer/repo.ts` — reads `DENT_BRAIN_DATA_BRANCH` (default `main`), exposes it as `repo.branch`.
+- `src/dent/markdown-writer/{append,replace,batch,cron,git-helpers}.ts` — all `'master'` refspecs now use `repo.branch` (or a passed `branch` param for the dead-code `pushWithRetry`).
+- `test/dent/markdown-writer/_helpers.ts` — fixture explicitly sets `branch: 'master'` since it creates the bare repo with `-b master`.
+- `docs/dent-brain/SETUP.md` + `TEAMMATE_GUIDE.md` — example commands say `main` not `master`.
+
 ## [0.32.5] - 2026-05-04
 
 ## **One commit per RegFox tick instead of N. Less log noise, less push contention, simpler history.**

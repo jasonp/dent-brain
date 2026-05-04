@@ -83,7 +83,7 @@ Commit and push:
 ```bash
 git add -A
 git commit -m "fork: customize for Acme"
-git push origin master
+git push origin main
 ```
 
 Your repo is now a real **Cowork-installable marketplace** at
@@ -310,8 +310,8 @@ Verify on disk + GitHub:
 
 ```bash
 cd ~/<your local clone of acme-brain-data>
-git fetch origin master
-git log origin/master --pretty="%h %an %s" -3
+git fetch origin main
+git log origin/main --pretty="%h %an %s" -3
 # Top: <sha> acme-brain-server <noreply@acme.com> agent: append entities/people/founder
 git pull --ff-only
 grep -A 1 "Timeline" entities/people/founder.md
@@ -404,7 +404,7 @@ railway up --detach   # second deploy succeeds
 # 7. Smoke test
 # In Cowork:
 #   /acme-append-evidence remember that …
-# Verify: a real commit lands in acme/acme-brain-data master within seconds.
+# Verify: a real commit lands in acme/acme-brain-data main within seconds.
 
 # 8. Onboard teammates
 # /acme-onboard-teammate (per teammate)

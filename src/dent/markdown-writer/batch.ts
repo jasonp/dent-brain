@@ -12,7 +12,7 @@
  *
  * Lifecycle:
  *   1. Acquire repo lock (returns `{status: 'busy'}` if held — caller retries).
- *   2. `git pull --ff-only origin master` once.
+ *   2. `git pull --ff-only origin <branch>` once.
  *   3. Run the user callback. Inside, call `batch.appendToPage(args)` and
  *      `batch.replacePage(args)` as many times as needed. Each splices its
  *      target file and runs `git add`. No commit. No push. No sync.
@@ -89,7 +89,7 @@ export async function withBatch<T>(
   const lockResult = await withRepoLock(engine, async (): Promise<BatchOutcome<T>> => {
     // 1. Pull once.
     try {
-      git(repo.repoPath, ['pull', '--ff-only', 'origin', 'master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['pull', '--ff-only', 'origin', repo.branch], { env: repo.gitEnv });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[markdown-writer/batch] pull warning: ${msg.slice(0, 200)}`);
@@ -219,11 +219,11 @@ export async function withBatch<T>(
     // 5. Push with rebase-retry.
     let rebased = false;
     try {
-      git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
     } catch {
       try {
-        git(repo.repoPath, ['pull', '--rebase', 'origin', 'master'], { env: repo.gitEnv });
-        git(repo.repoPath, ['push', 'origin', 'HEAD:master'], { env: repo.gitEnv });
+        git(repo.repoPath, ['pull', '--rebase', 'origin', repo.branch], { env: repo.gitEnv });
+        git(repo.repoPath, ['push', 'origin', `HEAD:${repo.branch}`], { env: repo.gitEnv });
         rebased = true;
       } catch (e2) {
         try { git(repo.repoPath, ['rebase', '--abort'], { env: repo.gitEnv }); } catch { /* noop */ }

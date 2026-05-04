@@ -45,7 +45,7 @@ export function tryGit(repoPath: string, args: string[], opts: GitOptions = {}):
  *
  * The append-by-default model means concurrent writes commute. If our
  * push is rejected because someone else pushed first, we:
- *   1. `git pull --rebase origin master` — replays our commit on top.
+ *   1. `git pull --rebase origin <branch>` — replays our commit on top.
  *   2. Re-push.
  *
  * If the second push still fails, give up and return false. The caller
@@ -56,18 +56,15 @@ export function tryGit(repoPath: string, args: string[], opts: GitOptions = {}):
  * top of the post-rebase file before calling this — see append.ts.
  * Here we only handle the push.
  */
-export function pushWithRetry(repoPath: string, opts: GitOptions = {}): { ok: boolean; rebased: boolean; error?: string } {
+export function pushWithRetry(repoPath: string, branch: string, opts: GitOptions = {}): { ok: boolean; rebased: boolean; error?: string } {
   try {
-    git(repoPath, ['push', 'origin', 'HEAD:master'], opts);
+    git(repoPath, ['push', 'origin', `HEAD:${branch}`], opts);
     return { ok: true, rebased: false };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // Treat any push failure as potentially recoverable via rebase.
-    // Real auth errors will fail the rebase or the second push and we
-    // surface them as `error` then.
     try {
-      git(repoPath, ['pull', '--rebase', 'origin', 'master'], opts);
-      git(repoPath, ['push', 'origin', 'HEAD:master'], opts);
+      git(repoPath, ['pull', '--rebase', 'origin', branch], opts);
+      git(repoPath, ['push', 'origin', `HEAD:${branch}`], opts);
       return { ok: true, rebased: true };
     } catch (e2) {
       const msg2 = e2 instanceof Error ? e2.message : String(e2);

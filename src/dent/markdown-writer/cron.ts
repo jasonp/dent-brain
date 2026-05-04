@@ -71,7 +71,7 @@ export async function pullAndSyncOnce(engine: BrainEngine): Promise<PullTickResu
     }
 
     try {
-      git(repo.repoPath, ['pull', '--ff-only', 'origin', 'master'], { env: repo.gitEnv });
+      git(repo.repoPath, ['pull', '--ff-only', 'origin', repo.branch], { env: repo.gitEnv });
     } catch (e) {
       // Non-FF means someone else's write window finished mid-pull, or
       // a force-push (which isn't a workflow we expect against master).

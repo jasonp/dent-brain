@@ -98,7 +98,7 @@ Done. From now on, the workflow is git-native.
    ```bash
    git add path/to/edited-file.md
    git commit -m "Update the founder's page with 2026 dates"
-   git push origin master
+   git push origin main
    ```
 
    Use a descriptive commit message — git history is the audit trail for
@@ -128,7 +128,7 @@ Two scenarios:
 git pull --rebase
 # resolve any conflicts (rare — agents and humans usually edit different
 # parts of different pages)
-git push origin master
+git push origin main
 ```
 
 The server only fast-forwards on its scheduled pull, so it won't fight
@@ -145,9 +145,9 @@ again.
 
 ### What NOT to do
 
-- **Don't push to other branches.** The Dent server only watches `master`.
+- **Don't push to other branches.** The Dent server only watches `main`.
   A push to a feature branch is invisible to Cowork until you merge.
-- **Don't force-push to master.** The server's incremental sync logic
+- **Don't force-push to main.** The server's incremental sync logic
   uses commit ancestry to compute what changed. A force-push that
   rewrites history makes the server fall back to a full re-import,
   which is slow and racy.
