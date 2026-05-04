@@ -82,7 +82,27 @@ export async function runIngestTick(
   // appends instead of duplicating.
   const stagedEmailToSlug = new Map<string, string>();
 
-  const batchResult = await withBatch(engine, async (batch): Promise<void> => {
+  // Busy-retry around the batch lock acquisition — the scheduled-pull cron
+  // and any human edit window can hold the lock for a few seconds. Bail
+  // after BATCH_BUSY_RETRIES attempts so we don't tie up the tick forever.
+  const BATCH_BUSY_RETRIES = 5;
+  const BATCH_BUSY_BACKOFF_MS = 3000;
+  let batchResult: Awaited<ReturnType<typeof withBatch<void>>> = { status: 'busy' };
+  for (let attempt = 0; attempt < BATCH_BUSY_RETRIES; attempt++) {
+    batchResult = await runOneBatchAttempt();
+    if (batchResult.status !== 'busy') break;
+    if (attempt < BATCH_BUSY_RETRIES - 1) {
+      await new Promise((r) => setTimeout(r, BATCH_BUSY_BACKOFF_MS));
+    }
+  }
+
+  async function runOneBatchAttempt(): Promise<Awaited<ReturnType<typeof withBatch<void>>>> {
+    // Reset per-attempt state — counts accumulate across the tick, but a
+    // retry that finds the lock free starts the loop fresh.
+    processed = 0; created = 0; appended = 0; pendingReview = 0; skipped = 0; transientErrors = 0;
+    stagedEmailToSlug.clear();
+    for (const k of Object.keys(perFormCursors)) delete perFormCursors[Number(k)];
+    return withBatch(engine, async (batch): Promise<void> => {
     try {
       for (const formId of formIds) {
         const cursor = await readCursor(engine, formId);
@@ -149,6 +169,7 @@ export async function runIngestTick(
       throw e;
     }
   });
+  }
 
   if (batchResult.status === 'busy') {
     return { ok: false, processed, created, appended, pendingReview, skipped, transientErrors, error: 'batch_busy', perFormCursors };

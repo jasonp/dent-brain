@@ -2,6 +2,29 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.32.7] - 2026-05-04
+
+## **Cron stagger + busy-retry. The two crons no longer fistfight over the repo lock.**
+
+After 0.32.5 collapsed the regfox tick into one batch, a follow-on issue surfaced: the regfox cron and the scheduled-pull cron both fire every 300s from the same boot epoch and were racing for the repo lock at every tick. The first cron grabs the lock, holds it for the full pull or full batch, the second one returns `batch_busy` and skips entirely. With both crons effectively serial-only-when-one-loses, real tick throughput dropped close to zero.
+
+Two fixes in this release:
+
+1. **Stagger the regfox cron's first tick by half the interval.** scheduled-pull ticks at 300s/600s/900s, regfox at 450s/750s/1050s. Each cron has the lock to itself.
+2. **Busy-retry around `withBatch` lock acquisition.** Up to 5 attempts with 3-second backoff. If the regfox tick finds the lock contended (rare with the stagger, but still possible during a long manual edit window), it waits and retries instead of failing the tick.
+
+`package.json` version was lagging the `VERSION` file. Synced both to 0.32.7. The server's startup log now reports the right version.
+
+### To take advantage of v0.32.7
+
+No migration. Redeploy. The cron stagger applies on next boot. Existing forks with custom intervals continue to work.
+
+### Itemized changes
+
+- `src/dent/ingestors/regfox/cron.ts` — first tick delayed by `intervalMs / 2`. Stop handler clears the offset timer too.
+- `src/dent/ingestors/regfox/ingest.ts` — `runIngestTick` retries `withBatch` up to 5 times on `busy` with 3s backoff. Per-attempt counter reset so a successful retry reports clean numbers.
+- `package.json` — version bumped 0.32.4 → 0.32.7 (was lagging VERSION file).
+
 ## [0.32.6] - 2026-05-04
 
 ## **`main` is the default branch now. Hardcoded `master` strings are gone.**

@@ -38,14 +38,26 @@ export function startRegfoxCron(
     }
   };
 
-  const handle = setInterval(tick, intervalMs);
-  if (typeof handle.unref === 'function') handle.unref();
+  // Stagger: scheduled-pull and regfox both fire every 300s and were
+  // colliding on the repo lock at every tick. Delay regfox's first tick
+  // by half the interval so the two crons interleave (scheduled-pull at
+  // 300s/600s/..., regfox at 450s/750s/...) instead of racing.
+  const offsetMs = Math.floor(intervalMs / 2);
+  let handle: ReturnType<typeof setInterval>;
+  const startTimer = setTimeout(() => {
+    if (stopped) return;
+    tick(); // first regfox tick at offset
+    handle = setInterval(tick, intervalMs);
+    if (typeof handle.unref === 'function') handle.unref();
+  }, offsetMs);
+  if (typeof startTimer.unref === 'function') startTimer.unref();
 
   return {
     stop: () => {
       if (stopped) return;
       stopped = true;
-      clearInterval(handle);
+      clearTimeout(startTimer);
+      if (handle) clearInterval(handle);
     },
   };
 }
