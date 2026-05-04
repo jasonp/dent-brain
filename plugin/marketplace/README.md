@@ -1,4 +1,4 @@
-# Dent The Future, Inc. Brain — Cowork plugin (v0.32.2)
+# Dent The Future, Inc. Brain — Cowork plugin (v0.32.3)
 
 Adds 6 slash commands:
 
@@ -40,6 +40,6 @@ and installs the plugin via `claude plugin install`. Code mode reads from
 
 ## Source
 
-Built from `https://github.com/jasonp/dent-brain` at v0.32.2.
+Built from `https://github.com/jasonp/dent-brain` at v0.32.3.
 Rebuild from source skill templates with `bun run build:plugin` from the
 source repo root. Forks customize via `bun run setup`.
