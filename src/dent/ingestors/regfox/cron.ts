@@ -26,11 +26,11 @@ export function startRegfoxCron(
       if (result.ok) {
         if (result.processed > 0) {
           console.error(
-            `[regfox-ingestor] tick ok: processed=${result.processed} created=${result.created} appended=${result.appended} pendingReview=${result.pendingReview} skipped=${result.skipped}`,
+            `[regfox-ingestor] tick ok: processed=${result.processed} created=${result.created} appended=${result.appended} pendingReview=${result.pendingReview} skipped=${result.skipped} transientErrors=${result.transientErrors}`,
           );
         }
       } else {
-        console.error(`[regfox-ingestor] tick error: ${result.error} (processed=${result.processed})`);
+        console.error(`[regfox-ingestor] tick error: ${result.error} (processed=${result.processed} transientErrors=${result.transientErrors})`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

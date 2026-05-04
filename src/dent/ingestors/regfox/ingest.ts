@@ -41,11 +41,13 @@ export interface IngestOptions {
   burstFloor?: number;
   /** Maximum registrants processed per tick (across all forms). Cap for safety. */
   maxPerTick?: number;
+  /** Optional sleep (ms) between per-registrant writes. Smooths fork bursts on small containers. Default 100. */
+  sleepBetweenWritesMs?: number;
 }
 
 export type IngestTickOutcome =
-  | { ok: true; processed: number; created: number; appended: number; pendingReview: number; skipped: number; perFormCursors: Record<number, number> }
-  | { ok: false; processed: number; created: number; appended: number; pendingReview: number; skipped: number; error: string; perFormCursors: Record<number, number> };
+  | { ok: true; processed: number; created: number; appended: number; pendingReview: number; skipped: number; transientErrors: number; perFormCursors: Record<number, number> }
+  | { ok: false; processed: number; created: number; appended: number; pendingReview: number; skipped: number; transientErrors: number; error: string; perFormCursors: Record<number, number> };
 
 export async function runIngestTick(
   engine: BrainEngine,
@@ -59,13 +61,15 @@ export async function runIngestTick(
   const formIds = opts.formIds && opts.formIds.length > 0 ? opts.formIds : [ALL_FORMS_CURSOR_KEY];
   const pageLimit = opts.pageLimit ?? 100;
   const burstFloor = opts.burstFloor ?? 10;
-  const maxPerTick = opts.maxPerTick ?? 250;
+  const maxPerTick = opts.maxPerTick ?? 50;
+  const sleepBetweenWritesMs = opts.sleepBetweenWritesMs ?? 100;
 
   let processed = 0;
   let created = 0;
   let appended = 0;
   let pendingReview = 0;
   let skipped = 0;
+  let transientErrors = 0;
   const perFormCursors: Record<number, number> = {};
 
   try {
@@ -73,7 +77,8 @@ export async function runIngestTick(
       const cursor = await readCursor(engine, formId);
       let lastSeenId = cursor.lastSeenId;
       let hasMore = true;
-      while (hasMore && processed < maxPerTick) {
+      let halted = false;
+      while (hasMore && processed < maxPerTick && !halted) {
         const result = await client.fetchRegistrants({
           formId: formId === ALL_FORMS_CURSOR_KEY ? undefined : formId,
           greaterThanId: lastSeenId,
@@ -89,47 +94,65 @@ export async function runIngestTick(
         for (const registrant of result.registrants) {
           if (processed >= maxPerTick) break;
           processed++;
+          let outcome: 'appended' | 'created' | 'pending_review' | 'skipped' | 'transient_error';
           try {
-            const outcome = await ingestOne(engine, registrant, { discountFieldPath: opts.discountFieldPath });
-            if (outcome === 'created') created++;
-            else if (outcome === 'appended') appended++;
-            else if (outcome === 'pending_review') pendingReview++;
-            else skipped++;
+            outcome = await ingestOne(engine, registrant, { discountFieldPath: opts.discountFieldPath });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            process.stderr.write(`[regfox-ingestor] failed registrant id=${registrant.id}: ${msg}\n`);
-            skipped++;
+            process.stderr.write(`[regfox-ingestor] exception on registrant id=${registrant.id}: ${msg}\n`);
+            transientErrors++;
+            // Halt the tick — cursor stays at the previous successful registrant
+            // so the next tick retries this one.
+            halted = true;
+            break;
           }
+          if (outcome === 'transient_error') {
+            transientErrors++;
+            // Halt — same logic as exception. Cursor does NOT advance past this registrant.
+            halted = true;
+            break;
+          }
+          if (outcome === 'created') created++;
+          else if (outcome === 'appended') appended++;
+          else if (outcome === 'pending_review') pendingReview++;
+          else skipped++;
+          // Only advance cursor on successful (or deliberately-skipped) outcomes.
           if (registrant.id > lastSeenId) lastSeenId = registrant.id;
+          if (sleepBetweenWritesMs > 0 && processed < maxPerTick) {
+            await new Promise((r) => setTimeout(r, sleepBetweenWritesMs));
+          }
         }
-        hasMore = result.hasMore;
+        hasMore = result.hasMore && !halted;
       }
       perFormCursors[formId] = lastSeenId;
-      await writeCursor(engine, formId, lastSeenId, 'ok');
+      await writeCursor(engine, formId, lastSeenId, halted ? 'halted-on-transient' : 'ok');
     }
-    return { ok: true, processed, created, appended, pendingReview, skipped, perFormCursors };
+    return { ok: true, processed, created, appended, pendingReview, skipped, transientErrors, perFormCursors };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // Persist whatever cursors we did advance.
     for (const [formId, lastSeenId] of Object.entries(perFormCursors)) {
       await writeCursor(engine, Number(formId), lastSeenId, `error: ${msg.slice(0, 200)}`).catch(() => { /* best effort */ });
     }
-    return { ok: false, processed, created, appended, pendingReview, skipped, error: msg, perFormCursors };
+    return { ok: false, processed, created, appended, pendingReview, skipped, transientErrors, error: msg, perFormCursors };
   }
 }
 
 /**
  * Ingest one registrant. Returns the outcome:
- *   - 'appended'       → matched by email, bullet appended to existing page
- *   - 'created'        → no match, new stub + bullet
- *   - 'pending_review' → name-match-without-email-match, written to pending file
- *   - 'skipped'        → no email AND no name (can't act)
+ *   - 'appended'        → matched by email, bullet appended to existing page
+ *   - 'created'         → no match, new stub + bullet
+ *   - 'pending_review'  → name-match-without-email-match, written to pending file
+ *   - 'skipped'         → permanent no-op (no email AND no name) — cursor advances
+ *   - 'transient_error' → write failed (fork limit, push reject after retry, etc.) —
+ *                         caller halts the tick and the cursor does NOT advance past
+ *                         this registrant, so the next tick retries it
  */
 export async function ingestOne(
   engine: BrainEngine,
   registrant: RegfoxRegistrant,
   opts: TranslatorOptions = {},
-): Promise<'appended' | 'created' | 'pending_review' | 'skipped'> {
+): Promise<'appended' | 'created' | 'pending_review' | 'skipped' | 'transient_error'> {
   const t = translateRegistrant(registrant, opts);
 
   // Hard skip if we have neither email nor name — can't do anything safe.
@@ -148,10 +171,10 @@ export async function ingestOne(
         content: t.bullet,
         commitNote: `regfox-ingestor: registrant ${registrant.id}`,
       });
-      if (result.status !== 'ok') {
-        process.stderr.write(`[regfox-ingestor] append to ${emailMatch.slug} returned ${result.status}\n`);
-      }
-      return 'appended';
+      if (result.status === 'ok') return 'appended';
+      const errMsg = result.status === 'error' ? result.error : `status=${result.status}`;
+      process.stderr.write(`[regfox-ingestor] append to ${emailMatch.slug} failed: ${errMsg}\n`);
+      return 'transient_error';
     }
   }
 
@@ -187,8 +210,9 @@ export async function ingestOne(
     });
     if (append.status === 'ok') return 'appended';
   }
-  process.stderr.write(`[regfox-ingestor] failed to land registrant id=${registrant.id} (replace status=${result.status})\n`);
-  return 'skipped';
+  const errMsg = result.status === 'error' ? result.error : `status=${result.status}`;
+  process.stderr.write(`[regfox-ingestor] failed to land registrant id=${registrant.id}: ${errMsg}\n`);
+  return 'transient_error';
 }
 
 interface EmailMatch {

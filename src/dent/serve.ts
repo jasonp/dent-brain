@@ -161,6 +161,8 @@ if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_
       .filter((s) => s.length > 0)
       .map((s) => Number.parseInt(s, 10))
       .filter((n) => Number.isFinite(n));
+    const maxPerTick = Number.parseInt(process.env.DENT_BRAIN_REGFOX_MAX_PER_TICK ?? '50', 10);
+    const sleepMs = Number.parseInt(process.env.DENT_BRAIN_REGFOX_SLEEP_BETWEEN_WRITES_MS ?? '100', 10);
     regfoxCron = startRegfoxCron(
       engine,
       {
@@ -168,6 +170,8 @@ if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_
         product: process.env.DENT_BRAIN_REGFOX_PRODUCT ?? 'regfox.com',
         formIds: formIds.length > 0 ? formIds : undefined,
         discountFieldPath: process.env.DENT_BRAIN_REGFOX_DISCOUNT_FIELD_PATH,
+        maxPerTick: Number.isFinite(maxPerTick) && maxPerTick > 0 ? maxPerTick : undefined,
+        sleepBetweenWritesMs: Number.isFinite(sleepMs) && sleepMs >= 0 ? sleepMs : undefined,
       },
       intervalSec * 1000,
     );
