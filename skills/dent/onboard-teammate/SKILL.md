@@ -156,45 +156,48 @@ Print a message the admin can copy and send to the teammate over their delivery 
 ```
 Hi <FullName>, you're set up on dent-brain.
 
-To install on your machine:
+The teammate install walkthrough is here:
+https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/TEAMMATE_INSTALL.md
 
-1. Make sure Claude Desktop is installed and you're signed in.
-   (Download: https://claude.ai/download)
+Cowork will read this URL and walk you through the install
+conversationally — install the MCP connector, install the Cowork plugin,
+verify the dent prefix, and (optionally) clone the data repo for
+hand-editing.
 
-2. Open a terminal (Spotlight → "Terminal") and PASTE this entire block,
-   then press Enter. It's one shell command that registers dent-brain in
-   two places so it works in Claude Code AND in Claude Cowork sessions.
+To start:
 
-   <PASTE THE PYTHON BLOCK FROM PHASE 4 HERE, WITH TOKEN AND URL FILLED IN>
+1. Confirm Claude Desktop is installed and you're signed in.
+   (https://claude.ai/download)
 
-3. Quit Claude Desktop completely (Cmd+Q) and relaunch.
+2. Open a fresh Cowork session and paste:
 
-4. Start a NEW Cowork session (not an existing one — tool registries are
-   cached per-chat, so old chats won't see dent-brain even after restart).
-   Ask: "Use dent-brain to call get_stats and tell me what's in there."
+   "Read https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/TEAMMATE_INSTALL.md
+   and walk me through the install step by step. Pause at each question
+   and wait for my answer."
 
-   You should see a JSON blob with the current page count. The brain may
-   be empty or small in the early phase — that's expected.
+3. The walkthrough will pause at Section 3 to ask for your bearer token.
+   When it does, paste this token into the Cowork chat (NOT into Terminal,
+   NOT anywhere else):
 
-You're done. dent-brain is now available in:
-- Claude Cowork sessions opened from Claude Desktop (the main team workflow)
-- Claude Desktop's Code mode (if you use it)
-- The standalone Claude Code CLI in your terminal (if you use it)
+       <TOKEN>
 
-All three surfaces share the same token and the same per-user audit log,
-so we can see what each person is querying (and the cost) without it
-being surveillance — it's just operational hygiene.
+   The server URL is the same for everyone:
+       https://dent-brain.dentthefuture.com/mcp
+
+   Cowork will use the token to build a one-paste install command for
+   you to run in Terminal.
+
+If anything errors at any step, copy the output and ping <admin handle>.
+Backups of your previous Claude Desktop config are in ~/.dent-brain/backups/.
 
 Heads up:
 - Don't share the token. It's tied to your name in our audit log.
-- If you switch machines, ping <admin handle> for a re-issue. Don't try
-  to copy the token between machines.
-- If anything errors, copy the full terminal output and share it with
-  <admin handle>. There's a backup of your previous config at
-  ~/.dent-brain/backups/ — restoring is one shell command.
+- Don't reuse it across machines — ping <admin handle> for a re-issue.
+- The token shown above is one-shot — paste it into Cowork once during
+  install, then forget it. It lives at rest only in your Claude config.
 ```
 
-Substitute: `<FullName>`, `<SERVER_URL>`, `<TOKEN>`, `<admin handle>`.
+Substitute: `<FullName>`, `<TOKEN>`, `<admin handle>`.
 
 ### Phase 6: Tell the admin to deliver
 

@@ -3,6 +3,11 @@
 How to work with Dent Brain as a teammate (not the deploy admin).
 Two modes — pick whichever fits the moment.
 
+> **Not installed yet?** This doc is the post-install reference. For the
+> first-time install walkthrough (MCP connector, Cowork plugin, optional
+> data-repo clone), see **[`TEAMMATE_INSTALL.md`](TEAMMATE_INSTALL.md)** —
+> written so Cowork can read the URL and walk you through conversationally.
+
 ## Mode 1: Cowork-only (the default)
 
 If you just want to talk to Dent Brain through Cowork — search the brain,
