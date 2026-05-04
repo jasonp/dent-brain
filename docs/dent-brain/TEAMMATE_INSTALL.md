@@ -234,35 +234,70 @@ This step requires a fresh Cowork session (the current session's tool registry w
 The connector gives the brain's *tools*. The **plugin** gives the `/dent-*`
 slash commands that orchestrate those tools.
 
-The plugin install runs inside Cowork, not in Terminal — Cowork doesn't
-have a tool to install Cowork plugins on the user's behalf, so this step
-goes back to the user. (After this step, Cowork can verify the install
-via the filesystem.)
+The plugin install is **UI-only** — it can't be done by typing a prompt
+into a Cowork chat, and Cowork has no shell tool that installs Cowork
+plugins. The user has to click through Cowork's Customize panel. After
+they finish, Cowork can verify the install via the filesystem.
 
 ### Cowork actions
 
-1. Tell the user: **"In the new chat where you just verified `get_stats`, paste this: *'Add a custom marketplace from github:jasonp/dent-brain and install the dent-brain plugin.'* Cowork's built-in plugin-management skill will handle it. Tell me when it confirms install succeeded."**
+1. Walk the user through the UI clicks. Send this in one message (don't
+   drip-feed; they need to follow it sequentially):
+
+   > **In Cowork desktop:**
+   >
+   > 1. Click **Customize** on the left sidebar.
+   > 2. Next to **Personal plugins**, click the **+** icon.
+   > 3. Click **Create plugin**.
+   > 4. Click **Add marketplace**.
+   > 5. Paste this URL into the field:
+   >
+   >    ```
+   >    https://github.com/jasonp/dent-brain
+   >    ```
+   >
+   > 6. Confirm whatever Cowork shows next (it should pull the marketplace
+   >    manifest and offer to install the `dent-brain` plugin). Accept the
+   >    install.
+   >
+   > Tell me when Cowork confirms the install.
 
 2. Wait for the user to confirm.
 
-3. Once they confirm install: tell them **"Now Cmd+Q Claude Desktop again and relaunch. The plugin needs a fresh tool registry. Tell me when you're back."** (Yes — two restarts total: one for the connector, one for the plugin.)
+3. Tell the user: **"Now Cmd+Q Claude Desktop completely and relaunch.
+   The plugin needs a fresh tool registry to load. Tell me when you're
+   back."** (Two restarts total across the whole walkthrough: one for the
+   connector in §3, one for the plugin here.)
 
-4. Verify the install yourself:
+4. Verify the install yourself via the filesystem:
    ```bash
    ls ~/.claude/plugins/jasonp/dent-brain/ 2>/dev/null
    ```
-   - If you see plugin files (manifest, skills/, etc.): ✅ install landed.
-   - If empty or missing: surface to the user; the marketplace-add prompt may have failed silently. Ask them to retry.
+   - Plugin files (manifest, `skills/`, etc.) present → ✅ install landed.
+   - Empty or missing → surface to the user; ask them to retry the UI
+     steps in case a click was missed.
 
 5. Verify the prefix is `dent`:
    ```bash
    ls ~/.claude/plugins/jasonp/dent-brain/skills/ 2>/dev/null
    ```
-   You should see folders like `dent-append-evidence`, `dent-enrich`, `dent-resolve-entity`, `dent-onboard-teammate`, `dent-setup`, `dent-add-ingestor`. If you see `acme-*` or `{{prefix}}-*` instead: the marketplace template wasn't processed during build — surface to the admin.
+   Expected folders: `dent-append-evidence`, `dent-enrich`,
+   `dent-resolve-entity`, `dent-onboard-teammate`, `dent-setup`,
+   `dent-add-ingestor`. If you see `acme-*` or literal `{{prefix}}-*`
+   folders, the marketplace template wasn't processed during the
+   admin's build step — escalate.
 
-6. Ask the user to verify the slash commands appeared in their NEW chat: **"In your new Cowork chat, type `/` and look at the suggestions. You should see `/dent-append-evidence`, `/dent-enrich`, etc. Confirm the prefix is `dent` (not `acme` or `{{prefix}}`)."**
+6. Ask the user to verify the slash commands appear in a NEW chat:
+   **"Open a new Cowork chat (the one you just used will have the
+   tool list cached from before the restart), type `/` and look at the
+   suggestions. You should see `/dent-append-evidence`, `/dent-enrich`,
+   `/dent-resolve-entity`, etc. Confirm the prefix is `dent`."**
 
-7. Final smoke test — ask the user: **"Try `/dent-append-evidence remember that I successfully installed dent-brain on <today's date>`. Tell me what it returns."** A confirmation that an observation was logged means full success.
+7. Final smoke test — ask the user: **"Type `/dent-append-evidence
+   remember that I successfully installed dent-brain on <today's date>`
+   and tell me what it returns."** A confirmation that an observation
+   was logged means the connector + plugin + write path are all live
+   end-to-end.
 
 ---
 
