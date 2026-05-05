@@ -19,6 +19,26 @@ mutating: true
 
 > **Per-teammate skill.** Each teammate has their own local extensions configured with their own bearer token. The shared brain is the destination, not the configuration store.
 
+## CRITICAL: what `install` actually does (no prompts)
+
+`dent-extensions install granola-sync` is **NOT INTERACTIVE**. It runs `bash tools/granola-sync/install.sh` which performs exactly these 5 steps and exits in ~3 seconds:
+
+1. Verifies `bun` is on `$PATH` (errors with install hint if not).
+2. Verifies `~/.claude.json` has a `dent-brain` MCP entry with a `Bearer` token (errors with a "run /dent-onboard-teammate first" hint if not). It does NOT extract, copy, display, or ask about the token — only checks that the entry exists.
+3. Copies 5 runtime files to `~/.dent-brain/granola-sync/`.
+4. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
+5. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
+
+What `install` does NOT do:
+
+- Does NOT prompt for a bearer token.
+- Does NOT open `$EDITOR`.
+- Does NOT write a `config.json` (config.json is fully optional, only created if the teammate manually edits one to override defaults).
+- Does NOT ask the teammate for an email, name, or any other identity field.
+- Does NOT have a "what to expect during the prompts" phase — there are no prompts.
+
+If you find yourself describing prompts, editors, or token-pasting, you've hallucinated. Re-read this section and re-describe the install accurately: "I'll run the installer. It takes ~3 seconds, no prompts, then you'll have an hourly Granola sync."
+
 ## CRITICAL: never ask the teammate for their bearer token
 
 The teammate's dent-brain bearer token was already set up by `/dent-onboard-teammate` when they ran `claude mcp add dent-brain --header "Authorization: Bearer ..."`. It lives in `~/.claude.json` under `mcpServers["dent-brain"].headers.Authorization`. Every extension reads it from there at runtime — no copy, no second paste, no config edit.

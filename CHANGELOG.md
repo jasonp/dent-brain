@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.33.3] - 2026-05-05
+
+## **Skill prose: tell the agent EXPLICITLY what install does, so it stops hallucinating prompts.**
+
+Even with v0.33.2's "never ask for bearer token" anti-pattern, the agent was still telling the user "the installer is interactive — it'll prompt you for your bearer token and probably want to drop you into $EDITOR for config" — fabricating prompts that don't exist in `install.sh`. The fix isn't more "don'ts" — it's a positive description of what `install` actually does, so the agent doesn't have to guess.
+
+### Itemized changes
+
+- `skills/dent/extensions/SKILL.md` — new "CRITICAL: what `install` actually does (no prompts)" section listing the literal 5 steps install.sh performs (verify bun, verify ~/.claude.json, copy files, render plist, launchctl bootstrap). Followed by an explicit "What install does NOT do" list (no token prompt, no $EDITOR, no config.json paste, no email, no identity fields). Closing line: "If you find yourself describing prompts, editors, or token-pasting, you've hallucinated. Re-describe accurately."
+- `package.json` + `VERSION` — bump to 0.33.3.
+
 ## [0.33.2] - 2026-05-05
 
 ## **Skill prose: never ask the teammate for their bearer token.**
