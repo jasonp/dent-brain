@@ -33,10 +33,18 @@ When you do need user input, ask one clean question and wait. Don't bundle "open
 
 ---
 
-> **You'll need from your admin** (Jason today): a bearer token, generated
-> by `/dent-onboard-teammate` and delivered via Slack/email/1Password share.
-> If you don't have that yet, stop and ask the admin for it before starting
-> Section 3.
+> **You'll need from your admin** three things, delivered together via your
+> agreed secure channel (Slack DM, encrypted email, 1Password share). The
+> admin's `/dent-onboard-teammate` skill produces all three in one message:
+>
+> 1. **Bearer token** — looks like `gbrain_<long-string>`. Authenticates
+>    you to the MCP server. Tied to your name in the audit log.
+> 2. **Server URL** — the MCP endpoint, e.g.
+>    `https://dent-brain.dentthefuture.com/mcp` (varies per deployment).
+> 3. **Marketplace URL** — the GitHub repo for the Cowork plugin, e.g.
+>    `https://github.com/jasonp/dent-brain` (varies per deployment).
+>
+> If you don't have all three, stop and ask the admin before starting Section 3.
 
 ---
 
@@ -121,35 +129,45 @@ Claude Desktop to the dent-brain server. The token is your identity in
 the audit log — every search, query, and observation you make is tagged
 with the token's handle.
 
-### 3a. Get your token from the admin
+### 3a. Get the install bundle from the admin
 
 ### Cowork prompt
 
-Ask the user: **"Has the admin (Jason) sent you a bearer token? It looks like `gbrain_` followed by a long string of letters and numbers. Check Slack, encrypted email, or wherever you've agreed to receive secrets."**
+Ask the user: **"Has the admin sent you the install bundle? It contains three things: a bearer token (looks like `gbrain_<long-string>`), the server URL (looks like `https://...mcp`), and the marketplace URL (a GitHub repo URL). Check Slack, encrypted email, or wherever you've agreed to receive secrets."**
 
-- **If no:** Stop. Tell the user to ask the admin to run
-  `/dent-onboard-teammate` with their handle. The admin will send back
-  a token (and confirm the server URL is `https://dent-brain.dentthefuture.com/mcp`).
-  Resume here once received.
+- **If no:** Stop. Tell the user to ask the admin to run their teammate-onboard skill with the user's handle. The admin will send back all three values in one message.
 
 - **If yes:** Continue.
 
-### 3b. Paste the token into this Cowork session
+### 3b. Paste the bundle into this Cowork session
+
+Cowork: ask for all three at once so the user can paste them in one shot.
 
 ### Cowork prompt
 
-Tell the user: **"Paste your bearer token here. Don't share it anywhere else — it's tied to your name in our audit log. I'll use it to construct the install command for you, then you'll run that command in Terminal."**
+Tell the user: **"Paste the three values here, each on its own line and prefixed with the label, like this:**
+>
+> ```
+> token: gbrain_xxxxxxxxxxxx
+> server: https://your-brain.example.com/mcp
+> marketplace: https://github.com/your-org/your-brain
+> ```
+>
+> **Don't share these anywhere else. The token in particular is tied to your name in the audit log."**
 
-Wait for the user to paste a string starting with `gbrain_`. Validate
-it has the expected shape (`gbrain_` + at least 20 chars). If it
-doesn't, ask them to recheck and re-paste.
+Parse what the user pastes and save:
+- `<TOKEN>` — must start with `gbrain_` and have ≥ 20 chars total. Reject and ask again if it doesn't.
+- `<SERVER_URL>` — must start with `https://` and end with `/mcp`. Reject and ask if it doesn't.
+- `<MARKETPLACE_URL>` — must be a GitHub URL like `https://github.com/<org>/<repo>`. Reject and ask if it doesn't.
+
+Hold all three: token + server URL for §3c, marketplace URL for §5.
 
 ### 3c. Run the install yourself
 
-Don't paste the install command into chat for the user to copy. **Run it yourself** via your shell tool. Substitute `<TOKEN>` with the token the user just pasted, and execute:
+Don't paste the install command into chat for the user to copy. **Run it yourself** via your shell tool. Substitute `<TOKEN>` and `<SERVER_URL>` with the values the user just provided, and execute:
 
 ```bash
-TOKEN="<TOKEN>" URL="https://dent-brain.dentthefuture.com/mcp" python3 <<'PY'
+TOKEN="<TOKEN>" URL="<SERVER_URL>" python3 <<'PY'
 import json, os, shutil, time
 HOME = os.path.expanduser("~")
 TOKEN = os.environ["TOKEN"]; URL = os.environ["URL"]
@@ -244,6 +262,8 @@ they finish, Cowork can verify the install via the filesystem.
 1. Walk the user through the UI clicks. Send this in one message (don't
    drip-feed; they need to follow it sequentially):
 
+   Substitute `<MARKETPLACE_URL>` with the marketplace URL the user pasted in §3b:
+
    > **In Cowork desktop:**
    >
    > 1. Click **Customize** on the left sidebar.
@@ -253,7 +273,7 @@ they finish, Cowork can verify the install via the filesystem.
    > 5. Paste this URL into the field:
    >
    >    ```
-   >    https://github.com/jasonp/dent-brain
+   >    <MARKETPLACE_URL>
    >    ```
    >
    > 6. Confirm whatever Cowork shows next (it should pull the marketplace
@@ -411,8 +431,16 @@ Postgres re-sync end-to-end.
 
 ## Reference
 
-- Server: `https://dent-brain.dentthefuture.com`
-- Marketplace repo: https://github.com/jasonp/dent-brain
-- Data repo: https://github.com/dentthefuture/dent-brain-data
-- Post-install reference: `docs/dent-brain/TEAMMATE_GUIDE.md`
-- Architecture: `docs/dent-brain/PLAN_v2_MARKDOWN_CANONICAL.md`
+- **Server URL** — the value the admin sent you (looks like
+  `https://your-brain.example.com/mcp`). Lives at rest in your
+  `~/.claude.json` and `~/Library/Application Support/Claude/claude_desktop_config.json`
+  under the `dent-brain` `mcpServers` entry — Cowork can read those files
+  to remind you what it is.
+- **Marketplace URL** — the value the admin sent you (looks like
+  `https://github.com/<org>/<repo>`). Same source as above; recorded in
+  `~/.claude/plugins/known_marketplaces.json`.
+- **Data repo** — `<server-org>/<server-org>-brain-data`. The admin's
+  invitation email shows the exact URL.
+- **Post-install reference**: `docs/dent-brain/TEAMMATE_GUIDE.md` (in
+  the same code repo as this walkthrough).
+- **Architecture**: `docs/dent-brain/PLAN_v2_MARKDOWN_CANONICAL.md`
