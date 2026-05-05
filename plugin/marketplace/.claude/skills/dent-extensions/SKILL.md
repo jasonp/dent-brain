@@ -21,13 +21,14 @@ mutating: true
 
 ## CRITICAL: what `install` actually does (no prompts)
 
-`dent-extensions install granola-sync` is **NOT INTERACTIVE**. It runs `bash tools/granola-sync/install.sh` which performs exactly these 5 steps and exits in ~3 seconds:
+`dent-extensions install granola-sync` is **NOT INTERACTIVE**. It runs `bash tools/granola-sync/install.sh` which performs exactly these 6 steps and exits in ~3 seconds:
 
 1. Verifies `bun` is on `$PATH` (errors with install hint if not).
 2. Verifies `~/.claude.json` has a `dent-brain` MCP entry with a `Bearer` token (errors with a "run /dent-onboard-teammate first" hint if not). It does NOT extract, copy, display, or ask about the token — only checks that the entry exists.
-3. Copies 5 runtime files to `~/.dent-brain/granola-sync/`.
-4. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
-5. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
+3. Verifies `Granola.app` is installed AND `~/Library/Application Support/Granola/cache-v6.json` exists (i.e. teammate has opened Granola at least once). Errors with detailed setup steps if either is missing.
+4. Copies 5 runtime files to `~/.dent-brain/granola-sync/`.
+5. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
+6. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
 
 What `install` does NOT do:
 
@@ -38,6 +39,8 @@ What `install` does NOT do:
 - Does NOT have a "what to expect during the prompts" phase — there are no prompts.
 
 If you find yourself describing prompts, editors, or token-pasting, you've hallucinated. Re-read this section and re-describe the install accurately: "I'll run the installer. It takes ~3 seconds, no prompts, then you'll have an hourly Granola sync."
+
+After the install completes, macOS will show a Background Items notification mentioning "Jarred Sumner". Tell the teammate up front so it doesn't surprise them — that's the developer ID of Bun (the JavaScript runtime the daemon uses). It's expected and safe. The installer's final output explains the same thing.
 
 ## CRITICAL: never ask the teammate for their bearer token
 
@@ -129,7 +132,26 @@ Hand the teammate THIS one-liner whenever they invoke the skill. It auto-handles
 
 If the teammate's clone is somewhere unusual (e.g. `~/projects/dent-brain`), they tell you and you adjust the one-liner accordingly.
 
-## Step 2. Run `list` first
+## Step 2. Pre-install: confirm Granola itself is set up
+
+Before running `install granola-sync`, walk the teammate through Granola's own setup so the install doesn't fail on its Step 3 (Granola pre-flight check). Granola is the meeting note-taker the daemon syncs from — it's a separate Mac app the teammate must install themselves.
+
+Ask the teammate (one quick conversational pass, not a checklist they have to read):
+
+> Quick Granola check before we install the sync — do you already have Granola.ai set up? If not, here's the one-time setup:
+>
+> 1. Download Granola from https://granola.ai/download and install it.
+> 2. Sign in with your `@dentthefuture.com` Google account (the one your Dent calendar invites land on).
+> 3. In Granola Settings → Permissions, grant **Microphone** and **Screen Recording** access. Without these, Granola can't capture your meetings.
+> 4. Sit through one Dent meeting with Granola open — it learns your account preferences and creates its local cache. Without that cache, the sync has nothing to read.
+>
+> Once that's done, I'll run the sync installer.
+
+If they confirm Granola is already running on their machine, skip the walkthrough and proceed straight to the install. If they're not sure ("I downloaded it once but never opened it"), have them open the app and complete one meeting before continuing.
+
+The installer (Step 3 below) hard-fails with the same setup steps if Granola isn't ready — so this conversation is defense in depth, not strict prerequisite.
+
+## Step 3. Run `list` first
 
 Always start with `list` — gives the teammate a complete picture before they make any decisions. The output:
 
@@ -147,7 +169,7 @@ Status badges:
 - `⚠ not-running` — installed and configured but launchd agent isn't loaded
 - `● active` — installed, configured, and the scheduled agent is running
 
-## Step 3. Per-extension actions
+## Step 4. Per-extension actions
 
 For each available extension, the action menu is:
 
@@ -164,21 +186,27 @@ The CLI is idempotent — re-running `install` is safe (it tears down the old la
 
 If the teammate has symlinked `dent-extensions` into their `PATH` (per the `tools/extensions/README.md` instructions), they can drop the `./tools/extensions/bin/` prefix.
 
-## Step 4. After install
+## Step 5. After install
 
-After a fresh install, the launchd agent runs immediately (RunAtLoad=true) and then on schedule. Tail the log to verify:
+Two things happen right after `launchctl bootstrap`:
+
+1. **macOS Background Items notification.** The teammate will see a system notification saying "Jarred Sumner may now run software in the background" (or similar). That's the developer ID of Bun (the JavaScript runtime the daemon uses, signed by its creator the same way Docker is signed by Docker Inc). The installer's output also explains this. Tell the teammate up front so they don't panic — it's the standard macOS notification for any third-party launchd agent.
+
+2. **First sync fires immediately** (RunAtLoad=true). The agent then runs hourly. Tail the log to verify the first run worked:
 
 ```bash
 tail -50 ~/.dent-brain/<extension-id>/sync.log
 ```
 
+You should see lines like `[granola-sync] Granola cache: N documents, M local transcripts` followed by per-doc decisions and a `done:` summary. If you see those, it worked.
+
 If the first run failed, common fixes:
 
 - **`MCP HTTP 401`** — bearer token in `~/.claude.json` is wrong/expired. Re-run `/dent-onboard-teammate` to mint a new one. The daemon picks up the new value on the next run; no re-install needed.
-- **`Granola cache not found`** (granola-sync only) — open the Granola app once so it creates its cache file.
+- **`Granola cache not found`** — the teammate has Granola installed but hasn't opened it yet. Open the Granola app, sign in, then re-run the daemon manually (`bun ~/.dent-brain/granola-sync/sync.ts`).
 - **`No dent-brain MCP configured`** — the teammate hasn't run `claude mcp add dent-brain ...` yet. Route them to `/dent-onboard-teammate` first.
 
-## Step 5. Privacy contract — say this every time
+## Step 6. Privacy contract — say this every time
 
 Tell the teammate up front, every install:
 

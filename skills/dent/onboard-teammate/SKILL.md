@@ -27,11 +27,13 @@ This skill guarantees:
 ## When to fire
 
 The admin (Jason today; future deployments: whoever holds `gbrain auth` admin rights) runs this when:
-- A new Dent team member needs dent-brain access in their Claude Cowork sessions
+- A new Dent team member needs dent-brain access in their Claude Code or Cowork sessions
 - An existing teammate's token needs replacement (revoke old + issue new)
 - A teammate's machine changes and they need to re-register
 
 The teammate does NOT run this skill themselves. They follow the instructions this skill produces.
+
+The walkthrough this skill points teammates at (`docs/dent-brain/TEAMMATE_INSTALL.md`) is written **Claude Code Desktop primary** — that's the surface where your agent has direct bash access on the laptop and can drive the install end-to-end. If a teammate prefers Cowork, the same walkthrough still works (Cowork agents fall back to copy-paste handoff for shell commands), but the experience is smoother in Claude Code.
 
 ## Inputs
 
@@ -89,11 +91,13 @@ Read the deploy-specific values from `plugin/manifest.json` so the skill works f
 
 Substitute these into the install message in Phase 5. Don't hardcode Dent's URLs.
 
-The dual-config rationale (kept for reference):
+The dual-config rationale:
 
-Every teammate gets **dual-registration** so the brain works in BOTH:
-- Claude Desktop's **Code mode** + the standalone Claude Code CLI (reads `~/.claude.json`).
-- Claude Desktop's **Cowork mode** + classic Desktop chats (reads `~/Library/Application Support/Claude/claude_desktop_config.json`).
+Every teammate gets **dual-registration** for the MCP connector so the brain works in BOTH:
+- Claude Code (the Code mode tab in Claude Desktop + the standalone CLI). Reads `~/.claude.json`. Uses HTTP-type entry directly.
+- Cowork (in Claude Desktop) + classic Desktop chats. Reads `~/Library/Application Support/Claude/claude_desktop_config.json`. Cowork is stdio-only; uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL.
+
+The connector is unified across surfaces with one install (this dual-write Python block does both files at once). The plugin marketplace is NOT — Claude Code and Cowork have separate plugin stores at different paths, so the plugin must be installed once per surface the teammate wants to use it in.
 
 The two config files take different value shapes and Cowork is **stdio-only** (HTTP-type entries get rejected on launch). Cowork's registration uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL. Background: `docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces, two config files".
 
@@ -155,7 +159,7 @@ PY
 
 ⚠️ **Why this is dual, not single.** Earlier versions of this skill (pre-2026-04-30) used `claude mcp add -s user -t http ...` only. That works for Code mode but Cowork sessions reported "I don't see any dent-brain tools" because they read a different file. The dual-registration above is the empirically verified fix.
 
-⚠️ **Cowork tool registry caches per-chat.** Tell the teammate to start a NEW Cowork session, not continue an existing one. Same caveat Steve's FM MCP doc calls out. Old chats won't see the connector even after Claude Desktop restarts.
+⚠️ **Tool registry caches per-chat in EVERY surface** (Claude Code in Desktop, Cowork, classic chats). Tell the teammate to start a NEW chat after each restart, not continue an existing one. Same caveat Steve's FM MCP doc calls out. Old chats won't see the connector even after Claude Desktop restarts.
 
 ⚠️ **Token never logged or backed up to git.** Backups go to `~/.dent-brain/backups/` (gitignored at user-home, never enters any repo). The TOKEN env var is local to the heredoc invocation and dies with the shell session.
 
@@ -169,31 +173,33 @@ Hi <FullName>, you're set up on dent-brain.
 The teammate install walkthrough is here:
 <INSTALL_URL>
 
-Cowork will read this URL and walk you through the install
-conversationally — install the MCP connector, install the Cowork plugin,
-verify the prefix, and (optionally) clone the data repo for
-hand-editing.
+Your Claude agent will read this URL and walk you through the install
+conversationally — install the MCP connector, install the dent-brain
+plugin, verify the prefix, and (optionally) clone the data repo for
+hand-editing or set up granola-sync for auto-syncing meeting notes.
 
 To start:
 
 1. Confirm Claude Desktop is installed and you're signed in.
    (https://claude.ai/download)
 
-2. Open a fresh Cowork session and paste:
+2. Open a fresh Claude Code session in Claude Desktop (the Code mode
+   tab — your agent there has direct shell access to your laptop, which
+   makes the install much smoother than Cowork's sandbox). Paste:
 
    "Read <INSTALL_URL> and walk me through the install step by step.
    Pause at each question and wait for my answer."
 
 3. The walkthrough will pause at Section 3 to ask for your install
-   bundle. When it does, paste these THREE values into the Cowork chat
+   bundle. When it does, paste these THREE values into the chat
    (NOT into Terminal, NOT anywhere else):
 
        token: <TOKEN>
        server: <SERVER_URL>
        marketplace: <MARKETPLACE_URL>
 
-   Cowork uses these to build the install command and to install the
-   plugin marketplace.
+   Your agent uses these to install the MCP connector (single config,
+   visible to both Claude Code and Cowork) and the plugin marketplace.
 
 If anything errors at any step, copy the output and ping <admin handle>.
 Backups of your previous Claude Desktop config are in ~/.dent-brain/backups/.
@@ -201,8 +207,13 @@ Backups of your previous Claude Desktop config are in ~/.dent-brain/backups/.
 Heads up:
 - Don't share the token. It's tied to your name in our audit log.
 - Don't reuse it across machines — ping <admin handle> for a re-issue.
-- The token shown above is one-shot — paste it into Cowork once during
-  install, then forget it. It lives at rest only in your Claude config.
+- The token shown above is one-shot — paste it into your Claude agent
+  once during install, then forget it. It lives at rest only in your
+  local Claude config.
+- The plugin install in Section 5 lands in Claude Code's plugin store.
+  If you also want the /dent-* slash commands in Cowork, repeat that
+  one section from a Cowork session (same marketplace URL, separate
+  store).
 ```
 
 Substitute (all values come from `plugin/manifest.json` except `<TOKEN>` from Phase 3 and `<FullName>` / `<admin handle>` from Phase 1):
@@ -229,7 +240,7 @@ Pause. Wait for the admin to say "done" or "they ran it" before continuing.
 
 ### Phase 7: Verify registration
 
-After the teammate has run the install command AND restarted Claude Desktop AND started a new Cowork session asking the model to call `get_stats`, check the audit log:
+After the teammate has run the install command AND restarted Claude Desktop AND started a new session (Claude Code or Cowork) asking the model to call `get_stats`, check the audit log:
 
 ```bash
 ./scripts/tail-mcp-audit.sh 20 | grep "<handle>"
@@ -238,8 +249,8 @@ After the teammate has run the install command AND restarted Claude Desktop AND 
 Pass criteria: at least one row with `op=tools/call` from token `<handle>`. Initialize / tools-list rows alone don't count — they fire on connector load even if the teammate never invokes a tool. The `tools/call` row is proof the Cowork session both saw the connector AND successfully invoked it end-to-end.
 
 If no `tools/call` row appears within ~5 minutes of the teammate confirming they asked for `get_stats`:
-- **Most likely:** they continued an OLD Cowork chat instead of starting a new one. Tool registries are cached per-chat. Tell them to start a fresh chat and try again.
-- **Less likely:** Claude Desktop's launch popup said "entries are not valid MCP server configurations and were skipped: dent-brain." That means `mcp-remote` couldn't load — usually because Node 18+ isn't installed (`node --version`). Install via `brew install node` and relaunch.
+- **Most likely:** they continued an OLD chat instead of starting a new one. Tool registries are cached per-chat. Tell them to start a fresh chat and try again.
+- **Less likely (Cowork only):** Claude Desktop's launch popup said "entries are not valid MCP server configurations and were skipped: dent-brain." That means `mcp-remote` couldn't load — usually because Node 18+ isn't installed (`node --version`). Install via `brew install node` and relaunch. Claude Code uses the HTTP entry directly so it doesn't hit this case.
 - **Rare:** the python block in the install message wasn't pasted as a single unit. Ask them to confirm the JSON is valid: `python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json` should print without error.
 - **Last resort:** restore the pre-install backup from `~/.dent-brain/backups/` and re-run the install command.
 
@@ -264,7 +275,7 @@ This is the breadcrumb. If a token is ever compromised, we know who issued it, w
 
 ### Phase 9 (optional): Hand-edit clone for the markdown-canonical mode
 
-PLAN v2.0 (since v0.27.0) makes markdown the canonical store; `dent-brain-data` is a real git repo, and any teammate who wants to edit pages directly in their editor can clone it. **This phase is optional** — Cowork-only is the default, and most teammates never need it. Run it only when:
+PLAN v2.0 (since v0.27.0) makes markdown the canonical store; `dent-brain-data` is a real git repo, and any teammate who wants to edit pages directly in their editor can clone it. **This phase is optional** — Claude-only is the default, and most teammates never need it. Run it only when:
 
 - The teammate explicitly asked to edit markdown directly, or
 - They've expressed a preference for "I'd rather just open the file in my editor."
@@ -285,7 +296,7 @@ Steps for the admin:
    ```
    Hi <FullName>, optional follow-up: you can hand-edit pages in
    dent-brain-data directly if you'd rather work in a code editor than
-   dictate to Cowork.
+   dictate to your Claude agent.
 
    1. Confirm you got the GitHub email inviting you to
       `dentthefuture/dent-brain-data` and accept it.
@@ -293,9 +304,9 @@ Steps for the admin:
       through clone, edit, push, and the git-native conflict workflow.
    3. Pull-before-edit, push-when-done. The server picks up your
       pushes every ~5 minutes and re-indexes them so they show up in
-      Cowork queries.
+      Claude queries.
 
-   You don't have to use this mode. Cowork-only works for everything.
+   You don't have to use this mode. Claude-only works for everything.
    This is for moments where you want to write the prose exactly right
    or work offline.
    ```

@@ -2,6 +2,42 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.34.0] - 2026-05-05
+
+## **Teammate onboarding rewritten for Claude Code Desktop primary. Plus Granola pre-flight and macOS Background Items heads-up in the granola-sync installer.**
+
+The teammate onboarding flow was written when Cowork was the assumed primary surface. New teammates today (starting with Steve) use **Claude Code in Claude Desktop** — Code mode tab, with direct bash access to the laptop, which makes the install much smoother than Cowork's sandbox. The walkthrough is now Claude-Code-Desktop primary, with Cowork as a side note about the separate plugin store.
+
+A few related cleanups dropped in too: granola-sync's installer now has a Granola.app pre-flight check (errors with permission setup steps if Granola isn't installed or hasn't been opened), prints a heads-up about the macOS Background Items notification ("Jarred Sumner may now run software in the background" — that's the developer ID of Bun, the runtime our daemon uses), and the `/dent-extensions` skill prose has a new positive description of what `install` actually does (no prompts, ~3 seconds, here are the literal 6 steps) so the agent stops hallucinating bearer-token-finding flows.
+
+### To take advantage of v0.34.0
+
+If you're an admin re-deploying for a new teammate: just run `/dent-onboard-teammate` as usual. The install message points teammates at the rewritten walkthrough.
+
+If you're a teammate already running v0.33.x: nothing to do. The new prose helps the next teammate's install; your install is already done.
+
+If you have the Cowork plugin installed and want the latest skills: remove + re-add the marketplace from your Cowork Customize panel. (Same for Claude Code's plugin install.)
+
+### Itemized changes
+
+#### Teammate onboarding flow
+
+- `docs/dent-brain/TEAMMATE_INSTALL.md` — comprehensive rewrite. Replaces "Cowork" labels with "your Claude agent" or "Claude Code"; updates the §5 plugin install to describe Claude Desktop's Customize UI (works for Code mode too — same UI surface as Cowork uses). Adds an upfront "two surfaces, one install for the connector — separate installs for the plugin" callout because Claude Code and Cowork have separate plugin stores. Adds a new §7 pointing at `/dent-extensions` for installing local extensions like granola-sync. Verification step in §4 generalized to "open a new Claude Code or Cowork session, ask 'use dent-brain to call get_stats'".
+- `docs/dent-brain/FILEMAKER_MCP_INSTALL.md` — same agent-agnostic generalization. "Cowork actions" → "Agent actions", verification step says "open a NEW chat (Claude Code or Cowork)".
+- `skills/dent/onboard-teammate/SKILL.md` — Phase 5 install message now recommends opening a Claude Code session in Claude Desktop (with the rationale: direct bash on the laptop, no copy-paste handoff). Adds an explicit heads-up that the plugin install is per-surface (Claude Code and Cowork have separate stores). Phase 4 dual-config rationale updated to say the connector is unified across surfaces but the plugin marketplace is not.
+
+#### granola-sync installer hardening
+
+- `tools/granola-sync/install.sh` — new Step 3 (Granola pre-flight): checks `Granola.app` exists in `/Applications/`, checks `~/Library/Application Support/Granola/cache-v6.json` exists. Errors with full setup walkthrough (download URL, sign-in, mic + screen-recording permissions, "sit through one meeting") if either is missing. New Step 7: prints a heads-up about macOS's Background Items notification mentioning "Jarred Sumner" — explains that's the developer ID of Bun, expected and safe, and points at System Settings → Login Items & Extensions → Allow in Background to verify or pause/resume.
+
+#### `/dent-extensions` skill prose
+
+- `skills/dent/extensions/SKILL.md` — positive description of what `install granola-sync` actually does (literal 6-step list, then explicit "what install does NOT do" list). Closes with: "If you find yourself describing prompts, editors, or token-pasting, you've hallucinated. Re-read this section." New Step 2 walks the agent through asking the teammate about Granola.ai setup (download, sign-in, permissions) before triggering the installer. New Step 5 explains the macOS Background Items notification so the teammate isn't surprised. Steps renumbered: 1 (clone) → 2 (Granola pre-flight) → 3 (list) → 4 (per-extension actions) → 5 (after install) → 6 (privacy contract).
+
+#### Plumbing
+
+- `package.json` + `VERSION` — bump to 0.34.0 to invalidate Cowork + Claude Code marketplace caches so teammates pull the new docs.
+
 ## [0.33.3] - 2026-05-05
 
 ## **Skill prose: tell the agent EXPLICITLY what install does, so it stops hallucinating prompts.**

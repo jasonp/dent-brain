@@ -1,30 +1,30 @@
 # Dent Brain — Teammate install walkthrough
 
-This doc is written so a teammate can paste the URL into a fresh Cowork
-session and say:
+This doc is written so a teammate can paste the URL into a fresh Claude
+Code session in Claude Desktop and say:
 
 > *"Read https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/TEAMMATE_INSTALL.md and walk me through the install step by step. Pause at each question and wait for my answer."*
 
-Cowork will fetch this page, parse the conditional branches, and guide you
-through. Each `### Cowork prompt` block is a pause-point: Cowork asks you,
-you answer, Cowork branches accordingly.
+Your Claude agent will fetch this page, parse the conditional branches, and
+guide you through. Each `### Agent prompt` block is a pause-point: the
+agent asks you, you answer, the agent branches accordingly.
 
 You can also read this top-to-bottom yourself and follow it manually. The
 sections are numbered so you don't lose your place.
 
 ---
 
-## Operating principle for Cowork
+## Operating principle for the agent
 
-**Cowork: do everything you possibly can on your own. Only stop and ask the user when you genuinely cannot proceed without them.**
+**Agent: do everything you possibly can on your own. Only stop and ask the user when you genuinely cannot proceed without them.**
 
-You have a shell tool. Use it. When this doc shows a command, **run it yourself** — capture the output, decide what to do next, and continue. Do not paste commands into chat and tell the user to "run this in Terminal" if you can run them directly.
+You have a shell tool. Use it. When this doc shows a command, **run it yourself** — capture the output, decide what to do next, and continue. Do not paste commands into chat and tell the user to "run this in Terminal" if you can run them directly. (This applies in particular to Claude Code in Claude Desktop, which has direct bash access to the user's laptop. If you're running in Cowork's sandbox instead, your shell can't reach the user's machine — fall back to copy-paste handoff for any command that touches `~/.claude.json`, launchd, or `~/Library/`.)
 
 Things only the user can do (these are the legitimate pause-points):
 
 - **Provide a secret** (bearer token from the admin, FileMaker password). Secrets aren't in the chat history; the user has to type them.
-- **Click a UI dialog outside Terminal**: the macOS `xcode-select --install` popup, FileMaker Pro's Manage Security window, GitHub's "Accept Invitation" button, the Claude Desktop quit/relaunch (Cmd+Q), and the second Cowork session that's needed to verify the install (the current session caches its tool registry).
-- **State a preference**: where to clone the data repo, what handle to use for the FileMaker MCP account, yes/no on optional sections (FM MCP, hand-edit mode).
+- **Click a UI dialog outside Terminal**: the macOS `xcode-select --install` popup, FileMaker Pro's Manage Security window, GitHub's "Accept Invitation" button, the Claude Desktop quit/relaunch (Cmd+Q), the Customize-panel UI clicks for installing the plugin marketplace, and the new session needed to verify install (the current session caches its tool registry).
+- **State a preference**: where to clone the data repo, what handle to use for the FileMaker MCP account, yes/no on optional sections (FM MCP, hand-edit mode, granola-sync).
 - **Confirm an ambiguous output**: when a command's exit is non-zero or the result is unexpected, show the user and ask before guessing.
 
 Everything else — `git --version`, `brew install node`, reading and writing JSON config, running the Python install block, `git clone`, `npm install`, `curl` health checks — **you run yourself**. The user shouldn't have to copy-paste between windows unless their judgment or their hands are required.
@@ -41,7 +41,7 @@ When you do need user input, ask one clean question and wait. Don't bundle "open
 >    you to the MCP server. Tied to your name in the audit log.
 > 2. **Server URL** — the MCP endpoint, e.g.
 >    `https://dent-brain.dentthefuture.com/mcp` (varies per deployment).
-> 3. **Marketplace URL** — the GitHub repo for the Cowork plugin, e.g.
+> 3. **Marketplace URL** — the GitHub repo for the plugin, e.g.
 >    `https://github.com/jasonp/dent-brain` (varies per deployment).
 >
 > If you don't have all three, stop and ask the admin before starting Section 3.
@@ -52,25 +52,37 @@ When you do need user input, ask one clean question and wait. Don't bundle "open
 
 By the end of this walkthrough you'll have:
 
-- The **dent-brain MCP connector** registered in Claude Desktop, so Cowork
-  sessions can search the brain, log observations, and update entity pages.
-- The **dent-brain Cowork plugin** installed, giving you the `/dent-*` slash
-  commands (`/dent-append-evidence`, `/dent-enrich`, `/dent-resolve-entity`,
-  etc.).
+- The **dent-brain MCP connector** registered in Claude Desktop, so your
+  Claude sessions can search the brain, log observations, and update
+  entity pages. Both Claude Code and Cowork sessions will see it.
+- The **dent-brain plugin** installed in Claude Code, giving you the
+  `/dent-*` slash commands (`/dent-append-evidence`, `/dent-enrich`,
+  `/dent-resolve-entity`, `/dent-extensions`, etc.).
 - (Optional) A **local clone of `dent-brain-data`** so you can hand-edit
-  entity pages in your code editor instead of dictating to Cowork.
-- (Optional) **FileMaker MCP** wired up so Cowork can also query DentCRM
-  directly — separate from dent-brain, but they compose nicely.
+  entity pages in your code editor instead of dictating to your agent.
+- (Optional) **FileMaker MCP** wired up so your agent can also query
+  DentCRM directly — separate from dent-brain, but they compose nicely.
+- (Optional) **granola-sync extension** running hourly on your laptop,
+  pushing your Dent meeting notes into the brain automatically.
 
-You will **not** need to install Postgres, Bun, or Railway. Those run on
-the dent-brain server (Railway → Supabase). You only talk to the server
-via MCP.
+You will **not** need to install Postgres, Bun (until granola-sync), or
+Railway. Those run on the dent-brain server (Railway → Supabase). You
+only talk to the server via MCP.
+
+> **Two surfaces, one install for the connector — separate installs for the plugin.**
+>
+> The MCP **connector** lives in Claude Desktop's config files and is
+> visible to BOTH Claude Code mode and Cowork sessions after one install.
+> The **plugin** lives in each surface's separate plugin store and must be
+> installed once per surface you want to use it in. This walkthrough
+> installs the plugin in Claude Code (the Code mode tab in Claude
+> Desktop). If you also want it in Cowork, repeat Section 5 there too.
 
 ---
 
 ## 1. Prerequisites
 
-### Cowork actions
+### Agent actions
 
 1. **OS check** — run `uname -s` yourself. If it returns `Darwin`, ✅ continue. If anything else, tell the user this guide is Mac-only today and to ping the admin.
 
@@ -92,10 +104,10 @@ Don't list every check in chat — run them silently and only surface results wh
 ## 2. FileMaker MCP — optional precheck
 
 DentCRM lives in FileMaker. There's a separate MCP server (built by Steve)
-that lets Cowork query the CRM directly. It's optional and totally
+that lets your agent query the CRM directly. It's optional and totally
 independent of dent-brain — they share Claude Desktop but nothing else.
 
-### Cowork prompt
+### Agent prompt
 
 Ask the user: **"Do you already have FileMaker MCP set up? (yes / no)"**
 
@@ -117,8 +129,8 @@ Ask the user: **"Do you already have FileMaker MCP set up? (yes / no)"**
     Once FM MCP is verified working (the `fm_ping` test in §6 of that
     doc returns `ok: true`), come back here and resume from Section 3.
 
-The two MCP servers do NOT share auth, config, or data. Cowork sees both
-connectors side-by-side and routes queries to whichever fits.
+The two MCP servers do NOT share auth, config, or data. Your agent sees
+both connectors side-by-side and routes queries to whichever fits.
 
 ---
 
@@ -131,7 +143,7 @@ with the token's handle.
 
 ### 3a. Get the install bundle from the admin
 
-### Cowork prompt
+### Agent prompt
 
 Ask the user: **"Has the admin sent you the install bundle? It contains three things: a bearer token (looks like `gbrain_<long-string>`), the server URL (looks like `https://...mcp`), and the marketplace URL (a GitHub repo URL). Check Slack, encrypted email, or wherever you've agreed to receive secrets."**
 
@@ -139,11 +151,11 @@ Ask the user: **"Has the admin sent you the install bundle? It contains three th
 
 - **If yes:** Continue.
 
-### 3b. Paste the bundle into this Cowork session
+### 3b. Paste the bundle into this session
 
-Cowork: ask for all three at once so the user can paste them in one shot.
+Ask for all three at once so the user can paste them in one shot.
 
-### Cowork prompt
+### Agent prompt
 
 Tell the user: **"Paste the three values here, each on its own line and prefixed with the label, like this:**
 >
@@ -191,10 +203,13 @@ def patch(path, entry):
     with open(path) as f: json.load(f)
     print(f"  wrote: {path}")
 
+# Claude Code (CLI + Desktop's Code mode tab): ~/.claude.json — HTTP-type entry
 patch(
     os.path.join(HOME, ".claude.json"),
     {"type": "http", "url": URL, "headers": {"Authorization": f"Bearer {TOKEN}"}},
 )
+
+# Cowork mode + classic Desktop chats: claude_desktop_config.json — stdio bridge
 patch(
     os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
     {
@@ -207,7 +222,7 @@ print("\nDone. Backups saved to ~/.dent-brain/backups/")
 PY
 ```
 
-The block backs up the existing configs (timestamped, in `~/.dent-brain/backups/`), writes the dent-brain entry into both files, and validates JSON after each write.
+The block writes the dent-brain MCP entry into BOTH config files — `~/.claude.json` (read by Claude Code) and `~/Library/Application Support/Claude/claude_desktop_config.json` (read by Cowork). One install, both surfaces work. Backs up existing configs first (timestamped, in `~/.dent-brain/backups/`).
 
 Capture the output. If it ends with `Done. Backups saved...`, ✅ continue. If it errors:
 - Show the user the error.
@@ -221,25 +236,26 @@ When the install succeeds, tell the user: **"I've registered dent-brain in your 
 **Cmd+Q** Claude Desktop completely. Don't just close the window — fully
 quit. Then relaunch.
 
-> ⚠️ Tool registries are cached **per-chat**. After the relaunch, start a
-> brand-new Cowork chat. Existing chats won't see dent-brain even though
-> the connector is wired up.
+> ⚠️ Tool registries are cached **per-session**. After the relaunch, start a
+> brand-new chat (Code mode or Cowork). The session you were in
+> won't see dent-brain even though the connector is now wired up.
 
 ---
 
 ## 4. Verify the MCP connector
 
-This step requires a fresh Cowork session (the current session's tool registry was cached at chat-start, before dent-brain was installed). Only the user can start a new chat.
+This step requires a fresh session (the current session's tool registry was cached at chat-start, before dent-brain was installed). Only the user can start a new chat.
 
-### Cowork actions
+### Agent actions
 
-1. Run a JSON-validity check on the config Cowork just wrote:
+1. Run a JSON-validity check on the configs you just wrote:
    ```bash
-   python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json > /dev/null && echo "VALID JSON ✓"
+   python3 -m json.tool ~/.claude.json > /dev/null && echo "claude.json VALID ✓"
+   python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json > /dev/null && echo "claude_desktop_config.json VALID ✓"
    ```
-   If this fails, the install is broken — restore the backup from `~/.dent-brain/backups/` and surface the error to the user.
+   If either fails, the install is broken — restore the matching backup from `~/.dent-brain/backups/` and surface the error to the user.
 
-2. Ask the user: **"Open a new Cowork chat (the current chat won't see dent-brain because tool registries cache per-chat). Once you're in the new chat, ask Cowork: 'Use dent-brain to call get_stats and tell me what's in there.' Then come back here and tell me whether it worked or paste the error."**
+2. Ask the user: **"Open a new Claude Code session in Claude Desktop (the current session won't see dent-brain because tool registries cache per-chat). Once you're in the new session, ask: 'Use dent-brain to call get_stats and tell me what's in there.' Then come back here and tell me whether it worked or paste the error."**
 
 3. Wait for the user to confirm. If they say it worked: ✅ continue to §5. If they say it failed:
    - "I don't see any dent-brain tools" → confirm they really started a new chat (the most common cause), confirm they Cmd+Q'd Claude Desktop (the second most common cause).
@@ -247,40 +263,46 @@ This step requires a fresh Cowork session (the current session's tool registry w
 
 ---
 
-## 5. Install the dent-brain Cowork plugin
+## 5. Install the dent-brain plugin in Claude Code
 
 The connector gives the brain's *tools*. The **plugin** gives the `/dent-*`
 slash commands that orchestrate those tools.
 
 The plugin install is **UI-only** — it can't be done by typing a prompt
-into a Cowork chat, and Cowork has no shell tool that installs Cowork
-plugins. The user has to click through Cowork's Customize panel. After
-they finish, Cowork can verify the install via the filesystem.
+into a chat, and there's no shell command that installs plugins. The user
+has to click through Claude Desktop's Customize panel. After they finish,
+the agent can verify the install via the filesystem.
 
-### Cowork actions
+> **Two-surface caveat.** Claude Code (the Code mode tab in Claude Desktop,
+> plus the standalone CLI) has its own plugin store at `~/.claude/plugins/`.
+> Cowork has a separate plugin store. **Installing the plugin in Claude Code
+> does NOT install it in Cowork**, and vice versa. This walkthrough installs
+> in Claude Code. If you also want the plugin in Cowork, repeat the steps
+> below in a Cowork session — same UI, separate install.
+
+### Agent actions
 
 1. Walk the user through the UI clicks. Send this in one message (don't
    drip-feed; they need to follow it sequentially):
 
    Substitute `<MARKETPLACE_URL>` with the marketplace URL the user pasted in §3b:
 
-   > **In Cowork desktop:**
+   > **In Claude Desktop, with a Claude Code session open:**
    >
    > 1. Click **Customize** on the left sidebar.
    > 2. Next to **Personal plugins**, click the **+** icon.
-   > 3. Click **Create plugin**.
-   > 4. Click **Add marketplace**.
-   > 5. Paste this URL into the field:
+   > 3. Click **Add marketplace**.
+   > 4. Paste this URL into the field:
    >
    >    ```
    >    <MARKETPLACE_URL>
    >    ```
    >
-   > 6. Confirm whatever Cowork shows next (it should pull the marketplace
+   > 5. Confirm whatever Claude shows next (it should pull the marketplace
    >    manifest and offer to install the `dent-brain` plugin). Accept the
    >    install.
    >
-   > Tell me when Cowork confirms the install.
+   > Tell me when Claude confirms the install.
 
 2. Wait for the user to confirm.
 
@@ -289,31 +311,35 @@ they finish, Cowork can verify the install via the filesystem.
    back."** (Two restarts total across the whole walkthrough: one for the
    connector in §3, one for the plugin here.)
 
-4. Verify the install yourself via the filesystem. **Cowork shares its plugin store with Claude Code at `~/.claude/plugins/`** — the registry is `installed_plugins.json` (keyed by `<marketplace>@<plugin>`) and the unpacked content is in `cache/<marketplace>/<plugin>/<version>/`.
+4. Verify the install yourself via the filesystem. Claude Code's plugin
+   store lives at `~/.claude/plugins/` — the registry is `installed_plugins.json`
+   (keyed by `<marketplace>@<plugin>`) and the unpacked content is in
+   `cache/<marketplace>/<plugin>/<version>/`.
 
    Check the registry first:
    ```bash
    python3 -c "import json,sys; d=json.load(open('${HOME}/.claude/plugins/installed_plugins.json')); k='dent-brain@dent-brain'; v=d.get('plugins',{}).get(k); print(v[0]['installPath'] if v else 'NOT installed')"
    ```
-   - Prints a path like `/Users/<you>/.claude/plugins/cache/dent-brain/dent-brain/0.29.0` → ✅ install landed.
+   - Prints a path like `/Users/<you>/.claude/plugins/cache/dent-brain/dent-brain/0.34.0` → ✅ install landed.
    - Prints `NOT installed` → surface to the user; ask them to retry the UI steps (a click may have been missed, or they may have pasted the wrong URL).
 
 5. Verify the prefix is `dent`. Use whatever path the registry reported (versions change over time, so don't hardcode):
    ```bash
    INSTALL_PATH=$(python3 -c "import json; d=json.load(open('${HOME}/.claude/plugins/installed_plugins.json')); print(d['plugins']['dent-brain@dent-brain'][0]['installPath'])")
-   ls "$INSTALL_PATH/dent-brain/skills/" 2>/dev/null
+   ls "$INSTALL_PATH/.claude/skills/" 2>/dev/null
    ```
    Expected folders: `dent-append-evidence`, `dent-enrich`,
    `dent-resolve-entity`, `dent-onboard-teammate`, `dent-setup`,
-   `dent-add-ingestor`. If you see `acme-*` or literal `{{prefix}}-*`
-   folders, the marketplace template wasn't processed during the
-   admin's build step — escalate.
+   `dent-add-ingestor`, `dent-extensions`. If you see `acme-*` or literal
+   `{{prefix}}-*` folders, the marketplace template wasn't processed
+   during the admin's build step — escalate.
 
 6. Ask the user to verify the slash commands appear in a NEW chat:
-   **"Open a new Cowork chat (the one you just used will have the
-   tool list cached from before the restart), type `/` and look at the
-   suggestions. You should see `/dent-append-evidence`, `/dent-enrich`,
-   `/dent-resolve-entity`, etc. Confirm the prefix is `dent`."**
+   **"Open a new Claude Code session in Claude Desktop (the one you just
+   used will have the tool list cached from before the restart), type `/`
+   and look at the suggestions. You should see `/dent-append-evidence`,
+   `/dent-enrich`, `/dent-resolve-entity`, `/dent-extensions`, etc.
+   Confirm the prefix is `dent`."**
 
 7. Final smoke test — ask the user: **"Type `/dent-append-evidence
    remember that I successfully installed dent-brain on <today's date>`
@@ -327,18 +353,18 @@ they finish, Cowork can verify the install via the filesystem.
 
 This step is for teammates who want to edit markdown pages directly in a
 code editor (VS Code, Cursor, Sublime, vim, whatever). **Skip this entire
-section** if you only plan to interact with the brain through Cowork.
+section** if you only plan to interact with the brain through Claude.
 
-### Cowork prompt
+### Agent prompt
 
 Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (yes / no)"**
 
-- **If no:** Skip to Section 7. Cowork-only is fine; the brain works
+- **If no:** Skip to Section 7. Claude-only is fine; the brain works
   identically either way.
 
 - **If yes:** Continue.
 
-### Cowork actions
+### Agent actions
 
 1. **Confirm collaborator access** — ask the user: **"Check your email for a GitHub invite to `dentthefuture/dent-brain-data`. If you have one, accept it now and tell me. If you don't, the admin needs to add you — ping them and pause here."**
 
@@ -377,9 +403,11 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
 Pages live under:
 
 - `entities/people/<slug>.md` — individual humans
+- `entities/audience/<slug>.md` — email-list contacts (Mailchimp etc.) who haven't engaged with Dent events
 - `entities/companies/<slug>.md` — orgs
-- `entities/projects/<slug>.md` — initiatives
+- `entities/projects/<slug>.md` — initiatives + specific events
 - `meetings/YYYY-MM-DD-<slug>.md` — meeting notes
+- `meetings/YYYY-MM-DD-<slug>--transcript.md` — raw transcripts (granola-sync writes these)
 
 For the full edit/commit/push workflow + conflict resolution + what NOT
 to edit, read **`docs/dent-brain/TEAMMATE_GUIDE.md` § Mode 2** in this
@@ -388,12 +416,60 @@ walkthrough only handles the install.
 
 ---
 
-## 7. You're done
+## 7. (Optional) Install local extensions — granola-sync
+
+dent-brain extensions are per-teammate ingestors that run on your laptop
+and push signal into the brain automatically. The flagship today is
+**granola-sync** — an hourly daemon that watches your Granola.ai cache,
+filters for Dent meetings, and pushes notes + transcripts to the brain.
+
+### Agent prompt
+
+Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your Granola meeting notes into Dent Brain hourly. (yes / skip)"**
+
+- **If skip:** Continue to Section 8. You can install it later by typing
+  `/dent-extensions` in any Claude Code session.
+
+- **If yes:** Continue.
+
+### Agent actions
+
+1. **Clone the dent-brain repo** if it isn't already cloned. The extensions
+   tooling lives in the code repo (separate from the data repo). Default
+   location `~/gh/dent-brain`:
+
+   ```bash
+   if [ ! -d ~/gh/dent-brain ]; then
+     mkdir -p ~/gh && cd ~/gh && git clone git@github.com:jasonp/dent-brain.git
+   else
+     cd ~/gh/dent-brain && git pull --ff-only origin main
+   fi
+   ```
+
+2. **Hand off to the `/dent-extensions` skill** — tell the user:
+
+   > "I'll switch to the `/dent-extensions` skill which handles the
+   > extension install. Just type `/dent-extensions` in a new line, or
+   > say 'install granola-sync' and I'll route you there."
+
+3. The `/dent-extensions` skill then:
+   - Verifies prereqs (Bun, Granola.app, Granola permissions, dent-brain clone)
+   - Runs `tools/granola-sync/install.sh` which sets up launchd
+   - Verifies first sync via `tail` on the log
+
+The skill walks through everything else. See `tools/granola-sync/README.md`
+in this repo for what gets written where, and `tools/extensions/README.md`
+for the broader extensions framework.
+
+---
+
+## 8. You're done
 
 ✅ MCP connector live (verified by `get_stats`).
-✅ Cowork plugin installed (verified by `/dent-*` slash commands appearing).
+✅ dent-brain plugin installed in Claude Code (verified by `/dent-*` slash commands appearing).
 ✅ Optional: data repo cloned for hand-edit mode.
 ✅ Optional: FileMaker MCP set up (or noted for later).
+✅ Optional: granola-sync running hourly (or noted for later).
 
 ### Heads-up
 
@@ -403,16 +479,21 @@ walkthrough only handles the install.
   operational hygiene.
 - **If you switch machines:** ping the admin for a fresh token. Don't
   copy tokens between machines.
-- **If a Cowork session says "I don't see dent-brain tools":** start a
+- **If a session says "I don't see dent-brain tools":** start a
   brand-new chat. Tool registries cache per-chat and old chats won't see
   newly-installed connectors even after a Claude Desktop restart.
+- **If you want the plugin in Cowork too:** the plugin install in §5 only
+  registered the plugin in Claude Code's store. Cowork has a separate
+  plugin store. To use the `/dent-*` slash commands in Cowork, repeat
+  the §5 Customize-panel steps from a Cowork session — the same
+  marketplace URL, same install flow, separate store.
 - **Backups of your previous Claude config** are in `~/.dent-brain/backups/`.
   If anything ever breaks, restoring is one shell command. Show the admin
   if you need help.
 
 ### What to try first
 
-In a Cowork session:
+In a Claude Code session:
 
 > *"Use dent-brain to search for 'Steve' and tell me what we know."*
 
@@ -434,13 +515,15 @@ Postgres re-sync end-to-end.
 - **Server URL** — the value the admin sent you (looks like
   `https://your-brain.example.com/mcp`). Lives at rest in your
   `~/.claude.json` and `~/Library/Application Support/Claude/claude_desktop_config.json`
-  under the `dent-brain` `mcpServers` entry — Cowork can read those files
-  to remind you what it is.
+  under the `dent-brain` `mcpServers` entry — your agent can read those
+  files to remind you what it is.
 - **Marketplace URL** — the value the admin sent you (looks like
   `https://github.com/<org>/<repo>`). Same source as above; recorded in
-  `~/.claude/plugins/known_marketplaces.json`.
+  `~/.claude/plugins/known_marketplaces.json` for Claude Code, separately
+  in Cowork's store if you also installed there.
 - **Data repo** — `<server-org>/<server-org>-brain-data`. The admin's
   invitation email shows the exact URL.
 - **Post-install reference**: `docs/dent-brain/TEAMMATE_GUIDE.md` (in
   the same code repo as this walkthrough).
-- **Architecture**: `docs/dent-brain/PLAN_v2_MARKDOWN_CANONICAL.md`
+- **Extensions reference**: `tools/extensions/README.md` and
+  `tools/granola-sync/README.md` (same repo).

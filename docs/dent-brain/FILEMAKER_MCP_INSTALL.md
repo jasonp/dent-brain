@@ -5,27 +5,29 @@ directly via the FileMaker Data API. **Independent of dent-brain** — they
 share Claude Desktop but nothing else. Installing one doesn't affect the
 other.
 
-This doc is written so a teammate can ask Cowork:
+This doc is written so a teammate can ask their Claude agent (Claude Code in Desktop, Cowork, or the CLI):
 
 > *"Read https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/FILEMAKER_MCP_INSTALL.md and walk me through the install. Pause at each question and wait for my answer."*
 
-Cowork fetches the page, walks through the steps, and pauses where input
-is needed.
+The agent fetches the page, walks through the steps, and pauses where
+input is needed.
 
 **Time required:** ~15 minutes.
 
 **End state:** a FileMaker account scoped to the teammate (e.g. `mcp_steve`,
 `mcp_robin`) running a local Node.js MCP server, wired into Claude Desktop.
-Cowork can then ask the CRM things like "find people in DentCRM whose last
-name contains 'Smith'" in plain English.
+Your agent can then ask the CRM things like "find people in DentCRM whose
+last name contains 'Smith'" in plain English.
 
 ---
 
-## Operating principle for Cowork
+## Operating principle for the agent
 
-**Cowork: do everything you possibly can on your own. Only stop and ask the user when you genuinely cannot proceed without them.**
+**Agent: do everything you possibly can on your own. Only stop and ask the user when you genuinely cannot proceed without them.**
 
 You have a shell tool. Use it to run `node --version`, `which npm`, `npm install`, `curl` health checks, JSON validation, and the config edit. **Edit `claude_desktop_config.json` yourself** — don't paste a JSON snippet and ask the user to merge it manually. Read the file, parse it, splice in the `filemaker` entry, write it back, validate.
+
+(This applies in particular to Claude Code in Claude Desktop, which has direct bash access to the user's laptop. If you're running in Cowork's sandbox instead, your shell can't reach the user's machine — fall back to copy-paste handoff for any command that touches `claude_desktop_config.json` or `~/Library/`.)
 
 Things only the user can do:
 - **Provide secrets** (the FileMaker password they just set).
@@ -59,7 +61,7 @@ If you don't have all three, stop and ask the admin before continuing.
 
 ## 1. Prerequisites
 
-### Cowork actions
+### Agent actions
 
 1. **FileMaker Pro check** — ask the user: "Is FileMaker Pro installed and can you log into DentCRM with a full-access account (your own named account, not `Guest`)?" If no, surface to the admin; you can't install FileMaker Pro for them.
 
@@ -73,9 +75,9 @@ If you don't have all three, stop and ask the admin before continuing.
 
 ## 2. Create your FileMaker account
 
-This step is FileMaker Pro UI only — Cowork can't drive it. Walk the user through clearly, then verify in §3.
+This step is FileMaker Pro UI only — your agent can't drive it. Walk the user through clearly, then verify in §3.
 
-### Cowork actions
+### Agent actions
 
 1. Ask: **"What handle do you want for the FileMaker MCP account? Suggested: `mcp_<yourfirstname>` (e.g. `mcp_robin`, `mcp_jeff`). Pick something stable; this becomes your audit-log identity inside DentCRM."** Save the answer as `<MCP_HANDLE>`.
 
@@ -103,7 +105,7 @@ This step is FileMaker Pro UI only — Cowork can't drive it. Walk the user thro
 
 ## 3. Verify the account works via curl
 
-### Cowork actions
+### Agent actions
 
 1. Ask the user: **"Paste the password you just set for `<MCP_HANDLE>` here. I'll use it to test the FileMaker API auth and then to write the Claude Desktop config — I won't display it back to you and it stays in this session only."**
 
@@ -130,7 +132,7 @@ Don't proceed until you see `code: 0`.
 
 ## 4. Install the MCP server
 
-### Cowork actions
+### Agent actions
 
 1. Ask the user: **"Where is the `FileMaker-MCP-for-<yourhandle>.zip` from the admin? Give me its full path (e.g. `~/Downloads/FileMaker-MCP-for-robin.zip`). If you don't have it yet, ping the admin and pause."**
 
@@ -156,9 +158,9 @@ Don't proceed until you see `code: 0`.
 
 ## 5. Wire into Claude Desktop
 
-This is a config-file merge, not a "tell the user to edit JSON manually" step. **Cowork edits the file directly.**
+This is a config-file merge, not a "tell the user to edit JSON manually" step. **Edit the file directly.**
 
-### Cowork actions
+### Agent actions
 
 1. Tell the user: **"I'm about to edit your `claude_desktop_config.json` to add the FileMaker entry. I'll back up the existing file first to `~/.dent-brain/backups/`. You'll need to Cmd+Q Claude Desktop completely after I finish — confirm when you're ready and I'll proceed."**
 
@@ -221,11 +223,11 @@ This is a config-file merge, not a "tell the user to edit JSON manually" step. *
 
 ## 6. Test it
 
-Cowork can't test the install from the current chat (tool registry was cached at chat-start, before FileMaker MCP was wired up). User has to start a new chat to verify.
+Your agent can't test the install from the current chat (tool registry was cached at chat-start, before FileMaker MCP was wired up — same caveat as the dent-brain install). User has to start a new chat to verify.
 
-### Cowork actions
+### Agent actions
 
-1. Tell the user: **"Open a NEW Cowork chat and ask: *'Ping my FileMaker database.'* Tell me whether it returns a JSON blob with `ok: true` or whether it errors."**
+1. Tell the user: **"Open a NEW chat (Claude Code or Cowork) and ask: *'Ping my FileMaker database.'* Tell me whether it returns a JSON blob with `ok: true` or whether it errors."**
 
 2. Wait for confirmation. On success, response should include:
    ```json
@@ -248,7 +250,7 @@ Cowork can't test the install from the current chat (tool registry was cached at
 
 ## Available tools
 
-Once installed, Cowork can call these against DentCRM:
+Once installed, Your agent can call these against DentCRM:
 
 - `fm_ping` — auth sanity check
 - `fm_list_layouts` — list all layouts visible to your account
