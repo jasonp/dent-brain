@@ -24,6 +24,7 @@
       "resolve-entity",
       "onboard-teammate",
       "add-ingestor",
+      "extensions",
       "flag-fact",
       "whoami",
       "update-dbrain",

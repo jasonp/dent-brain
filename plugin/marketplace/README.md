@@ -1,6 +1,6 @@
-# Dent The Future, Inc. Brain — Cowork plugin (v0.32.7)
+# Dent The Future, Inc. Brain — Cowork plugin (v0.33.0)
 
-Adds 6 slash commands:
+Adds 7 slash commands:
 
 - `/dent-setup`
 - `/dent-append-evidence`
@@ -8,6 +8,7 @@ Adds 6 slash commands:
 - `/dent-resolve-entity`
 - `/dent-onboard-teammate`
 - `/dent-add-ingestor`
+- `/dent-extensions`
 
 These run on top of the `dent-brain` MCP server at `https://dent-brain.dentthefuture.com/mcp`.
 
@@ -40,6 +41,6 @@ and installs the plugin via `claude plugin install`. Code mode reads from
 
 ## Source
 
-Built from `https://github.com/jasonp/dent-brain` at v0.32.7.
+Built from `https://github.com/jasonp/dent-brain` at v0.33.0.
 Rebuild from source skill templates with `bun run build:plugin` from the
 source repo root. Forks customize via `bun run setup`.

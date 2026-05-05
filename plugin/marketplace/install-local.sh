@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dent The Future, Inc. Brain plugin — Code-mode local installer (v0.32.7).
+# Dent The Future, Inc. Brain plugin — Code-mode local installer (v0.33.0).
 #
 # Registers plugin/marketplace/ as a local Claude Code marketplace, then
 # installs the plugin from it. This is for Code mode (terminal CLI / Claude
@@ -15,7 +15,7 @@ TARGET_FREEFORM="$HOME/.claude/skills"
 MARKETPLACE_NAME="dent-brain"
 PLUGIN_NAME="dent-brain"
 
-echo "Installing $PLUGIN_NAME plugin v0.32.7 via Claude Code marketplace"
+echo "Installing $PLUGIN_NAME plugin v0.33.0 via Claude Code marketplace"
 echo "  source: $DIST_DIR"
 echo ""
 
@@ -27,7 +27,7 @@ fi
 
 # Clean up any legacy freeform install from the v0.29 build pattern.
 FREEFORM_REMOVED=0
-for skill in dent-setup dent-append-evidence dent-enrich dent-resolve-entity dent-onboard-teammate dent-add-ingestor; do
+for skill in dent-setup dent-append-evidence dent-enrich dent-resolve-entity dent-onboard-teammate dent-add-ingestor dent-extensions; do
   if [ -d "$TARGET_FREEFORM/$skill" ]; then
     rm -rf "$TARGET_FREEFORM/$skill"
     echo "  cleaned: $TARGET_FREEFORM/$skill (legacy freeform install)"
