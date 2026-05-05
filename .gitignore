@@ -1,5 +1,8 @@
 node_modules/
 bin/
+# Exception: the extensions manager wrapper script is tracked source.
+!tools/extensions/bin/
+!tools/extensions/bin/**
 .DS_Store
 *.log
 .env
