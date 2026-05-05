@@ -55,8 +55,10 @@ re-runs of the same meeting are no-ops.
   reads the bearer token + URL from there at runtime, so you never paste a
   token twice. Rotate it via `/dent-onboard-teammate` and the daemon picks
   up the new value on the next run.
-- Your `@dentthefuture.com` email address (the installer prefills this from
-  `git config user.email` when possible).
+
+That's it — no email config, no per-teammate identity setup. The Dent-team
+filter uses `@dentthefuture.com` as the domain signal regardless of who's
+running the daemon.
 
 ### Install
 
@@ -70,10 +72,10 @@ The installer will:
 
 1. Verify `~/.claude.json` has a `dent-brain` MCP entry with a Bearer token
 2. Copy the runtime files to `~/.dent-brain/granola-sync/`
-3. Write `config.json` with your `@dentthefuture.com` email (prefilled from
-   `git config user.email`, just confirm)
-4. Install + load the launchd plist at `~/Library/LaunchAgents/com.dent.granola-sync.plist`
-5. Run the first sync immediately (RunAtLoad=true)
+3. Install + load the launchd plist at `~/Library/LaunchAgents/com.dent.granola-sync.plist`
+4. Run the first sync immediately (RunAtLoad=true)
+
+No prompts. No editing. Run it and walk away.
 
 After install, tail the log to watch the first sync:
 
@@ -118,7 +120,7 @@ rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes cursor + token
 
 | Path | Purpose |
 |---|---|
-| `~/.dent-brain/granola-sync/config.json` | Your email + paths. NO token (read fresh from `~/.claude.json` at runtime). `chmod 600`. |
+| `~/.dent-brain/granola-sync/config.json` | OPTIONAL. Only created if you need to override defaults (custom Granola path, additional Dent domains, etc.). NO token — read fresh from `~/.claude.json` at runtime. |
 | `~/.dent-brain/granola-sync/cursor.json` | Last-synced timestamp + recent doc IDs (for dedup). |
 | `~/.dent-brain/granola-sync/sync.log` | Stdout/stderr from each scheduled run. |
 | `~/.dent-brain/granola-sync/sync.ts` (+ deps) | The runtime. Updated when you re-run `install.sh`. |

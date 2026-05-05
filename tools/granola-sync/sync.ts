@@ -99,10 +99,11 @@ function loadConfig(path: string): SyncConfig {
   let raw: Record<string, unknown> = {};
   if (existsSync(path)) {
     raw = JSON.parse(readFileSync(path, 'utf-8'));
-  } else if (!discovered) {
-    console.error(`Config file not found at ${path} AND no dent-brain entry in ~/.claude.json.`);
+  }
+  if (!discovered && !raw.serverUrl && !raw.bearerToken) {
+    console.error(`No dent-brain MCP configured.`);
     console.error(`Run \`claude mcp add dent-brain ...\` first (per /dent-onboard-teammate),`);
-    console.error(`or run install.sh to scaffold a config.json with explicit values.`);
+    console.error(`or override with serverUrl + bearerToken in ${path}.`);
     process.exit(1);
   }
 
@@ -125,7 +126,6 @@ function loadConfig(path: string): SyncConfig {
     bearerToken,
     granolaCachePath: cachePath,
     cursorPath: String(raw.cursorPath ?? join(homedir(), '.dent-brain', 'granola-sync', 'cursor.json')).replace('${HOME}', homedir()),
-    teammateEmail: String(raw.teammateEmail ?? '').toLowerCase(),
     dentDomains: Array.isArray(raw.dentDomains) && raw.dentDomains.length > 0
       ? (raw.dentDomains as unknown[]).map((d) => String(d).toLowerCase())
       : ['dentthefuture.com'],
@@ -402,9 +402,11 @@ async function main() {
       console.error(`    transcript:   none in local cache`);
     }
 
-    // Per-attendee bullets (skip the teammate themselves)
+    // Per-attendee bullets — bullet lands on every attendee's entity page,
+    // including the teammate's own page. The teammate's timeline IS a
+    // legitimate record of the meetings they attended; idempotency on
+    // [Source: granola/<id>] prevents duplicates on re-runs.
     for (const e of t.attendeeEmails) {
-      if (e === config.teammateEmail) continue;
       const r = await appendBulletToAttendee(client, e, t.attendeeBullet, t.isoDate, t.attendeeNames[e], brainEmails, flags.dryRun);
       if (r.action === 'appended') bulletsAppended++;
       else if (r.action === 'created-stub') { stubsCreated++; bulletsAppended++; }

@@ -26,9 +26,10 @@ export const EXTENSIONS: Extension[] = [
     launchdPlistPath: '${HOME}/Library/LaunchAgents/com.dent.granola-sync.plist',
     entryScript: '${HOME}/.dent-brain/granola-sync/sync.ts',
     testArgs: ['--dry-run', '--verbose'],
-    unconfiguredMarkers: [
-      'REPLACE_WITH_YOUR_DENT_EMAIL',
-    ],
+    // No unconfiguredMarkers: the daemon auto-discovers everything from
+    // ~/.claude.json + macOS conventions, so as soon as it's installed
+    // it's also configured. The skill detects setup problems via runtime
+    // errors in sync.log, not via config-file inspection.
   },
   // Future extensions land here. Pattern:
   //

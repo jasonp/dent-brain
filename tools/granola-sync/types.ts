@@ -105,10 +105,6 @@ export interface SyncConfig {
   granolaCachePath: string;
   /** Path to the cursor JSON. Defaults to `~/.dent-brain/granola-sync/cursor.json`. */
   cursorPath: string;
-  /** Owner email — used to skip self-only meetings (no other attendees) and
-   *  to filter Dent-team membership. Should be the teammate's primary
-   *  Dent email (e.g. jason@dentthefuture.com). */
-  teammateEmail: string;
   /** Domains to consider "Dent team" for the include filter. */
   dentDomains: string[];
 }

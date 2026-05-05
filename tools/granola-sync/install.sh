@@ -7,11 +7,14 @@
 #      (token + URL are auto-discovered at runtime — no second copy needed).
 #   3. Copies sync.ts + types.ts + filter.ts + translator.ts + mcp-client.ts
 #      to ~/.dent-brain/granola-sync/.
-#   4. Creates config.json with teammateEmail prefilled from `git config user.email`
-#      (so the teammate just confirms — no copy-paste of secrets).
-#   5. Renders the launchd plist template with absolute paths and copies it
+#   4. Renders the launchd plist template with absolute paths and copies it
 #      to ~/Library/LaunchAgents/com.dent.granola-sync.plist.
-#   6. Loads the agent. Runs once immediately (RunAtLoad=true).
+#   5. Loads the agent. Runs once immediately (RunAtLoad=true).
+#
+# No config.json is needed for the default setup — `dentDomains` defaults
+# to ['dentthefuture.com'], paths default to standard macOS locations, and
+# the bearer token + server URL are read from ~/.claude.json. To override,
+# write a config.json after install.
 #
 # Idempotent — safe to re-run after pulling repo updates to refresh the script.
 #
@@ -75,44 +78,7 @@ for f in sync.ts types.ts filter.ts translator.ts mcp-client.ts; do
 done
 echo "    copied 5 runtime files."
 
-# 4. Config seeding (no token — auto-discovered at runtime)
-CONFIG_PATH="$INSTALL_DIR/config.json"
-if [ ! -f "$CONFIG_PATH" ]; then
-  # Prefill teammateEmail from git config if it ends in a Dent domain.
-  GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-  if [[ "$GIT_EMAIL" == *@dentthefuture.com ]]; then
-    DEFAULT_EMAIL="$GIT_EMAIL"
-  else
-    DEFAULT_EMAIL=""
-  fi
-
-  echo
-  if [ -n "$DEFAULT_EMAIL" ]; then
-    echo "    Found Dent email in git config: $DEFAULT_EMAIL"
-    read -rp "    Use this as your teammateEmail? [Y/n] " yn
-    if [[ "$yn" =~ ^[Nn]$ ]]; then
-      read -rp "    Enter your @dentthefuture.com email: " DEFAULT_EMAIL
-    fi
-  else
-    read -rp "    Enter your @dentthefuture.com email: " DEFAULT_EMAIL
-  fi
-
-  cat > "$CONFIG_PATH" <<EOF
-{
-  "_comment": "serverUrl + bearerToken are auto-discovered from ~/.claude.json. To override, add them here.",
-  "teammateEmail": "$DEFAULT_EMAIL",
-  "granolaCachePath": "\${HOME}/Library/Application Support/Granola/cache-v6.json",
-  "cursorPath": "\${HOME}/.dent-brain/granola-sync/cursor.json",
-  "dentDomains": ["dentthefuture.com"]
-}
-EOF
-  chmod 600 "$CONFIG_PATH"
-  echo "    wrote $CONFIG_PATH"
-else
-  echo "    config exists at $CONFIG_PATH (not overwritten)."
-fi
-
-# 5. Render and install plist
+# 4. Render and install plist
 PLIST_RENDERED="$(mktemp)"
 sed \
   -e "s|__BUN_PATH__|$BUN_PATH|g" \
@@ -132,7 +98,7 @@ cp "$PLIST_RENDERED" "$PLIST_PATH"
 rm "$PLIST_RENDERED"
 echo "    installed plist: $PLIST_PATH"
 
-# 6. Load + start
+# 5. Load + start
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 echo "    loaded launch agent ($LABEL)."
 
