@@ -2,6 +2,40 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.33.0] - 2026-05-05
+
+## **Mailchimp ingestor lands. Email-list audience is a first-class brain category, distinct from event attendees.**
+
+The brain has had one signal-source ingestor since v0.31 — RegFox, for event registrations. Everything else has been one-shot scripts in the data repo. This release adds the second ingestor: Mailchimp, modeled on the same pattern (pure translator + batched orchestrator + idempotency tag), with a CLI bootstrap subcommand for historical CSVs.
+
+The new shape: people who registered for a Dent event live in `entities/people/`. People who only exist in our mailing list live in a new directory, `entities/audience/`, with `audience_only: true` in frontmatter. When a Mailchimp member's email matches an existing attendee page, bullets land on the attendee page (no churn, no duplicate stub). When there's no match, a new audience-only stub is created. The two categories stay clean — you can query attendees and audience-members independently, and the regfox cron's email-match logic naturally promotes audience members to attendees when they register.
+
+Each Mailchimp member produces up to three timeline bullets: a status event (subscribed / unsubscribed / cleaned / nonsubscribed), a campaign-tags bullet (Mailchimp's TAGS column, parsed from its quote-wrapped shape), and a profile bullet (organization, title, location, LinkedIn). All three carry `[Source: mailchimp/<EUID>]` for idempotency — re-runs are safe. The bootstrap reads four CSV exports cleanly: 2,564 subscribed + 2,030 unsubscribed + 791 cleaned + 7 nonsubscribed = 5,392 members across one batched commit.
+
+The translator is pure — same function will serve the Phase-5.2-later Mailchimp Marketing API poller. The CSV bootstrap is the first user; the live cron is the second.
+
+### To take advantage of v0.33.0
+
+No automatic migration. To run the bootstrap once against your Mailchimp exports:
+
+```bash
+gbrain ingest mailchimp bootstrap --csv-dir <path-to-mailchimp-csv-exports>
+```
+
+`--dry-run` is supported and runs without a configured brain — useful for previewing CSV parse counts before committing to the full ingestion. The discovery logic picks up files matching `*subscribed*.csv`, `*unsubscribed*.csv`, `*cleaned*.csv`, `*nonsubscribed*.csv`. Status is inferred from the filename.
+
+Existing entity pages with matching emails get appends; everything else creates audience-only stubs. The `entities/audience/` directory is new — no existing brain data needs migrating.
+
+### Itemized changes
+
+- `src/dent/ingestors/mailchimp/types.ts` — `MailchimpMember` shape unifying CSV-export fields and the (future) Mailchimp Marketing API response.
+- `src/dent/ingestors/mailchimp/csv-parser.ts` — minimal RFC-4180 parser specialized for Mailchimp exports. Handles BOM, escaped double-quotes, multi-line embedded fields. `parseMailchimpTags` decodes Mailchimp's quote-wrapped TAGS column; `isoDateOf` normalizes `YYYY-MM-DD HH:MM:SS` (and `YYYY/MM/DD` variants) to ISO date.
+- `src/dent/ingestors/mailchimp/translator.ts` — pure translator. Emits status / tags / profile bullets, builds stub frontmatter with `type: audience-member`, `created_via: mailchimp-ingestor`, `audience_only: true`. Slug path: `entities/audience/<kebab-name>`. Exports `MAILCHIMP_STUB_DIR` for downstream callers.
+- `src/dent/ingestors/mailchimp/csv-bootstrap.ts` — orchestrator. Single `withBatch` for the whole import — one repo lock, one git commit, one push, one Postgres re-sync. Email-match against Postgres + within-batch staged-email map (so two Mailchimp records sharing an email merge instead of duplicating). Name-collision check looks in BOTH `entities/people/` and `entities/audience/`. New stubs always go to `entities/audience/`.
+- `src/commands/ingest-mailchimp.ts` — CLI wrapper. `bootstrap` subcommand with `--csv-dir`, `--csv` (repeatable), `--limit`, `--dry-run`, `--no-tags-bullet`, `--no-profile-bullet`.
+- `src/cli.ts` — `ingest` registered as a CLI-only command. Fast-path lets `ingest mailchimp --help` and `ingest mailchimp bootstrap --dry-run` run without a configured brain.
+- `test/dent/ingestors/mailchimp/translator.test.ts` — 22 unit tests covering translator outputs, status-bullet wording per state, tag-shape edge cases (quoted, plain comma, dedup, empty), CSV parser quirks (BOM, escaped quotes, embedded commas), and the `audience_only: true` filing rule.
+
 ## [0.32.7] - 2026-05-04
 
 ## **Cron stagger + busy-retry. The two crons no longer fistfight over the repo lock.**
