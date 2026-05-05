@@ -2,6 +2,22 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.33.1] - 2026-05-05
+
+## **Skill prose: handle the "stale local clone" case for /dent-extensions.**
+
+When a teammate runs `/dent-extensions` from Cowork, the agent runs in a sandbox that can't see the teammate's laptop — its job is to hand the teammate the right shell command, not to drive the CLI itself. The previous skill prose assumed the agent could detect the clone's state via filesystem checks, which silently failed when a teammate had a clone but it predated the extensions tool. The agent reported "I couldn't locate the CLI" instead of "git pull and try again."
+
+### To take advantage of v0.33.1
+
+Reinstall the dent-brain Cowork plugin so the new skill prose lands. Existing teammate setups don't need any changes.
+
+### Itemized changes
+
+- `skills/dent/extensions/SKILL.md` — explicit "CRITICAL: where the CLI runs" section clarifying the agent doesn't have filesystem access in Cowork. Adds three states (clone missing / clone stale / clone current) with a single one-liner that handles all of them via `cd && git pull && list || clone && list`. Explicit anti-pattern: "don't tell the teammate 'CLI not located' when their clone is stale."
+- `package.json` + `VERSION` — bump to 0.33.1 so Cowork's marketplace cache invalidates and re-pulls the rebuilt skill.
+- Plugin marketplace artifact rebuilt (`plugin/marketplace/.claude/skills/dent-extensions/SKILL.md`).
+
 ## [0.33.0] - 2026-05-05
 
 ## **Mailchimp ingestor lands. Email-list audience is a first-class brain category, distinct from event attendees.**
