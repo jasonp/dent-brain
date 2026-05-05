@@ -2,6 +2,23 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.33.2] - 2026-05-05
+
+## **Skill prose: never ask the teammate for their bearer token.**
+
+The agent driving `/dent-extensions` was improvising "find your bearer token" as an install step, even though the daemon auto-discovers the token from `~/.claude.json` and the installer has zero prompts. Stale README references to `REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN` and the privacy framing in the SKILL ("each teammate has their own bearer token") were leading the agent to a token-finding flow that doesn't exist anymore.
+
+### To take advantage of v0.33.2
+
+Reinstall the dent-brain Cowork plugin so the new skill prose lands.
+
+### Itemized changes
+
+- `skills/dent/extensions/SKILL.md` — added a "CRITICAL: never ask the teammate for their bearer token" section as the first instruction. Lists explicit Don'ts ("don't say 'find your token'", "don't open a config file for them to paste into", etc.) plus the right reframe: "the teammate's mental model should be: I onboarded once, every extension just works." Privacy contract section softened so it doesn't make auth sound like work.
+- `tools/extensions/README.md` — removed `REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN` from the example registry comment + status-badge table. Updated the `configure` command description to "edit your config (only needed if overriding defaults)".
+- `tools/granola-sync/README.md` — uninstall warning no longer claims it wipes a token (the token never lives in the install dir).
+- `package.json` + `VERSION` — bump to 0.33.2 so Cowork invalidates and re-pulls.
+
 ## [0.33.1] - 2026-05-05
 
 ## **Skill prose: handle the "stale local clone" case for /dent-extensions.**

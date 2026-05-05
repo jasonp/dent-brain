@@ -113,7 +113,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.dent.granola-sync.plis
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.dent.granola-sync.plist
 rm ~/Library/LaunchAgents/com.dent.granola-sync.plist
-rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes cursor + token
+rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes cursor + log (token stays safe in ~/.claude.json)
 ```
 
 ## Files written to your machine

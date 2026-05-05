@@ -28,7 +28,7 @@ cd ~/gh/dent-brain
 # Run a dry-run test (no writes)
 ./tools/extensions/bin/dent-extensions test granola-sync
 
-# Update your config (e.g. rotate the bearer token)
+# Edit your config (only needed if overriding defaults — most users skip this)
 ./tools/extensions/bin/dent-extensions configure granola-sync
 
 # Stop + remove
@@ -49,7 +49,7 @@ dent-extensions list
 | Badge | Meaning |
 |---|---|
 | `● active` | Installed, configured, and the scheduled agent is running. |
-| `⚠ unconfigured` | Installed but `config.json` still has placeholder values (e.g. `REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN`). Run `configure <id>`. |
+| `⚠ unconfigured` | Installed but `config.json` still has placeholder values. Run `configure <id>`. (Most extensions need no config — they auto-discover everything from your existing `~/.claude.json` and macOS conventions.) |
 | `⚠ not-running` | Installed and configured, but the launchd agent isn't loaded. Re-run `install <id>` to reload it. |
 | `○ not-installed` | Available in the registry but never installed on this machine. |
 
@@ -91,7 +91,10 @@ Each extension is described by an `Extension` object in the registry:
   launchdPlistPath: '${HOME}/Library/LaunchAgents/com.dent.granola-sync.plist',
   entryScript: '${HOME}/.dent-brain/granola-sync/sync.ts',
   testArgs: ['--dry-run', '--verbose'],
-  unconfiguredMarkers: ['REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN'],
+  // unconfiguredMarkers: optional. Only set if your extension's config.json
+  // ships with placeholder strings the user must replace. The granola-sync
+  // extension has no markers because it auto-discovers everything from
+  // ~/.claude.json — as soon as it's installed it's also configured.
 }
 ```
 

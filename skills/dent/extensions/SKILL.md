@@ -19,6 +19,21 @@ mutating: true
 
 > **Per-teammate skill.** Each teammate has their own local extensions configured with their own bearer token. The shared brain is the destination, not the configuration store.
 
+## CRITICAL: never ask the teammate for their bearer token
+
+The teammate's dent-brain bearer token was already set up by `/dent-onboard-teammate` when they ran `claude mcp add dent-brain --header "Authorization: Bearer ..."`. It lives in `~/.claude.json` under `mcpServers["dent-brain"].headers.Authorization`. Every extension reads it from there at runtime — no copy, no second paste, no config edit.
+
+When walking the teammate through install, configure, or troubleshoot:
+
+- **Do NOT** say "find your bearer token", "paste your bearer token", "you'll need your bearer token", or any variant.
+- **Do NOT** ask them to `claude mcp list` to look up their token.
+- **Do NOT** open a config file for them to paste into.
+- **Do NOT** treat the bearer token as a thing the teammate manages. The teammate's mental model should be: "I onboarded once via `/dent-onboard-teammate`, the brain knows who I am, every extension just works."
+
+If `~/.claude.json` doesn't have a `dent-brain` MCP entry, the right response is "it looks like you haven't run `/dent-onboard-teammate` yet — let's do that first" — NOT "let's find your token."
+
+The granola-sync extension specifically needs ZERO config. The installer has no prompts. If you find yourself walking the teammate through any token-related step, you've drifted from the script.
+
 ## CRITICAL: where the CLI runs
 
 The `dent-extensions` CLI runs on the **teammate's laptop**, not in the agent's environment. Extensions touch:
@@ -147,15 +162,15 @@ If the first run failed, common fixes:
 
 Tell the teammate up front, every install:
 
-> Each extension runs locally on your laptop with your personal bearer token (read fresh from `~/.claude.json` at every sync). Personal data — non-Dent meetings, personal emails — stays local. The extension's filter only ships Dent-related items to the shared brain. You're always in control: `dent-extensions uninstall <id>` stops it instantly.
+> Each extension runs locally on your laptop. Your existing dent-brain auth (the one set up by `/dent-onboard-teammate`) is reused automatically — nothing for you to copy or paste. Personal data — non-Dent meetings, personal emails — stays local. The extension's filter only ships Dent-related items to the shared brain. You're always in control: `dent-extensions uninstall <id>` stops it instantly.
 
-Don't skip this. Extensions touch personal data on the teammate's machine. Trust matters.
+Don't skip this. Extensions touch personal data on the teammate's machine. Trust matters. But also — don't make auth sound scary or like more work. It's already done.
 
 ## Anti-patterns
 
 - **Don't try to run the CLI from a Cowork agent.** It can't reach the teammate's filesystem. Hand them the command to type instead.
-- **Don't paste the teammate's bearer token into chat.** It's secret AND already in `~/.claude.json` from `/dent-onboard-teammate`. The daemon reads it from there at runtime — never copy it anywhere else.
-- **Don't auto-install for the teammate.** `install <id>` runs an interactive bash script. Hand the terminal to the user.
+- **Don't ask the teammate to find or paste their bearer token. EVER.** Auto-discovery from `~/.claude.json` is the contract. If you find yourself saying "find your bearer token", "paste your token", "look up your token", or asking them to run `claude mcp list` to retrieve it — STOP. You've drifted. The token is already there from onboarding.
+- **Don't auto-install for the teammate from a sandboxed agent context.** `install <id>` runs a bash script that touches launchd; it has to run on the teammate's actual laptop. Hand the terminal to them. If you're running on the teammate's laptop (Code Mode), you can drive it directly.
 - **Don't manage the production server's ingestors here.** This skill is only for local teammate-side extensions. Server-side ingestors (regfox, mailchimp, etc.) are managed via the gbrain CLI and Railway, not this tool.
 - **Don't tell the teammate "the CLI couldn't be located" when their clone exists but is stale.** Always try `git pull` before giving up. The one-liner in Step 1 makes this automatic.
 
