@@ -1,7 +1,7 @@
 {
   "deploy_id": "dent-brain-prod",
   "org_prefix": "dent",
-  "plugin_version": "0.32.4",
+  "plugin_version": "0.32.7",
   "plugin_name": "dent-brain",
   "marketplace_name": "dent-brain",
   "server_url": "https://dent-brain.dentthefuture.com/mcp",
@@ -9,7 +9,7 @@
   "code_repo": "jasonp/dent-brain",
   "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:jasonp/dent-brain and install dent-brain\"",
   "code_install_command": "bash plugin/marketplace/install-local.sh",
-  "built_at": "2026-05-04T07:59:42.596Z",
+  "built_at": "2026-05-05T03:00:39.737Z",
   "skills": [
     {
       "template": "setup",
@@ -34,7 +34,7 @@
     {
       "template": "onboard-teammate",
       "installed_as": "dent-onboard-teammate",
-      "bytes": 15593
+      "bytes": 16680
     },
     {
       "template": "add-ingestor",

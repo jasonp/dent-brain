@@ -77,15 +77,25 @@ DATABASE_URL="$DATABASE_URL" bun run src/commands/auth.ts create "<handle>"
 
 Capture the printed token. The token is shown ONCE. Hold it briefly to construct the install command, then surface it inside the install message — never write it to a file in the repo.
 
-### Phase 4: Construct the install command
+### Phase 4: Read deploy values + construct the install bundle
 
-Every teammate gets **dual-registration** so dent-brain works in BOTH:
+The teammate-install walkthrough (TEAMMATE_INSTALL.md §3) asks the user to paste a three-value bundle: `token`, `server`, `marketplace`. The admin sends all three in one message.
+
+Read the deploy-specific values from `plugin/manifest.json` so the skill works for any deployment, not just Dent's:
+
+- `deploy.server_url` → the MCP endpoint (e.g. `https://dent-brain.dentthefuture.com/mcp`).
+- `deploy.code_repo` → the marketplace repo as `<org>/<repo>` (e.g. `jasonp/dent-brain`); construct the URL by prefixing `https://github.com/`.
+- `deploy.org_prefix` → used to derive the install-walkthrough URL: `https://github.com/<deploy.code_repo>/blob/main/docs/<org_prefix>-brain/TEAMMATE_INSTALL.md`. (The docs folder is named after the org_prefix because the setup script renames `docs/dent-brain/` to `docs/<prefix>-brain/` on fork. For Dent, this resolves to `docs/dent-brain/TEAMMATE_INSTALL.md`.)
+
+Substitute these into the install message in Phase 5. Don't hardcode Dent's URLs.
+
+The dual-config rationale (kept for reference):
+
+Every teammate gets **dual-registration** so the brain works in BOTH:
 - Claude Desktop's **Code mode** + the standalone Claude Code CLI (reads `~/.claude.json`).
 - Claude Desktop's **Cowork mode** + classic Desktop chats (reads `~/Library/Application Support/Claude/claude_desktop_config.json`).
 
-The two config files take different value shapes and Cowork is **stdio-only** (HTTP-type entries get rejected on launch). Cowork's registration uses the `mcp-remote` npm package as a stdio bridge that proxies to our remote URL. Background:`docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces, two config files".
-
-Pull the server URL from `plugin/manifest.json` (`deploy.server_url`) so this skill works for any dent-brain deployment, not just Dent's.
+The two config files take different value shapes and Cowork is **stdio-only** (HTTP-type entries get rejected on launch). Cowork's registration uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL. Background: `docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces, two config files".
 
 The install command is a single Python-driven shell block. Python 3 is universally available on macOS — we don't require teammates to install the standalone Claude Code CLI. The block:
 1. Backs up both target files (timestamped, in `~/.dent-brain/backups/`).
@@ -93,7 +103,7 @@ The install command is a single Python-driven shell block. Python 3 is universal
 3. Validates JSON after each write.
 4. Prints the relaunch instruction.
 
-Substitute `<SERVER_URL>` and `<TOKEN>` before showing to the teammate. Today: `<SERVER_URL>` is `https://dent-brain.dentthefuture.com/mcp`.
+Substitute `<SERVER_URL>` (from `manifest.deploy.server_url`) and `<TOKEN>` (from Phase 3) before showing to the teammate.
 
 ```bash
 TOKEN="<TOKEN>"
@@ -156,45 +166,53 @@ Print a message the admin can copy and send to the teammate over their delivery 
 ```
 Hi <FullName>, you're set up on dent-brain.
 
-To install on your machine:
+The teammate install walkthrough is here:
+<INSTALL_URL>
 
-1. Make sure Claude Desktop is installed and you're signed in.
-   (Download: https://claude.ai/download)
+Cowork will read this URL and walk you through the install
+conversationally — install the MCP connector, install the Cowork plugin,
+verify the prefix, and (optionally) clone the data repo for
+hand-editing.
 
-2. Open a terminal (Spotlight → "Terminal") and PASTE this entire block,
-   then press Enter. It's one shell command that registers dent-brain in
-   two places so it works in Claude Code AND in Claude Cowork sessions.
+To start:
 
-   <PASTE THE PYTHON BLOCK FROM PHASE 4 HERE, WITH TOKEN AND URL FILLED IN>
+1. Confirm Claude Desktop is installed and you're signed in.
+   (https://claude.ai/download)
 
-3. Quit Claude Desktop completely (Cmd+Q) and relaunch.
+2. Open a fresh Cowork session and paste:
 
-4. Start a NEW Cowork session (not an existing one — tool registries are
-   cached per-chat, so old chats won't see dent-brain even after restart).
-   Ask: "Use dent-brain to call get_stats and tell me what's in there."
+   "Read <INSTALL_URL> and walk me through the install step by step.
+   Pause at each question and wait for my answer."
 
-   You should see a JSON blob with the current page count. The brain may
-   be empty or small in the early phase — that's expected.
+3. The walkthrough will pause at Section 3 to ask for your install
+   bundle. When it does, paste these THREE values into the Cowork chat
+   (NOT into Terminal, NOT anywhere else):
 
-You're done. dent-brain is now available in:
-- Claude Cowork sessions opened from Claude Desktop (the main team workflow)
-- Claude Desktop's Code mode (if you use it)
-- The standalone Claude Code CLI in your terminal (if you use it)
+       token: <TOKEN>
+       server: <SERVER_URL>
+       marketplace: <MARKETPLACE_URL>
 
-All three surfaces share the same token and the same per-user audit log,
-so we can see what each person is querying (and the cost) without it
-being surveillance — it's just operational hygiene.
+   Cowork uses these to build the install command and to install the
+   plugin marketplace.
+
+If anything errors at any step, copy the output and ping <admin handle>.
+Backups of your previous Claude Desktop config are in ~/.dent-brain/backups/.
 
 Heads up:
 - Don't share the token. It's tied to your name in our audit log.
-- If you switch machines, ping <admin handle> for a re-issue. Don't try
-  to copy the token between machines.
-- If anything errors, copy the full terminal output and share it with
-  <admin handle>. There's a backup of your previous config at
-  ~/.dent-brain/backups/ — restoring is one shell command.
+- Don't reuse it across machines — ping <admin handle> for a re-issue.
+- The token shown above is one-shot — paste it into Cowork once during
+  install, then forget it. It lives at rest only in your Claude config.
 ```
 
-Substitute: `<FullName>`, `<SERVER_URL>`, `<TOKEN>`, `<admin handle>`.
+Substitute (all values come from `plugin/manifest.json` except `<TOKEN>` from Phase 3 and `<FullName>` / `<admin handle>` from Phase 1):
+
+- `<FullName>` — teammate's full name (Phase 1 input).
+- `<TOKEN>` — the bearer token issued in Phase 3.
+- `<SERVER_URL>` — `manifest.deploy.server_url`.
+- `<MARKETPLACE_URL>` — `https://github.com/` + `manifest.deploy.code_repo`.
+- `<INSTALL_URL>` — `<MARKETPLACE_URL>` + `/blob/main/docs/` + `manifest.deploy.org_prefix` + `-brain/TEAMMATE_INSTALL.md`.
+- `<admin handle>` — the admin running this skill (their handle).
 
 ### Phase 6: Tell the admin to deliver
 
