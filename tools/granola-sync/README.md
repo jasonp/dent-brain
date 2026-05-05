@@ -50,8 +50,13 @@ re-runs of the same meeting are no-ops.
 - macOS (the launchd plist is macOS-specific; sync.ts itself runs anywhere bun does)
 - [bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
 - [Granola](https://granola.ai) installed and signed in
-- A personal dent-brain MCP bearer token (get one from `/dent-onboard-teammate`)
-- Your `@dentthefuture.com` email address
+- The dent-brain MCP server registered in `~/.claude.json` — set up by
+  `/dent-onboard-teammate` via `claude mcp add dent-brain ...`. The daemon
+  reads the bearer token + URL from there at runtime, so you never paste a
+  token twice. Rotate it via `/dent-onboard-teammate` and the daemon picks
+  up the new value on the next run.
+- Your `@dentthefuture.com` email address (the installer prefills this from
+  `git config user.email` when possible).
 
 ### Install
 
@@ -63,10 +68,12 @@ bash tools/granola-sync/install.sh
 
 The installer will:
 
-1. Copy the runtime files to `~/.dent-brain/granola-sync/`
-2. Open `config.json` in your editor — fill in your bearer token + email
-3. Install + load the launchd plist at `~/Library/LaunchAgents/com.dent.granola-sync.plist`
-4. Run the first sync immediately (RunAtLoad=true)
+1. Verify `~/.claude.json` has a `dent-brain` MCP entry with a Bearer token
+2. Copy the runtime files to `~/.dent-brain/granola-sync/`
+3. Write `config.json` with your `@dentthefuture.com` email (prefilled from
+   `git config user.email`, just confirm)
+4. Install + load the launchd plist at `~/Library/LaunchAgents/com.dent.granola-sync.plist`
+5. Run the first sync immediately (RunAtLoad=true)
 
 After install, tail the log to watch the first sync:
 
@@ -111,7 +118,7 @@ rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes cursor + token
 
 | Path | Purpose |
 |---|---|
-| `~/.dent-brain/granola-sync/config.json` | Your token + email + endpoint. `chmod 600`. |
+| `~/.dent-brain/granola-sync/config.json` | Your email + paths. NO token (read fresh from `~/.claude.json` at runtime). `chmod 600`. |
 | `~/.dent-brain/granola-sync/cursor.json` | Last-synced timestamp + recent doc IDs (for dedup). |
 | `~/.dent-brain/granola-sync/sync.log` | Stdout/stderr from each scheduled run. |
 | `~/.dent-brain/granola-sync/sync.ts` (+ deps) | The runtime. Updated when you re-run `install.sh`. |
@@ -122,8 +129,10 @@ config + cursor files in `~/.dent-brain/granola-sync/`.
 
 ## Troubleshooting
 
-**`MCP HTTP 401` in the log:** your bearer token is wrong/expired. Edit
-`~/.dent-brain/granola-sync/config.json` and rerun `install.sh`.
+**`MCP HTTP 401` in the log:** your bearer token in `~/.claude.json` is
+wrong/expired. Re-run `/dent-onboard-teammate` to mint a new one (the new
+value lands in claude.json and the daemon picks it up next run — no
+re-install needed).
 
 **`Granola cache not found`:** open the Granola desktop app at least once so it
 creates `~/Library/Application Support/Granola/cache-v6.json`.

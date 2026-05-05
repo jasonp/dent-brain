@@ -92,9 +92,14 @@ export interface SyncCursor {
 }
 
 export interface SyncConfig {
-  /** Production MCP endpoint, e.g. https://dent-brain.dentthefuture.com/mcp */
+  /** Production MCP endpoint, e.g. https://dent-brain.dentthefuture.com/mcp.
+   *  When absent, auto-discovered from `~/.claude.json` → mcpServers["dent-brain"].url. */
   serverUrl: string;
-  /** The teammate's personal bearer token from /dent-onboard-teammate. */
+  /** The teammate's personal bearer token. When absent, auto-discovered from
+   *  `~/.claude.json` → mcpServers["dent-brain"].headers.Authorization (with
+   *  the "Bearer " prefix stripped). One source of truth: when the teammate
+   *  rotates their token via `/dent-onboard-teammate`, the new value is in
+   *  claude.json and the daemon picks it up next run. */
   bearerToken: string;
   /** Path to Granola's cache file. Defaults to the standard macOS location. */
   granolaCachePath: string;

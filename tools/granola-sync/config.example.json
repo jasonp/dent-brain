@@ -1,7 +1,6 @@
 {
-  "serverUrl": "https://dent-brain.dentthefuture.com/mcp",
-  "bearerToken": "REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN",
-  "teammateEmail": "you@dentthefuture.com",
+  "_comment": "serverUrl + bearerToken are auto-discovered from ~/.claude.json (the same place `claude mcp add dent-brain` wrote them during onboarding). When you rotate your token via /dent-onboard-teammate, update claude.json and the daemon picks it up next run. Override here only if you need to.",
+  "teammateEmail": "REPLACE_WITH_YOUR_DENT_EMAIL",
   "granolaCachePath": "${HOME}/Library/Application Support/Granola/cache-v6.json",
   "cursorPath": "${HOME}/.dent-brain/granola-sync/cursor.json",
   "dentDomains": ["dentthefuture.com"]

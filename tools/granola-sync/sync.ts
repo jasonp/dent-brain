@@ -68,23 +68,66 @@ function printHelp() {
   );
 }
 
+/** Read the dent-brain MCP server URL + bearer token straight from
+ *  `~/.claude.json` (set by `claude mcp add dent-brain ...`). Returns null
+ *  if claude.json is missing, malformed, or has no dent-brain entry. */
+function discoverFromClaudeJson(): { serverUrl: string; bearerToken: string } | null {
+  const path = join(homedir(), '.claude.json');
+  if (!existsSync(path)) return null;
+  try {
+    const c = JSON.parse(readFileSync(path, 'utf-8'));
+    const entry = c?.mcpServers?.['dent-brain'];
+    if (!entry || typeof entry !== 'object') return null;
+    const url = typeof entry.url === 'string' ? entry.url : null;
+    const auth = typeof entry.headers?.Authorization === 'string' ? entry.headers.Authorization : null;
+    if (!url || !auth) return null;
+    const tokenMatch = /^Bearer\s+(.+)$/.exec(auth);
+    if (!tokenMatch) return null;
+    return { serverUrl: url, bearerToken: tokenMatch[1].trim() };
+  } catch {
+    return null;
+  }
+}
+
 function loadConfig(path: string): SyncConfig {
-  if (!existsSync(path)) {
-    console.error(`Config file not found at ${path}`);
-    console.error(`Run install.sh to set up the daemon, or copy config.example.json and edit.`);
+  // Discover token + URL from ~/.claude.json (the same place `claude mcp add`
+  // wrote them during onboarding). The config file's serverUrl/bearerToken,
+  // if present, override these — but the standard setup leaves them empty so
+  // the teammate has ONE source of truth.
+  const discovered = discoverFromClaudeJson();
+
+  let raw: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    raw = JSON.parse(readFileSync(path, 'utf-8'));
+  } else if (!discovered) {
+    console.error(`Config file not found at ${path} AND no dent-brain entry in ~/.claude.json.`);
+    console.error(`Run \`claude mcp add dent-brain ...\` first (per /dent-onboard-teammate),`);
+    console.error(`or run install.sh to scaffold a config.json with explicit values.`);
     process.exit(1);
   }
-  const raw = JSON.parse(readFileSync(path, 'utf-8'));
-  // Allow ${HOME} expansion in cache path so config files are portable.
+
+  const serverUrl = String(raw.serverUrl ?? discovered?.serverUrl ?? '');
+  const bearerToken = String(raw.bearerToken ?? discovered?.bearerToken ?? '');
+  if (!serverUrl) {
+    console.error(`No serverUrl in ${path} and no dent-brain entry in ~/.claude.json.`);
+    process.exit(1);
+  }
+  if (!bearerToken || /^REPLACE_/.test(bearerToken)) {
+    console.error(`No bearerToken found.`);
+    console.error(`Either run \`claude mcp add dent-brain ...\` so it's discovered automatically,`);
+    console.error(`or set bearerToken explicitly in ${path}.`);
+    process.exit(1);
+  }
+
   const cachePath = String(raw.granolaCachePath ?? `${homedir()}/Library/Application Support/Granola/cache-v6.json`).replace('${HOME}', homedir());
   return {
-    serverUrl: String(raw.serverUrl ?? 'https://dent-brain.dentthefuture.com/mcp'),
-    bearerToken: String(raw.bearerToken),
+    serverUrl,
+    bearerToken,
     granolaCachePath: cachePath,
     cursorPath: String(raw.cursorPath ?? join(homedir(), '.dent-brain', 'granola-sync', 'cursor.json')).replace('${HOME}', homedir()),
-    teammateEmail: String(raw.teammateEmail).toLowerCase(),
+    teammateEmail: String(raw.teammateEmail ?? '').toLowerCase(),
     dentDomains: Array.isArray(raw.dentDomains) && raw.dentDomains.length > 0
-      ? raw.dentDomains.map((d: unknown) => String(d).toLowerCase())
+      ? (raw.dentDomains as unknown[]).map((d) => String(d).toLowerCase())
       : ['dentthefuture.com'],
   };
 }

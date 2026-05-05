@@ -27,8 +27,7 @@ export const EXTENSIONS: Extension[] = [
     entryScript: '${HOME}/.dent-brain/granola-sync/sync.ts',
     testArgs: ['--dry-run', '--verbose'],
     unconfiguredMarkers: [
-      'REPLACE_WITH_YOUR_PERSONAL_DENT_BRAIN_TOKEN',
-      'you@dentthefuture.com',
+      'REPLACE_WITH_YOUR_DENT_EMAIL',
     ],
   },
   // Future extensions land here. Pattern:
