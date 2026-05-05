@@ -269,17 +269,19 @@ they finish, Cowork can verify the install via the filesystem.
    back."** (Two restarts total across the whole walkthrough: one for the
    connector in §3, one for the plugin here.)
 
-4. Verify the install yourself via the filesystem:
-   ```bash
-   ls ~/.claude/plugins/jasonp/dent-brain/ 2>/dev/null
-   ```
-   - Plugin files (manifest, `skills/`, etc.) present → ✅ install landed.
-   - Empty or missing → surface to the user; ask them to retry the UI
-     steps in case a click was missed.
+4. Verify the install yourself via the filesystem. **Cowork shares its plugin store with Claude Code at `~/.claude/plugins/`** — the registry is `installed_plugins.json` (keyed by `<marketplace>@<plugin>`) and the unpacked content is in `cache/<marketplace>/<plugin>/<version>/`.
 
-5. Verify the prefix is `dent`:
+   Check the registry first:
    ```bash
-   ls ~/.claude/plugins/jasonp/dent-brain/skills/ 2>/dev/null
+   python3 -c "import json,sys; d=json.load(open('${HOME}/.claude/plugins/installed_plugins.json')); k='dent-brain@dent-brain'; v=d.get('plugins',{}).get(k); print(v[0]['installPath'] if v else 'NOT installed')"
+   ```
+   - Prints a path like `/Users/<you>/.claude/plugins/cache/dent-brain/dent-brain/0.29.0` → ✅ install landed.
+   - Prints `NOT installed` → surface to the user; ask them to retry the UI steps (a click may have been missed, or they may have pasted the wrong URL).
+
+5. Verify the prefix is `dent`. Use whatever path the registry reported (versions change over time, so don't hardcode):
+   ```bash
+   INSTALL_PATH=$(python3 -c "import json; d=json.load(open('${HOME}/.claude/plugins/installed_plugins.json')); print(d['plugins']['dent-brain@dent-brain'][0]['installPath'])")
+   ls "$INSTALL_PATH/dent-brain/skills/" 2>/dev/null
    ```
    Expected folders: `dent-append-evidence`, `dent-enrich`,
    `dent-resolve-entity`, `dent-onboard-teammate`, `dent-setup`,
