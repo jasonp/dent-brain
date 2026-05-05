@@ -2,6 +2,26 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.34.1] - 2026-05-05
+
+## **/dent-tell-me-about — token-efficient entity summaries that don't dump 80K-byte pages.**
+
+When a user asked "what do we know about <attendee>", the agent's default chain was `search` → `get_page` → "the full page is very large, let me read the saved file..." That's the worst case — fetches the entire 80K+ compiled body of an entity page, then falls back to reading the on-disk markdown when the page is too big to summarize. Massively wasteful for what's usually a "give me the highlights" request.
+
+The new skill routes the agent through gbrain's actual token-efficient ops: `query` (hybrid search returning ranked snippets with citations, ~1–3K tokens), `get_timeline` (just the time-ordered bullets), `get_backlinks` / `get_links` (graph traversal). Explicit anti-pattern: "don't call `get_page` first, don't read files from disk." Six question shapes (open summary, factual, relationship, history, full-content, multi-part) each route to a different recipe.
+
+Works for any entity type: people, audience-only contacts, companies, projects (events), meetings.
+
+### To take advantage of v0.34.1
+
+Reinstall the dent-brain plugin in your Claude Code (or Cowork) — same remove + re-add dance. Then ask "tell me about <anyone>" and the agent should pick `query` over `get_page`.
+
+### Itemized changes
+
+- `skills/dent/tell-me-about/SKILL.md` — new skill. Triggers on "tell me about", "who is", "summarize what we know", etc. Six question-shape recipes, entity-type variations, anti-patterns ("don't dump the whole timeline if the user asked a specific question").
+- `plugin/manifest.json` — added `tell-me-about` to skill templates. Plugin now ships 8 skills.
+- `package.json` + `VERSION` — bump to 0.34.1.
+
 ## [0.34.0] - 2026-05-05
 
 ## **Teammate onboarding rewritten for Claude Code Desktop primary. Plus Granola pre-flight and macOS Background Items heads-up in the granola-sync installer.**
