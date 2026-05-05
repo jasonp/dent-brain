@@ -19,7 +19,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test']);
+const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'ingest', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test']);
 
 async function main() {
   // Parse global flags (--quiet / --progress-json / --progress-interval)
@@ -434,6 +434,18 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // Fast-path: `ingest <source> --help` and `ingest mailchimp bootstrap --dry-run`
+  // run without requiring a DB — convenient for CSV preview before configuring a brain.
+  if (command === 'ingest' && (args.includes('--help') || args.includes('--dry-run'))) {
+    if (args[0] === 'mailchimp') {
+      const { runIngestMailchimp } = await import('./commands/ingest-mailchimp.ts');
+      await runIngestMailchimp(undefined as never, args.slice(1));
+      return;
+    }
+    console.error('Usage: gbrain ingest <source> [...]\nSupported sources: mailchimp');
+    process.exit(1);
+  }
+
   // All remaining CLI-only commands need a DB connection
   const engine = await connectEngine();
   try {
@@ -441,6 +453,18 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'import': {
         const { runImport } = await import('./commands/import.ts');
         await runImport(engine, args);
+        break;
+      }
+      case 'ingest': {
+        const sub = args[0];
+        if (sub === 'mailchimp') {
+          const { runIngestMailchimp } = await import('./commands/ingest-mailchimp.ts');
+          await runIngestMailchimp(engine, args.slice(1));
+          break;
+        }
+        console.error(`Unknown ingest source: ${sub ?? '(missing)'}`);
+        console.error('Supported sources: mailchimp');
+        process.exit(1);
         break;
       }
       case 'export': {
