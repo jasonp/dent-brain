@@ -251,7 +251,7 @@ export interface Operation {
 
 const get_page: Operation = {
   name: 'get_page',
-  description: 'Read a page by slug (supports optional fuzzy matching)',
+  description: 'Read a full page by slug. CAN BE LARGE — entity pages may exceed 50K tokens. For answering a question about a page (who/what/when), prefer `query` (hybrid search returns just the relevant chunks) or `get_timeline` / `get_backlinks` (structured slices). Use `get_page` only when you genuinely need the full body — e.g. you are about to edit it.',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     fuzzy: { type: 'boolean', description: 'Enable fuzzy slug resolution (default: false)' },
@@ -667,7 +667,7 @@ const search: Operation = {
 
 const query: Operation = {
   name: 'query',
-  description: 'Hybrid search with vector + keyword + multi-query expansion',
+  description: 'Hybrid search (vector + keyword + multi-query expansion). PREFERRED entry point for answering questions about the brain — returns the most relevant chunks across all pages without loading any single page in full. Use this instead of `get_page` for "who is X" / "what do we know about Y" / "when did Z happen" questions.',
   params: {
     query: { type: 'string', required: true },
     limit: { type: 'number', description: 'Max results (default 20)' },

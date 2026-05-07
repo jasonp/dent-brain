@@ -2,6 +2,38 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.34.2] - 2026-05-06
+
+## **Granola sync now reads more meetings, files them smarter, and links every named person to their entity page automatically.**
+
+Three things shipped together. First, a 45-minute settle delay fixes a structural race in the granola-sync daemon — Granola's post-meeting transcribe + summarize takes ~30–45 minutes, and the hourly cron was scanning meetings before they were ready, then dead-listing them as empty. The "Dent dinner planning" meeting on 2026-05-06 caught this bug: it was in your "Dent" Granola folder with a 630-segment transcript, and the daemon had silently buried it. Recovered manually, then fixed properly. Second, the dent-or-not filter is rewritten as four orthogonal signals — Granola folder match, title match, body/transcript match, attendee email domain — and generalized to any organization via `orgKeywords` / `orgFolders` / `orgDomains` config. The "Dent" folder you curate yourself is now the strongest signal. Third, every meeting page now gets a `## Mentioned` section auto-populated from `detect_entities` against the body + transcript, so people, companies, and projects that came up in conversation get linked to the meeting via wikilinks (and through the existing post-hook, gain backlinks for free).
+
+The Mentioned detection is calibrated. First-name matches like "Steve" or "David" used to hit every Steve and David in your brain; the new rule keeps a first-name match only when (a) a calendar attendee disambiguates it, or (b) exactly one entity in the brain has that first name. On the dent dinner transcript, that drops a 56-match noise pile to 14 plausible names. Maria Konnikova still hits at confidence 1.0 (full-name exact) — only the noise gets dropped.
+
+Plus a small substrate-level steer: `get_page`'s tool description now warns it can be huge ("entity pages may exceed 50K tokens"), and `query`'s description promotes itself as the preferred entry point for question-answering. Agents not running `/dent-tell-me-about` get nudged toward the right path at the MCP layer.
+
+### What this means for you
+
+Next time someone says "Magic Castle" or "Phil McKinney" on a recorded call, that meeting page links straight to their entity, and their entity page gains a backlink. No more invisible mentions. The settle delay also means meetings with active note-taking won't get buried mid-write.
+
+### To take advantage of v0.34.2
+
+Two things needed:
+
+1. **Server redeploy on Railway** to pick up the `get_page` / `query` description changes. From this repo: `railway up --detach`.
+2. **Refresh the granola-sync daemon on each teammate's laptop** so they get the new filter + Mentioned detection. Easiest path: `cp tools/granola-sync/{sync,filter,types}.ts ~/.dent-brain/granola-sync/` (the launchd agent picks up the new code on its next hourly run). Or run `/dent-extensions install granola-sync` to re-do the install.
+
+If your Granola has cross-org meetings (TK, Reclaim Curiosity, Nabaco, Parallax), those still won't leak into the Dent brain — the four signals are strict org-only by default. `fileAll: true` exists in config if you want to override.
+
+### Itemized changes
+
+- `tools/granola-sync/sync.ts` — 45-min settle delay (skip docs whose `updated_at` is within the last 45m, requeue next run); cursor advancement capped at `oldestUnsettled - 1ms` so unsettled docs stay in the candidate window; `--doc-id` flag now bypasses cursor + dedup + settle for force-recovery; new `appendMentionedToMeeting` calls `detect_entities` against title + summary + notes + chapter text + transcript and appends a `## Mentioned` section with `[[wikilinks]]` (gated to `created`/`updated` meeting pages so re-runs don't double-append).
+- `tools/granola-sync/filter.ts` — rewritten as `isOrgRelated(doc, transcript, ctx)` with four signals (folder / title / body / domain), all whole-word matched (`\b<kw>\b`) so "President" and "evident" don't trigger on "dent". Plus a `fileAll` config knob, off by default. Generalized — drop a `config.json` with different `orgKeywords` / `orgFolders` / `orgDomains` to retarget at any org.
+- `tools/granola-sync/types.ts` — `SyncConfig` shape: `orgKeywords` + `orgDomains` + `orgFolders` + `fileAll`. Old `dentDomains` field is read as a fallback so existing configs keep working unchanged.
+- First-name fallback rule: drop ambiguous matches unless (a) a calendar attendee's display name matches a candidate's title (calendar invite is ground truth), or (b) exactly one entity in the brain has that first name. Eliminates 50+ false positives per long transcript without losing real signal.
+- `src/core/operations.ts` — `get_page` description now warns it can be large and points at `query` / `get_timeline` / `get_backlinks` for question-answering. `query` description promotes itself as the preferred entry point. ~30-line edit, no behavior change.
+- `tools/granola-sync/README.md` + `config.example.json` — updated docs for the new four-signal filter and config shape.
+
 ## [0.34.1] - 2026-05-05
 
 ## **/dent-tell-me-about — token-efficient entity summaries that don't dump 80K-byte pages.**

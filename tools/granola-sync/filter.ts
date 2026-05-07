@@ -1,40 +1,47 @@
 /**
- * Dent-meeting filter.
+ * Org-meeting filter.
  *
- * A meeting is "Dent-related" if ANY of these signals fire:
+ * A meeting is "org-related" (and therefore worth filing into this org's
+ * brain) if ANY of these signals fire:
  *
- *   1. The meeting title contains "dent" (case-insensitive substring).
- *      Catches "Dent Editorial", "Jason and Dent Team", "Blend prep", etc.
- *      False-positives possible (e.g. "President" — not currently a problem
- *      since we substring-match "dent" against word/non-word boundaries).
+ *   1. The doc is filed in a Granola folder whose name matches one of the
+ *      configured `orgFolders` (case-insensitive). This is the strongest
+ *      signal because the user already curated it manually.
  *
- *   2. ANY attendee email is from a Dent team domain (default: dentthefuture.com).
- *      The presence of a Dent staffer makes the meeting Dent-relevant by
- *      definition — even if it's a 1:1 with an external person, the staffer
- *      cares about a brain page for it.
+ *   2. The meeting title contains one of the configured `orgKeywords` as a
+ *      whole word (regex `\bkw\b`). Word-boundary matching avoids false
+ *      positives like "President" / "evident" / "dental" for keyword "dent".
  *
- *   3. ANY attendee email matches an entity already in the brain. This is
- *      the most permissive signal and catches meetings with people we
- *      already track (investors, partners, prospects we've added). We
- *      check this against an in-memory set the caller passes in.
+ *   3. The meeting body — `notes_markdown` + `summary` + chapter text +
+ *      transcript text — contains one of the `orgKeywords` as a whole word.
+ *      Catches meetings where the org came up substantively but isn't in
+ *      the title.
  *
- * The 3rd check requires querying gbrain for "is <email> in any entity
- * page's frontmatter?" — the caller pre-builds the email set.
+ *   4. ANY attendee email is from a configured `orgDomains` entry. The
+ *      presence of a teammate makes the meeting org-relevant by definition.
  *
- * Skipped meetings: anything where NONE of the signals fire. Likely
- * personal / unrelated. The filter logs a brief reason for skip so we
- * can audit false-negatives later.
+ * Plus a `fileAll` config option: if true, every meeting passes. Off by
+ * default because cross-org leakage (e.g. a Dent teammate's TK or Reclaim
+ * Curiosity meetings landing in the Dent brain) is rarely what you want.
+ *
+ * Skipped meetings: anything where NONE of the signals fire AND fileAll is
+ * false. The filter logs a brief reason for skip so we can audit
+ * false-negatives later.
  */
 
-import type { GranolaDocument } from './types.ts';
+import type { GranolaDocument, GranolaTranscriptSegment } from './types.ts';
 
 export interface FilterContext {
-  /** Domains considered "Dent team" (e.g. dentthefuture.com). */
-  dentDomains: string[];
-  /** Lowercased emails the brain already has an entity page for. */
-  brainEmails: Set<string>;
-  /** Title-substring filter. Lowercase. */
-  titleKeywords: string[];
+  /** Keywords identifying the org. Lowercase. Matched as whole words via `\b`. */
+  orgKeywords: string[];
+  /** Email domains for the org (e.g. `acme.com`). Matched against attendee emails. */
+  orgDomains: string[];
+  /** Granola folder names to treat as auto-include. Case-insensitive equality. */
+  orgFolders: string[];
+  /** If true, every meeting passes the filter. Default: false. */
+  fileAll: boolean;
+  /** Map from Granola document ID → folder names containing it. */
+  docToFolders: Map<string, string[]>;
 }
 
 export type FilterResult =
@@ -60,28 +67,79 @@ function attendeeEmails(doc: GranolaDocument): string[] {
   return out;
 }
 
-export function isDentRelated(doc: GranolaDocument, ctx: FilterContext): FilterResult {
-  const title = lower(doc.title);
+function bodyText(doc: GranolaDocument, transcript: GranolaTranscriptSegment[] | undefined): string {
+  const parts: string[] = [];
+  if (typeof doc.notes_markdown === 'string') parts.push(doc.notes_markdown);
+  if (typeof doc.summary === 'string') parts.push(doc.summary);
+  if (typeof doc.overview === 'string' && doc.overview) parts.push(doc.overview);
+  if (Array.isArray(doc.chapters)) {
+    for (const ch of doc.chapters) {
+      if (ch?.title) parts.push(ch.title);
+      if (ch?.summary) parts.push(ch.summary);
+    }
+  }
+  if (transcript) {
+    for (const seg of transcript) {
+      if (seg?.text) parts.push(seg.text);
+    }
+  }
+  return parts.join(' ');
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function wholeWordMatch(haystack: string, keyword: string): boolean {
+  if (!haystack || !keyword) return false;
+  const re = new RegExp(`\\b${escapeRegex(keyword)}\\b`, 'i');
+  return re.test(haystack);
+}
+
+export function isOrgRelated(
+  doc: GranolaDocument,
+  transcript: GranolaTranscriptSegment[] | undefined,
+  ctx: FilterContext,
+): FilterResult {
   const emails = attendeeEmails(doc);
 
-  // Signal 1: title keyword
-  for (const kw of ctx.titleKeywords) {
-    if (title.includes(kw)) {
-      return { keep: true, reason: `title contains "${kw}"`, matchedAttendees: emails };
+  if (ctx.fileAll) {
+    return { keep: true, reason: 'fileAll: true (all meetings pass)', matchedAttendees: emails };
+  }
+
+  // Signal 1: Granola folder
+  const folders = ctx.docToFolders.get(doc.id) ?? [];
+  const folderHits = folders.filter((f) =>
+    ctx.orgFolders.some((of) => f.toLowerCase() === of.toLowerCase()),
+  );
+  if (folderHits.length > 0) {
+    return { keep: true, reason: `Granola folder: ${folderHits.join(', ')}`, matchedAttendees: emails };
+  }
+
+  // Signal 2: title (whole-word)
+  const title = doc.title ?? '';
+  for (const kw of ctx.orgKeywords) {
+    if (wholeWordMatch(title, kw)) {
+      return { keep: true, reason: `title matches "${kw}"`, matchedAttendees: emails };
     }
   }
 
-  // Signal 2: Dent team email
-  const dentTeamHits = emails.filter((e) => ctx.dentDomains.some((d) => e.endsWith(`@${d}`)));
-  if (dentTeamHits.length > 0) {
-    return { keep: true, reason: `Dent-team attendee(s): ${dentTeamHits.join(', ')}`, matchedAttendees: emails };
+  // Signal 3: body / transcript (whole-word)
+  const body = bodyText(doc, transcript);
+  for (const kw of ctx.orgKeywords) {
+    if (wholeWordMatch(body, kw)) {
+      return { keep: true, reason: `body mentions "${kw}"`, matchedAttendees: emails };
+    }
   }
 
-  // Signal 3: known-entity email
-  const brainHits = emails.filter((e) => ctx.brainEmails.has(e));
-  if (brainHits.length > 0) {
-    return { keep: true, reason: `brain entity match: ${brainHits.join(', ')}`, matchedAttendees: emails };
+  // Signal 4: org-domain attendee
+  const domainHits = emails.filter((e) => ctx.orgDomains.some((d) => e.endsWith(`@${d}`)));
+  if (domainHits.length > 0) {
+    return { keep: true, reason: `org-domain attendee(s): ${domainHits.join(', ')}`, matchedAttendees: emails };
   }
 
-  return { keep: false, reason: emails.length === 0 ? 'no attendees on event' : 'no Dent signal in title or attendees' };
+  return {
+    keep: false,
+    reason: emails.length === 0 ? 'no attendees, no org signal' : 'no org signal in folder, title, body, or attendees',
+  };
 }

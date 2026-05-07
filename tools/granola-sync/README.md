@@ -11,14 +11,33 @@ filter. Everything else stays local in Granola.
 
 ## Filter rules
 
-A meeting is considered Dent-related if ANY of these hit:
+A meeting is considered org-related if ANY of these hit (whole-word match,
+case-insensitive — so "Dent" in "Dent dinner" matches but "President" /
+"evident" / "dental" don't):
 
-1. The meeting **title** contains "dent" (case-insensitive).
-2. ANY attendee email is from a **Dent team domain** (default: `@dentthefuture.com`).
-3. ANY attendee email is **already an entity in the brain** (we already track them).
+1. The doc is filed in a **Granola folder** whose name matches one of the
+   configured `orgFolders` (default: `["Dent"]`). Strongest signal — you
+   curated it yourself.
+2. The meeting **title** contains one of the configured `orgKeywords`
+   (default: `["dent"]`).
+3. The meeting **body or transcript** mentions one of the `orgKeywords`.
+   Catches meetings where the org came up substantively but isn't in the
+   title.
+4. ANY attendee email is from a configured `orgDomains` entry (default:
+   `["dentthefuture.com"]`).
 
-Meetings that miss all three are skipped. The cursor still advances past them so
-they don't get re-evaluated every hour.
+Plus a `fileAll: true` config option that bypasses everything and files
+every meeting. Off by default — turning it on for a cross-org user (e.g.
+someone with Dent + TK + Reclaim Curiosity meetings in the same Granola)
+leaks the other orgs' content into this brain.
+
+To retarget the daemon at a different organization, drop a `config.json`
+overriding `orgKeywords`, `orgFolders`, and `orgDomains`. See
+`config.example.json`.
+
+Meetings that miss every signal are skipped. Settle delay (45 min on the
+last update) keeps in-flight Granola post-processing from being mistaken
+for an empty meeting; those docs come back as candidates on the next run.
 
 ## What lands in the brain
 

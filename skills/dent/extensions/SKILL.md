@@ -159,7 +159,7 @@ Always start with `list` — gives the teammate a complete picture before they m
 Dent Brain extensions (1):
 
   ○ not-installed    granola-sync     Granola → Dent Brain sync
-                     Hourly daemon that watches your local Granola cache and pushes Dent-related meeting notes + transcripts into the brain. Filters by title keyword + Dent team domain so personal/non-Dent meetings stay local.
+                     Hourly daemon that watches your local Granola cache and pushes Dent-related meeting notes + transcripts into the brain. Filters by four orthogonal signals (Granola folder, title, body/transcript, attendee email domain) so personal/non-Dent meetings stay local.
                      → Not installed. Run `dent-extensions install granola-sync` to set it up.
 ```
 

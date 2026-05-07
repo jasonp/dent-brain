@@ -1,6 +1,9 @@
 {
-  "_comment": "config.json is OPTIONAL. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json (set by `claude mcp add dent-brain ...` during /dent-onboard-teammate). dentDomains defaults to ['dentthefuture.com']. Override anything here only if you need to.",
-  "dentDomains": ["dentthefuture.com"],
+  "_comment": "config.json is OPTIONAL. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json. Defaults below match the Dent install. Override any field to retarget the daemon at a different org.",
+  "orgKeywords": ["dent"],
+  "orgDomains": ["dentthefuture.com"],
+  "orgFolders": ["Dent"],
+  "fileAll": false,
   "granolaCachePath": "${HOME}/Library/Application Support/Granola/cache-v6.json",
   "cursorPath": "${HOME}/.dent-brain/granola-sync/cursor.json"
 }

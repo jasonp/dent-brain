@@ -67,6 +67,12 @@ export interface GranolaTranscriptSegment {
   transcriber_user_id?: string | null;
 }
 
+export interface GranolaListMetadata {
+  id: string;
+  title?: string;
+  [k: string]: unknown;
+}
+
 export interface GranolaCache {
   cache: {
     state: {
@@ -74,6 +80,11 @@ export interface GranolaCache {
       sharedDocuments?: Record<string, GranolaDocument>;
       transcripts?: Record<string, GranolaTranscriptSegment[]>;
       meetingsMetadata?: Record<string, unknown>;
+      /** Map of list ID → array of document IDs filed in that list. */
+      documentLists?: Record<string, string[]>;
+      /** Per-list metadata (title, icon, etc.). Granola stores it as
+       *  either an array or a record keyed by list ID. */
+      documentListsMetadata?: GranolaListMetadata[] | Record<string, GranolaListMetadata>;
       [k: string]: unknown;
     };
   };
@@ -105,6 +116,20 @@ export interface SyncConfig {
   granolaCachePath: string;
   /** Path to the cursor JSON. Defaults to `~/.dent-brain/granola-sync/cursor.json`. */
   cursorPath: string;
-  /** Domains to consider "Dent team" for the include filter. */
-  dentDomains: string[];
+  /** Keywords identifying the org. Whole-word matched against title and body.
+   *  Defaults to `['dent']`. */
+  orgKeywords: string[];
+  /** Email domains for the org's team (e.g. `dentthefuture.com`). Any attendee
+   *  on one of these domains marks the meeting as org-relevant. Defaults to
+   *  `['dentthefuture.com']`. Backwards-compat: a `dentDomains` field in the
+   *  config is read as a fallback. */
+  orgDomains: string[];
+  /** Granola folder names (case-insensitive) treated as auto-include. Defaults
+   *  to `['Dent']`. */
+  orgFolders: string[];
+  /** If true, every Granola meeting is filed (folder/title/body/domain checks
+   *  are skipped). Default false. Use with care: turning this on for a
+   *  cross-org user (e.g. someone whose Granola has Dent + TK + Reclaim
+   *  Curiosity meetings) leaks the other orgs' content into this brain. */
+  fileAll: boolean;
 }
