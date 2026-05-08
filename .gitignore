@@ -29,6 +29,14 @@ DEPLOY_NOTES.*.md
 # Local-only reference material (vendor setup docs, scratch notes, etc.).
 # Never committed; never pushed.
 _reference/
+
+# OAuth credentials — belt-and-suspenders. Google's downloaded JSON has the
+# shape `client_secret_<long-id>.apps.googleusercontent.com.json`; the email-sync
+# tokens file holds a refresh_token. Neither belongs in the repo, ever.
+client_secret*.json
+*.apps.googleusercontent.com.json
+google-tokens.json
+google-tokens-*.json
 eval/data/world-v1/world.html
 
 # BrainBench amara-life-v1 Opus cache (regenerate via eval:generate-amara-life)
