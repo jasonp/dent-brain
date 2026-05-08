@@ -81,7 +81,7 @@ async function withoutAnthropicKey<T>(body: () => Promise<T>): Promise<T> {
 }
 
 describe('E2E v0.23 8-phase cycle', () => {
-  test('ALL_PHASES is the 8-phase order in the documented sequence', () => {
+  test('ALL_PHASES is the 10-phase order in the documented sequence (v0.26.5 + v0.29)', () => {
     expect(ALL_PHASES).toEqual([
       'lint',
       'backlinks',
@@ -89,8 +89,10 @@ describe('E2E v0.23 8-phase cycle', () => {
       'synthesize',
       'extract',
       'patterns',
+      'recompute_emotional_weight',
       'embed',
       'orphans',
+      'purge',
     ]);
   });
 
@@ -111,8 +113,10 @@ describe('E2E v0.23 8-phase cycle', () => {
           'synthesize',
           'extract',
           'patterns',
+          'recompute_emotional_weight',
           'embed',
           'orphans',
+          'purge',
         ]);
         // New totals fields exist (v0.23 additive growth)
         expect(report.totals).toMatchObject({
