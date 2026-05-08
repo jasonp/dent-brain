@@ -3,9 +3,17 @@
  *
  * Differences from Postgres:
  * - No RLS block (no role system in embedded PGLite)
- * - No access_tokens / mcp_request_log (local-only, no remote auth)
- * - No files table (file attachments require Supabase Storage)
  * - No pg_advisory_lock (single connection)
+ *
+ * As of v0.27.1 the `files` table mirrors the Postgres shape on PGLite —
+ * v0.18 originally omitted it because file attachments required Supabase
+ * Storage, but v0.27.1 multimodal ingestion stores image bytes on disk in
+ * the brain repo and only indexes metadata. Path-referenced binary asset
+ * tracking works fine on PGLite. Migration v36 adds it for existing brains.
+ *
+ * Includes OAuth tables (oauth_clients, oauth_tokens, oauth_codes) and
+ * auth infrastructure (access_tokens, mcp_request_log) because
+ * `gbrain serve --http` makes PGLite network-accessible.
  *
  * Everything else is identical: same tables, triggers, indexes, pgvector HNSW, tsvector GIN.
  *
@@ -13,7 +21,9 @@
  * test/edge-bundle.test.ts has a drift detection test.
  */
 
-export const PGLITE_SCHEMA_SQL = `
+import { applyChunkEmbeddingIndexPolicy } from './vector-index.ts';
+
+const PGLITE_SCHEMA_SQL_TEMPLATE = `
 -- GBrain PGLite schema (local embedded Postgres)
 
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -29,6 +39,10 @@ CREATE TABLE IF NOT EXISTS sources (
   last_commit   TEXT,
   last_sync_at  TIMESTAMPTZ,
   config        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- v0.26.5: soft-delete + recovery window (mirrors src/schema.sql).
+  archived            BOOLEAN NOT NULL DEFAULT false,
+  archived_at         TIMESTAMPTZ,
+  archive_expires_at  TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -49,14 +63,24 @@ CREATE TABLE IF NOT EXISTS pages (
   type          TEXT    NOT NULL,
   -- v0.19.0: markdown vs code distinction at the DB level.
   page_kind     TEXT    NOT NULL DEFAULT 'markdown'
-                CHECK (page_kind IN ('markdown','code')),
+                CHECK (page_kind IN ('markdown','code','image')),
   title         TEXT    NOT NULL,
   compiled_truth TEXT   NOT NULL DEFAULT '',
   timeline      TEXT    NOT NULL DEFAULT '',
   frontmatter   JSONB   NOT NULL DEFAULT '{}',
   content_hash  TEXT,
+  -- v0.29: deterministic 0..1 score (tag emotion + take density + user-as-holder ratio).
+  -- Populated by the recompute_emotional_weight cycle phase.
+  emotional_weight REAL NOT NULL DEFAULT 0.0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- v0.26.5: soft-delete + recovery window (mirrors src/schema.sql).
+  deleted_at    TIMESTAMPTZ,
+  -- v0.29.1: salience-and-recency, additive opt-in (mirrors src/schema.sql).
+  effective_date        TIMESTAMPTZ,
+  effective_date_source TEXT,
+  import_filename       TEXT,
+  salience_touched_at   TIMESTAMPTZ,
   CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
 );
 
@@ -64,32 +88,48 @@ CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
+-- v0.26.5: partial index supports the autopilot purge sweep (mirrors src/schema.sql).
+CREATE INDEX IF NOT EXISTS pages_deleted_at_purge_idx
+  ON pages (deleted_at) WHERE deleted_at IS NOT NULL;
+-- v0.29.1: expression index for since/until date-range filters.
+CREATE INDEX IF NOT EXISTS pages_coalesce_date_idx
+  ON pages ((COALESCE(effective_date, updated_at)));
 
 -- ============================================================
 -- content_chunks: chunked content with embeddings
 -- ============================================================
 CREATE TABLE IF NOT EXISTS content_chunks (
-  id            SERIAL PRIMARY KEY,
-  page_id       INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  chunk_index   INTEGER NOT NULL,
-  chunk_text    TEXT    NOT NULL,
-  chunk_source  TEXT    NOT NULL DEFAULT 'compiled_truth',
-  embedding     vector(1536),
-  model         TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
-  token_count   INTEGER,
-  embedded_at   TIMESTAMPTZ,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id              SERIAL PRIMARY KEY,
+  page_id         INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  chunk_index     INTEGER NOT NULL,
+  chunk_text      TEXT    NOT NULL,
+  chunk_source    TEXT    NOT NULL DEFAULT 'compiled_truth',
+  embedding       vector(__EMBEDDING_DIMS__),
+  model           TEXT    NOT NULL DEFAULT '__EMBEDDING_MODEL__',
+  token_count     INTEGER,
+  embedded_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- v0.19.0: code chunk metadata (markdown chunks leave NULL).
-  language      TEXT,
-  symbol_name   TEXT,
-  symbol_type   TEXT,
-  start_line    INTEGER,
-  end_line      INTEGER
+  language        TEXT,
+  symbol_name     TEXT,
+  symbol_type     TEXT,
+  start_line      INTEGER,
+  end_line        INTEGER,
+  -- v0.27.1 multimodal. modality discriminates text vs image rows; image
+  -- chunks carry their 1024-dim Voyage multimodal vector in embedding_image
+  -- (independent of the brain primary embedding column dim).
+  modality        TEXT NOT NULL DEFAULT 'text',
+  embedding_image vector(1024)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_page ON content_chunks(page_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
+-- v0.27.1: partial HNSW for multimodal images. Footprint stays proportional
+-- to image-chunk count, not table size.
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_image
+  ON content_chunks USING hnsw (embedding_image vector_cosine_ops)
+  WHERE embedding_image IS NOT NULL;
 -- v0.19.0: partial indexes for code chunk lookups.
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON content_chunks(symbol_name) WHERE symbol_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON content_chunks(language) WHERE language IS NOT NULL;
@@ -147,6 +187,33 @@ CREATE TABLE IF NOT EXISTS raw_data (
 CREATE INDEX IF NOT EXISTS idx_raw_data_page ON raw_data(page_id);
 
 -- ============================================================
+-- files: binary asset metadata (v0.27.1 — PGLite parity for multimodal)
+-- Image bytes never enter the DB; storage_path references a path in the
+-- brain repo. Identity is (source_id, storage_path) via the UNIQUE
+-- constraint on storage_path; upserts replace metadata in place.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS files (
+  id           SERIAL PRIMARY KEY,
+  source_id    TEXT   NOT NULL DEFAULT 'default'
+               REFERENCES sources(id) ON DELETE CASCADE,
+  page_slug    TEXT,
+  page_id      INTEGER REFERENCES pages(id) ON DELETE SET NULL,
+  filename     TEXT   NOT NULL,
+  storage_path TEXT   NOT NULL,
+  mime_type    TEXT,
+  size_bytes   BIGINT,
+  content_hash TEXT   NOT NULL,
+  metadata     JSONB  NOT NULL DEFAULT '{}',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(storage_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_page ON files(page_slug);
+CREATE INDEX IF NOT EXISTS idx_files_page_id ON files(page_id);
+CREATE INDEX IF NOT EXISTS idx_files_source_id ON files(source_id);
+CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
+
+-- ============================================================
 -- timeline_entries: structured timeline
 -- ============================================================
 CREATE TABLE IF NOT EXISTS timeline_entries (
@@ -200,8 +267,8 @@ CREATE TABLE IF NOT EXISTS config (
 INSERT INTO config (key, value) VALUES
   ('version', '1'),
   ('engine', 'pglite'),
-  ('embedding_model', 'text-embedding-3-large'),
-  ('embedding_dimensions', '1536'),
+  ('embedding_model', '__EMBEDDING_MODEL__'),
+  ('embedding_dimensions', '__EMBEDDING_DIMS__'),
   ('chunk_strategy', 'semantic')
 ON CONFLICT (key) DO NOTHING;
 
@@ -309,7 +376,11 @@ CREATE TABLE IF NOT EXISTS subagent_messages (
   job_id              BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
   message_idx         INTEGER     NOT NULL,
   role                TEXT        NOT NULL,
+  -- v0.27+ stores provider-neutral ChatBlock[] when schema_version=2; legacy
+  -- Anthropic-shape blocks when schema_version=1.
   content_blocks      JSONB       NOT NULL,
+  schema_version      INTEGER     NOT NULL DEFAULT 1,
+  provider_id         TEXT,
   tokens_in           INTEGER,
   tokens_out          INTEGER,
   tokens_cache_read   INTEGER,
@@ -320,19 +391,22 @@ CREATE TABLE IF NOT EXISTS subagent_messages (
   CONSTRAINT chk_subagent_messages_role CHECK (role IN ('user','assistant'))
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_messages_job ON subagent_messages (job_id, message_idx);
+CREATE INDEX IF NOT EXISTS idx_subagent_messages_provider ON subagent_messages (job_id, provider_id);
 
 CREATE TABLE IF NOT EXISTS subagent_tool_executions (
-  id           BIGSERIAL PRIMARY KEY,
-  job_id       BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
-  message_idx  INTEGER     NOT NULL,
-  tool_use_id  TEXT        NOT NULL,
-  tool_name    TEXT        NOT NULL,
-  input        JSONB       NOT NULL,
-  status       TEXT        NOT NULL,
-  output       JSONB,
-  error        TEXT,
-  started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  ended_at     TIMESTAMPTZ,
+  id              BIGSERIAL PRIMARY KEY,
+  job_id          BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
+  message_idx     INTEGER     NOT NULL,
+  tool_use_id     TEXT        NOT NULL,
+  tool_name       TEXT        NOT NULL,
+  input           JSONB       NOT NULL,
+  status          TEXT        NOT NULL,
+  output          JSONB,
+  error           TEXT,
+  schema_version  INTEGER     NOT NULL DEFAULT 1,
+  provider_id     TEXT,
+  started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at        TIMESTAMPTZ,
   CONSTRAINT uniq_subagent_tools_use_id UNIQUE (job_id, tool_use_id),
   CONSTRAINT chk_subagent_tools_status CHECK (status IN ('pending','complete','failed'))
 );
@@ -381,7 +455,15 @@ CREATE TABLE IF NOT EXISTS eval_candidates (
   remote                BOOLEAN      NOT NULL,
   job_id                INTEGER,
   subagent_id           INTEGER,
-  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  -- v0.29.1 — agent-explicit recency + salience capture for replay (mirrors src/schema.sql).
+  as_of_ts              TIMESTAMPTZ,
+  salience_param        TEXT,
+  recency_param         TEXT,
+  salience_resolved     TEXT,
+  recency_resolved      TEXT,
+  salience_source       TEXT,
+  recency_source        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_candidates_created_at ON eval_candidates(created_at DESC);
 
@@ -391,6 +473,83 @@ CREATE TABLE IF NOT EXISTS eval_capture_failures (
   reason  TEXT         NOT NULL CHECK (reason IN ('db_down', 'rls_reject', 'check_violation', 'scrubber_exception', 'other'))
 );
 CREATE INDEX IF NOT EXISTS idx_eval_capture_failures_ts ON eval_capture_failures(ts DESC);
+
+-- ============================================================
+-- access_tokens: legacy bearer tokens for remote MCP access
+-- ============================================================
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  scopes       TEXT[],
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  revoked_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_tokens_hash ON access_tokens (token_hash) WHERE revoked_at IS NULL;
+
+-- ============================================================
+-- mcp_request_log: usage logging for MCP requests
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mcp_request_log (
+  id            SERIAL PRIMARY KEY,
+  token_name    TEXT,
+  agent_name    TEXT,
+  operation     TEXT NOT NULL,
+  latency_ms    INTEGER,
+  status        TEXT NOT NULL DEFAULT 'success',
+  params        JSONB,
+  error_message TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_log_agent_time ON mcp_request_log(agent_name, created_at DESC);
+
+-- ============================================================
+-- OAuth 2.1: clients, tokens, authorization codes
+-- ============================================================
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id               TEXT PRIMARY KEY,
+  client_secret_hash      TEXT,
+  client_name             TEXT NOT NULL,
+  redirect_uris           TEXT[],
+  grant_types             TEXT[] DEFAULT '{client_credentials}',
+  scope                   TEXT,
+  token_endpoint_auth_method TEXT,
+  client_id_issued_at     BIGINT,
+  client_secret_expires_at BIGINT,
+  token_ttl               INTEGER,
+  deleted_at              TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash   TEXT PRIMARY KEY,
+  token_type   TEXT NOT NULL,
+  client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes       TEXT[],
+  expires_at   BIGINT,
+  resource     TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash              TEXT PRIMARY KEY,
+  client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes                 TEXT[],
+  code_challenge         TEXT NOT NULL,
+  code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
+  redirect_uri           TEXT NOT NULL,
+  state                  TEXT,
+  resource               TEXT,
+  expires_at             BIGINT NOT NULL,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ============================================================
 -- Trigger-based search_vector (spans pages + timeline_entries)
@@ -430,3 +589,21 @@ CREATE TRIGGER trg_pages_search_vector
 DROP TRIGGER IF EXISTS trg_timeline_search_vector ON timeline_entries;
 DROP FUNCTION IF EXISTS update_page_search_vector_from_timeline();
 `;
+
+/**
+ * Return the PGLite schema SQL with embedding vector dim + model name substituted.
+ * Defaults preserve v0.13 behavior (1536d + text-embedding-3-large).
+ */
+export function getPGLiteSchema(dims: number = 1536, model: string = 'text-embedding-3-large'): string {
+  const parsedDims = Number(dims);
+  if (!Number.isInteger(parsedDims) || parsedDims <= 0) {
+    throw new Error(`Invalid embedding dimensions: ${dims}`);
+  }
+  const sanitizedModel = String(model).replace(/'/g, "''");
+  return applyChunkEmbeddingIndexPolicy(PGLITE_SCHEMA_SQL_TEMPLATE, parsedDims)
+    .replace(/__EMBEDDING_DIMS__/g, String(parsedDims))
+    .replace(/__EMBEDDING_MODEL__/g, sanitizedModel);
+}
+
+/** Back-compat: pre-computed default-1536 schema for existing callers. */
+export const PGLITE_SCHEMA_SQL = getPGLiteSchema();

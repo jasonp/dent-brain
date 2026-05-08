@@ -101,5 +101,115 @@ export function buildHardExcludeClause(slugColumn: string, prefixes: string[]): 
   return `AND NOT (${likes})`;
 }
 
+/**
+ * v0.26.5 — Build the soft-delete + archived-source visibility filter.
+ *
+ * Two filters in one fragment:
+ *  - Page-level soft-delete: `<pageAlias>.deleted_at IS NULL` hides pages that
+ *    `delete_page` flipped via `softDeletePage`.
+ *  - Source-level archive: `NOT <sourceAlias>.archived` hides every page
+ *    belonging to a source that `gbrain sources archive` soft-deleted.
+ *
+ * Unlike `buildSourceFactorCase`, this clause is NOT bypassed by `detail=high`.
+ * Soft-deleted content stays hidden regardless of query detail level — the
+ * recovery window is for explicit `include_deleted: true` callers, not for
+ * temporal queries.
+ *
+ * Returns a fragment with leading `AND` so callers can splice it into a WHERE
+ * unconditionally. Both column references are engine-supplied (never user
+ * input), so no escape is required on the alias names themselves.
+ *
+ * @param pageAlias   — page table alias (e.g. `'p'`)
+ * @param sourceAlias — source table alias (e.g. `'s'`); the caller is
+ *                      responsible for joining `sources` so this alias resolves.
+ *
+ * @returns raw SQL fragment, e.g. `AND p.deleted_at IS NULL AND NOT s.archived`
+ */
+export function buildVisibilityClause(pageAlias: string, sourceAlias: string): string {
+  return `AND ${pageAlias}.deleted_at IS NULL AND NOT ${sourceAlias}.archived`;
+}
+
+// ============================================================
+// v0.29.1 — Recency component SQL builder
+// ============================================================
+
+/**
+ * Typed expression for "what NOW() should be" in the SQL. Tests pass
+ * `{ kind: 'fixed', isoUtc }` for deterministic output regardless of wall
+ * clock. Production callers leave it default (`{ kind: 'now' }`).
+ *
+ * The builder constructs the SQL literal internally via escapeSqlLiteral
+ * for the 'fixed' branch — caller-supplied strings NEVER flow into raw SQL,
+ * preventing the injection vector codex pass-1 #5 flagged.
+ */
+export type NowExpr = { kind: 'now' } | { kind: 'fixed'; isoUtc: string };
+
+function nowExprToSql(now: NowExpr): string {
+  if (now.kind === 'now') return 'NOW()';
+  return `'${escapeSqlLiteral(now.isoUtc)}'::timestamptz`;
+}
+
+/**
+ * Build the per-row recency component SQL fragment.
+ *
+ * For each prefix in the decay map, emit one CASE branch:
+ *   - halflifeDays = 0 (or coefficient = 0) → literal 0 (evergreen short-circuit)
+ *   - halflifeDays > 0  → coefficient * halflife / (halflife + days_old)
+ *
+ * Prefixes sorted longest-first so 'media/articles/' matches before 'media/'
+ * (mirror of buildSourceFactorCase's ordering).
+ *
+ * Output is a single SQL expression suitable for SELECT / ORDER BY.
+ *
+ * @param slugColumn — qualified column reference (engine-supplied, trusted)
+ * @param dateExpr   — qualified expression for the page's effective date
+ *                     (typically `COALESCE(p.effective_date, p.updated_at)`)
+ * @param decayMap   — per-prefix configurations (resolved from defaults +
+ *                     yaml + env + caller)
+ * @param fallback   — applied to slugs matching no prefix
+ * @param now        — typed NOW() expression (default `{ kind: 'now' }`)
+ */
+export function buildRecencyComponentSql(opts: {
+  slugColumn: string;
+  dateExpr: string;
+  decayMap: import('./recency-decay.ts').RecencyDecayMap;
+  fallback: import('./recency-decay.ts').RecencyDecayConfig;
+  now?: NowExpr;
+}): string {
+  const { slugColumn, dateExpr, decayMap, fallback } = opts;
+  const now = opts.now ?? { kind: 'now' };
+  const nowSql = nowExprToSql(now);
+  const daysOldSql = `EXTRACT(EPOCH FROM (${nowSql} - ${dateExpr})) / 86400.0`;
+
+  const prefixes = Object.keys(decayMap).sort((a, b) => b.length - a.length);
+  const branches: string[] = [];
+
+  for (const prefix of prefixes) {
+    const cfg = decayMap[prefix];
+    const literal = buildLikePrefixLiteral(prefix);
+    if (cfg.halflifeDays === 0 || cfg.coefficient === 0) {
+      branches.push(`WHEN ${slugColumn} LIKE ${literal} THEN 0`);
+    } else {
+      const h = cfg.halflifeDays;
+      const c = cfg.coefficient;
+      branches.push(
+        `WHEN ${slugColumn} LIKE ${literal} THEN ${c} * ${h}.0 / (${h}.0 + ${daysOldSql})`,
+      );
+    }
+  }
+
+  let elseSql: string;
+  if (fallback.halflifeDays === 0 || fallback.coefficient === 0) {
+    elseSql = '0';
+  } else {
+    const h = fallback.halflifeDays;
+    const c = fallback.coefficient;
+    elseSql = `${c} * ${h}.0 / (${h}.0 + ${daysOldSql})`;
+  }
+
+  if (branches.length === 0) return `(${elseSql})`;
+  return `(CASE ${branches.join(' ')} ELSE ${elseSql} END)`;
+}
+
 // Exported for unit tests
 export const __test__ = { escapeLikePattern, escapeSqlLiteral, buildLikePrefixLiteral };

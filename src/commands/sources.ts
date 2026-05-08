@@ -26,6 +26,23 @@
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
+import {
+  assessDestructiveImpact,
+  checkDestructiveConfirmation,
+  softDeleteSource,
+  restoreSource,
+  listArchivedSources,
+  purgeExpiredSources,
+  formatImpact,
+  formatSoftDelete,
+  SOFT_DELETE_TTL_HOURS,
+} from '../core/destructive-guard.ts';
+import {
+  addSource as opsAddSource,
+  recloneIfMissing,
+  SourceOpError,
+  type SourceRow as OpsSourceRow,
+} from '../core/sources-ops.ts';
 
 // ── Validation ──────────────────────────────────────────────
 
@@ -98,62 +115,64 @@ async function countPages(engine: BrainEngine, sourceId: string): Promise<number
 async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   const id = args[0];
   if (!id) {
-    console.error('Usage: gbrain sources add <id> --path <path> [--name <display>] [--federated|--no-federated]');
+    console.error(
+      'Usage: gbrain sources add <id> [--path <path> | --url <https-url>] ' +
+        '[--name <display>] [--federated|--no-federated] [--clone-dir <path>]',
+    );
     process.exit(2);
   }
-  validateSourceId(id);
 
   let localPath: string | null = null;
-  let displayName = id;
-  let federated: boolean | null = null; // null = default (false for new, opt-in via --federated)
+  let remoteUrl: string | undefined;
+  let displayName: string | undefined;
+  let federated: boolean | null = null;
+  let cloneDir: string | undefined;
 
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '--path') { localPath = args[++i]; continue; }
+    if (a === '--url') { remoteUrl = args[++i]; continue; }
     if (a === '--name') { displayName = args[++i]; continue; }
     if (a === '--federated') { federated = true; continue; }
     if (a === '--no-federated') { federated = false; continue; }
+    if (a === '--clone-dir') { cloneDir = args[++i]; continue; }
     console.error(`Unknown flag: ${a}`);
     process.exit(2);
   }
 
-  // Overlapping path guard: reject if new path is inside or contains an
-  // existing source's local_path (per eng review §4 finding 4.1).
-  // Throwing (vs process.exit) keeps this testable via the standard
-  // CLI error-handling wrapper in src/cli.ts.
-  if (localPath) {
-    const others = await engine.executeRaw<{ id: string; local_path: string }>(
-      `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND id != $1`,
-      [id],
-    );
-    for (const other of others) {
-      const a = localPath;
-      const b = other.local_path;
-      if (a === b || a.startsWith(b + '/') || b.startsWith(a + '/')) {
-        throw new Error(
-          `path "${a}" overlaps with existing source "${other.id}" at "${b}". ` +
-          `Overlapping sources are not allowed — same files would ingest twice under different source_ids.`,
-        );
-      }
-    }
+  if (remoteUrl && localPath) {
+    console.error('Error: --url and --path are mutually exclusive (--url manages its own clone path).');
+    process.exit(2);
   }
 
-  const config = federated === null ? {} : { federated };
-  await engine.executeRaw(
-    `INSERT INTO sources (id, name, local_path, config)
-         VALUES ($1, $2, $3, $4::jsonb)
-     ON CONFLICT (id) DO NOTHING`,
-    [id, displayName, localPath, JSON.stringify(config)],
-  );
+  // Throw on SourceOpError; cli.ts wraps every command in a try/catch that
+  // turns Error into the right exit code. Tests assert throw shape, so we
+  // intentionally propagate rather than process.exit here.
+  const created: OpsSourceRow = await opsAddSource(engine, {
+    id,
+    name: displayName,
+    localPath,
+    remoteUrl,
+    federated,
+    cloneDir,
+  });
 
-  const created = await fetchSource(engine, id);
-  if (!created) {
-    console.error(`Failed to create source "${id}" (conflict with existing id?)`);
-    process.exit(4);
-  }
   const fed = isFederated(created.config);
-  console.log(`Created source "${id}"${displayName !== id ? ` (name: ${displayName})` : ''}${localPath ? ` → ${localPath}` : ''}`);
-  console.log(`  federated: ${fed}${fed ? ' — appears in cross-source default search' : ' — only searched when explicitly named via --source'}`);
+  const finalRemoteUrl = (created.config as Record<string, unknown>).remote_url as string | undefined;
+  const tail = finalRemoteUrl
+    ? ` ← cloned from ${finalRemoteUrl}`
+    : created.local_path
+      ? ` → ${created.local_path}`
+      : '';
+  console.log(
+    `Created source "${id}"${displayName && displayName !== id ? ` (name: ${displayName})` : ''}${tail}`,
+  );
+  if (finalRemoteUrl) {
+    console.log(`  clone path: ${created.local_path}`);
+  }
+  console.log(
+    `  federated: ${fed}${fed ? ' — appears in cross-source default search' : ' — only searched when explicitly named via --source'}`,
+  );
 }
 
 // ── Subcommand: list ────────────────────────────────────────
@@ -188,10 +207,10 @@ async function runList(engine: BrainEngine, args: string[]): Promise<void> {
   console.log('SOURCES');
   console.log('───────');
   for (const e of entries) {
-    const fedMark = e.federated ? 'federated' : 'isolated';
+    const fedMark = e.federated ? 'federated' : (e as any).archived ? '⚠ archived' : 'isolated';
     const pathStr = e.local_path ?? '(no local path)';
     const sync = e.last_sync_at ? `last sync ${e.last_sync_at}` : 'never synced';
-    console.log(`  ${e.id.padEnd(20)}  ${fedMark.padEnd(10)}  ${String(e.page_count).padStart(6)} pages  ${sync}`);
+    console.log(`  ${e.id.padEnd(20)}  ${fedMark.padEnd(12)}  ${String(e.page_count).padStart(6)} pages  ${sync}`);
     if (e.local_path) console.log(`  ${' '.repeat(22)}${pathStr}`);
   }
   if (entries.length === 0) console.log('  (no sources registered)');
@@ -202,13 +221,12 @@ async function runList(engine: BrainEngine, args: string[]): Promise<void> {
 async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
   const id = args[0];
   if (!id) {
-    console.error('Usage: gbrain sources remove <id> [--yes] [--dry-run] [--keep-storage]');
+    console.error('Usage: gbrain sources remove <id> [--yes] [--confirm-destructive] [--dry-run] [--keep-storage]');
     process.exit(2);
   }
   const yes = args.includes('--yes');
   const dryRun = args.includes('--dry-run');
-  // NOTE: --keep-storage is accepted for forward compatibility but has no
-  // effect until Step 7 wires in explicit storage object deletion.
+  const confirmDestructive = args.includes('--confirm-destructive');
   const _keepStorage = args.includes('--keep-storage');
   void _keepStorage;
 
@@ -223,21 +241,160 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
     process.exit(4);
   }
 
-  const pageCount = await countPages(engine, id);
-  console.log(`Source "${id}" → ${pageCount} pages will be deleted (cascade).`);
+  // v0.26.5: Impact preview + destructive guard
+  const impact = await assessDestructiveImpact(engine, id);
+  if (impact) {
+    console.log(formatImpact(impact));
 
-  if (dryRun) {
-    console.log(`(dry-run; no side effects)`);
-    return;
-  }
+    if (dryRun) {
+      console.log('(dry-run; no side effects)');
+      return;
+    }
 
-  if (!yes) {
-    console.error(`Refusing to remove without --yes. Pass --yes to confirm.`);
-    process.exit(5);
+    const blockMsg = checkDestructiveConfirmation(impact, { yes, confirmDestructive, dryRun });
+    if (blockMsg) {
+      console.error(blockMsg);
+      process.exit(5);
+    }
+  } else {
+    if (dryRun) { console.log('(dry-run; source not found)'); return; }
+    if (!yes && !confirmDestructive) {
+      console.error('Refusing to remove without --yes or --confirm-destructive.');
+      process.exit(5);
+    }
   }
 
   await engine.executeRaw(`DELETE FROM sources WHERE id = $1`, [id]);
+  const pageCount = impact?.pageCount ?? 0;
   console.log(`Removed source "${id}" (${pageCount} pages + dependent rows cascaded).`);
+}
+
+// ── Subcommand: archive (soft-delete) ───────────────────────
+
+async function runArchive(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  if (!id) {
+    console.error('Usage: gbrain sources archive <id>');
+    process.exit(2);
+  }
+
+  if (id === 'default') {
+    console.error('Error: cannot archive the "default" source.');
+    process.exit(3);
+  }
+
+  // Show impact preview
+  const impact = await assessDestructiveImpact(engine, id);
+  if (!impact) {
+    console.error(`Source "${id}" not found.`);
+    process.exit(4);
+  }
+
+  const result = await softDeleteSource(engine, id);
+  if (!result) {
+    console.error(`Failed to archive source "${id}".`);
+    process.exit(4);
+  }
+
+  console.log(formatSoftDelete(result));
+}
+
+// ── Subcommand: restore ─────────────────────────────────────
+
+async function runRestore(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  const noFederate = args.includes('--no-federate');
+  if (!id) {
+    console.error('Usage: gbrain sources restore <id> [--no-federate]');
+    process.exit(2);
+  }
+
+  const restored = await restoreSource(engine, id, !noFederate);
+  if (!restored) {
+    console.error(`Source "${id}" not found or not archived.`);
+    process.exit(4);
+  }
+
+  console.log(`Source "${id}" restored. ${noFederate ? 'Not re-federated.' : 'Re-federated.'}`);
+  console.log(`All pages, chunks, and embeddings are intact.`);
+
+  // T4 (eng-review): if the source has a remote_url AND its clone dir was
+  // autopurged (e.g. operator rm -rf'd $GBRAIN_HOME/clones/), re-clone
+  // before declaring restore success. Without this, restore returns green
+  // but the source is unsyncable until a later sync path discovers the gap.
+  try {
+    const recloned = await recloneIfMissing(engine, id);
+    if (recloned) {
+      console.log(`  re-cloned from remote_url (clone dir was missing).`);
+    }
+  } catch (e) {
+    if (e instanceof SourceOpError) {
+      console.error(`  WARN: could not re-clone: ${e.message}`);
+      console.error(`  The DB row is restored but the on-disk clone is missing.`);
+      console.error(`  Try \`gbrain sync --source ${id}\` to recover, or remove + re-add.`);
+    } else {
+      throw e;
+    }
+  }
+}
+
+// ── Subcommand: purge ───────────────────────────────────────
+
+async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  const confirmDestructive = args.includes('--confirm-destructive');
+
+  if (id) {
+    // Purge a specific source (must be archived)
+    const impact = await assessDestructiveImpact(engine, id);
+    if (!impact) {
+      console.error(`Source "${id}" not found.`);
+      process.exit(4);
+    }
+
+    console.log(formatImpact(impact));
+
+    if (!confirmDestructive) {
+      console.error(`Pass --confirm-destructive to permanently delete source "${id}".`);
+      process.exit(5);
+    }
+
+    await engine.executeRaw(`DELETE FROM sources WHERE id = $1`, [id]);
+    console.log(`Permanently deleted source "${id}" (${impact.pageCount} pages cascaded).`);
+    return;
+  }
+
+  // No id: purge all expired archives
+  const purged = await purgeExpiredSources(engine);
+  if (purged.length === 0) {
+    console.log('No expired archives to purge.');
+  } else {
+    console.log(`Purged ${purged.length} expired archive(s): ${purged.join(', ')}`);
+  }
+}
+
+// ── Subcommand: archived ────────────────────────────────────
+
+async function runListArchived(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const archived = await listArchivedSources(engine);
+
+  if (json) {
+    console.log(JSON.stringify({ archived }, null, 2));
+    return;
+  }
+
+  if (archived.length === 0) {
+    console.log('No archived sources.');
+    return;
+  }
+
+  console.log('ARCHIVED SOURCES (soft-deleted)');
+  console.log('───────────────────────────────');
+  for (const a of archived) {
+    const hours = Math.max(0, Math.round((a.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60)));
+    console.log(`  ${a.id.padEnd(20)}  ${String(a.pageCount).padStart(6)} pages  expires in ${hours}h  (restore: gbrain sources restore ${a.id})`);
+  }
 }
 
 // ── Subcommand: rename ──────────────────────────────────────
@@ -340,6 +497,10 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'detach':     runDetach(); return;
     case 'federate':   return runFederate(engine, rest, true);
     case 'unfederate': return runFederate(engine, rest, false);
+    case 'archive':    return runArchive(engine, rest);
+    case 'restore':    return runRestore(engine, rest);
+    case 'purge':      return runPurge(engine, rest);
+    case 'archived':   return runListArchived(engine, rest);
     case undefined:
     case '--help':
     case '-h':
@@ -353,13 +514,23 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
 }
 
 function printHelp(): void {
-  console.log(`gbrain sources — manage multi-source brain configuration (v0.18.0)
+  console.log(`gbrain sources — manage multi-source brain configuration (v0.26.5)
 
 Subcommands:
   add <id> --path <p> [--name <n>] [--federated|--no-federated]
                                     Register a new source.
   list [--json]                     List registered sources with page counts.
-  remove <id> [--yes] [--dry-run]   Cascade-delete a source and its pages.
+  remove <id> [--confirm-destructive] [--dry-run]
+                                    Permanently delete a source and all its data.
+                                    Shows impact preview. Requires --confirm-destructive
+                                    when the source has data (pages/chunks/embeddings).
+  archive <id>                      Soft-delete: hide from search, preserve data for ${SOFT_DELETE_TTL_HOURS}h.
+  restore <id> [--no-federate]      Un-archive a soft-deleted source.
+  archived [--json]                 List soft-deleted sources and their expiry.
+  purge [<id>] [--confirm-destructive]
+                                    Permanently delete archived sources.
+                                    Without <id>: purge all expired archives.
+                                    With <id>: force-purge (requires --confirm-destructive).
   rename <id> <new-name>            Rename display name (id is immutable).
   default <id>                      Set the brain-level default source.
   attach <id>                       Write .gbrain-source in CWD (like kubectl context).
@@ -368,5 +539,9 @@ Subcommands:
   unfederate <id>                   Isolate source from default search.
 
 Source id: [a-z0-9-]{1,32}. Immutable citation key.
+
+Destructive operations (remove, purge) show an impact preview before acting.
+Pass --dry-run to preview without side effects.
+Use 'archive' instead of 'remove' for a safe ${SOFT_DELETE_TTL_HOURS}h grace period.
 `);
 }

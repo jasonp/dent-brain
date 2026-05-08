@@ -1,5 +1,5 @@
 import type {
-  Page, PageInput, PageFilters,
+  Page, PageInput, PageFilters, GetPageOpts,
   Chunk, ChunkInput, StaleChunkRow,
   SearchResult, SearchOpts,
   Link, GraphNode, GraphPath,
@@ -12,7 +12,45 @@ import type {
   CodeEdgeInput, CodeEdgeResult,
   EvalCandidate, EvalCandidateInput,
   EvalCaptureFailure, EvalCaptureFailureReason,
+  SalienceOpts, SalienceResult, AnomaliesOpts, AnomalyResult,
+  EmotionalWeightInputRow, EmotionalWeightWriteRow,
 } from './types.ts';
+
+/**
+ * v0.27.1: file row for binary-asset metadata. Mirrors the `files` table
+ * shape on both engines (Postgres has had it since v0.18; PGLite gets it
+ * via migration v36).
+ */
+export interface FileRow {
+  id: number;
+  source_id: string;
+  page_slug: string | null;
+  page_id: number | null;
+  filename: string;
+  storage_path: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+/**
+ * v0.27.1: spec for upsertFile. Identity is (source_id, storage_path).
+ * Re-upserting the same identity with a different content_hash updates the
+ * row in place (image was replaced); same content_hash is a no-op.
+ */
+export interface FileSpec {
+  source_id?: string;
+  page_slug?: string | null;
+  page_id?: number | null;
+  filename: string;
+  storage_path: string;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  content_hash: string;
+  metadata?: Record<string, unknown>;
+}
 
 /** Input row for addLinksBatch. Optional fields default to '' (matches NOT NULL DDL). */
 export interface LinkBatchInput {
@@ -88,6 +126,175 @@ export interface ReservedConnection {
   executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
+/**
+ * v0.28: Takes — typed/weighted/attributed claims, indexed in Postgres.
+ * Markdown is source of truth (fenced table on the page); this row is the
+ * derived index. Page-scoped via page_id (NOT slug — slug is unique only
+ * within a source). `(page_id, row_num)` is the natural unique key.
+ */
+export interface TakeKindLiteral { kind: 'fact' | 'take' | 'bet' | 'hunch' }
+export type TakeKind = TakeKindLiteral['kind'];
+
+/** Input row for addTakesBatch. */
+export interface TakeBatchInput {
+  page_id: number;
+  row_num: number;
+  claim: string;
+  kind: TakeKind;
+  holder: string;
+  weight?: number;          // 0..1, default 0.5; clamped server-side
+  since_date?: string;      // ISO date 'YYYY-MM-DD'
+  until_date?: string;
+  source?: string;
+  superseded_by?: number | null;
+  active?: boolean;         // default true
+}
+
+/** Take row as returned by listTakes / searchTakes. */
+export interface Take {
+  id: number;
+  page_id: number;
+  page_slug: string;        // joined from pages
+  row_num: number;
+  claim: string;
+  kind: TakeKind;
+  holder: string;
+  weight: number;
+  since_date: string | null;
+  until_date: string | null;
+  source: string | null;
+  superseded_by: number | null;
+  active: boolean;
+  resolved_at: string | null;
+  resolved_outcome: boolean | null;
+  /**
+   * v0.30.0: 3-state outcome label. Sits alongside `resolved_outcome` for
+   * back-compat. New writes populate both; legacy v0.28-resolved rows have
+   * `resolved_quality` backfilled by migration v40 from the boolean.
+   * Null on unresolved rows. Schema CHECK enforces (quality, outcome) consistency:
+   * `correct` ↔ `outcome=true`, `incorrect` ↔ `outcome=false`, `partial` ↔ `outcome=NULL`.
+   */
+  resolved_quality: 'correct' | 'incorrect' | 'partial' | null;
+  resolved_value: number | null;
+  resolved_unit: string | null;
+  resolved_source: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TakesListOpts {
+  page_id?: number;
+  page_slug?: string;       // resolved via JOIN
+  holder?: string;
+  kind?: TakeKind;
+  active?: boolean;         // default true (only active rows)
+  resolved?: boolean;       // true = only resolved; false = only unresolved; undefined = both
+  /** Per-token MCP allow-list. Server applies AND holder = ANY($takesHoldersAllowList) when set. */
+  takesHoldersAllowList?: string[];
+  sortBy?: 'weight' | 'since_date' | 'created_at';
+  limit?: number;
+  offset?: number;
+}
+
+/** Search result row from searchTakes / searchTakesVector. */
+export interface TakeHit {
+  take_id: number;
+  page_id: number;
+  page_slug: string;
+  row_num: number;
+  claim: string;
+  kind: TakeKind;
+  holder: string;
+  weight: number;
+  score: number;            // search rank score (ts_rank for keyword, 1-cos_dist for vector)
+}
+
+/** v0.28 stale-takes row (mirrors StaleChunkRow shape). Embedding column intentionally omitted. */
+export interface StaleTakeRow {
+  take_id: number;
+  page_slug: string;
+  row_num: number;
+  claim: string;
+}
+
+/** Resolution metadata for resolveTake. */
+export interface TakeResolution {
+  /**
+   * v0.30.0: primary 3-state input. When set, takes precedence over `outcome`
+   * and the engine writes both columns (quality directly; outcome derived:
+   * `correct→true`, `incorrect→false`, `partial→null`).
+   */
+  quality?: 'correct' | 'incorrect' | 'partial';
+  /**
+   * v0.28 back-compat input. Keep submitting for v0.28 callers; the engine
+   * derives quality (`true→correct`, `false→incorrect`). When `quality` is
+   * also set, `quality` wins. When neither is set, the engine throws.
+   * Mutually-exclusive with `quality === 'partial'` because partial isn't
+   * binary.
+   */
+  outcome?: boolean;
+  value?: number;
+  unit?: string;       // 'usd' | 'pct' | 'count' | other
+  source?: string;
+  resolvedBy: string;  // slug or 'garry'
+}
+
+/** v0.30.0: scorecard aggregate. */
+export interface TakesScorecard {
+  total_bets: number;
+  resolved: number;
+  correct: number;
+  incorrect: number;
+  partial: number;
+  /** Accuracy = correct / (correct + incorrect). NULL when n=0. */
+  accuracy: number | null;
+  /**
+   * Brier score over rows where `resolved_quality IN ('correct','incorrect')`.
+   * Maps `correct→1`, `incorrect→0`, computes `mean((weight − outcome)²)`.
+   * Lower is better; 0 = perfect; 0.25 = always-50% baseline.
+   * Excludes partial — that label hides hedging behavior; `partial_rate`
+   * surfaces it as a separate signal. NULL when no correct+incorrect rows.
+   */
+  brier: number | null;
+  /** partial / resolved. NULL when n=0. */
+  partial_rate: number | null;
+}
+
+export interface TakesScorecardOpts {
+  holder?: string;
+  domainPrefix?: string; // e.g. 'companies/' to scope the scorecard
+  since?: string;        // ISO date 'YYYY-MM-DD'
+  until?: string;        // ISO date 'YYYY-MM-DD'
+}
+
+/** v0.30.0: calibration curve bucket. */
+export interface CalibrationBucket {
+  /** Lower bound of the weight bucket, inclusive. */
+  bucket_lo: number;
+  /** Upper bound, exclusive (except for the final bucket which is inclusive of 1.0). */
+  bucket_hi: number;
+  /** Count of resolved correct+incorrect bets falling in this weight range. */
+  n: number;
+  /** correct / n. NULL when n=0. */
+  observed: number | null;
+  /** mean(weight) within the bucket — what was predicted on average. NULL when n=0. */
+  predicted: number | null;
+}
+
+export interface CalibrationCurveOpts {
+  holder?: string;
+  bucketSize?: number; // default 0.1
+}
+
+/** Synthesis evidence row input (provenance from think synthesis pages). */
+export interface SynthesisEvidenceInput {
+  synthesis_page_id: number;
+  take_page_id: number;
+  take_row_num: number;
+  citation_index: number;
+}
+
 /** Dream-cycle Haiku verdict on whether a transcript is worth processing. */
 export interface DreamVerdict {
   worth_processing: boolean;
@@ -128,9 +335,48 @@ export interface BrainEngine {
   withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T>;
 
   // Pages CRUD
-  getPage(slug: string): Promise<Page | null>;
+  /**
+   * Fetch a page by slug.
+   * v0.26.5: by default soft-deleted rows return null (matches the search
+   * filter contract). Pass `opts.includeDeleted: true` to surface them with
+   * `deleted_at` populated — used by `gbrain pages purge-deleted` listing,
+   * by `restore_page` flow, and by operator diagnostics.
+   */
+  getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
   putPage(slug: string, page: PageInput): Promise<Page>;
+  /**
+   * Hard-delete a page row. Cascades to content_chunks, page_links,
+   * chunk_relations via existing FK ON DELETE CASCADE.
+   *
+   * v0.26.5: this is no longer the public-facing `delete_page` op handler —
+   * the op now soft-deletes via `softDeletePage` instead. `deletePage` stays
+   * as the underlying primitive used by `purgeDeletedPages` and by callers
+   * that explicitly want hard-delete semantics (e.g. test setup teardown).
+   */
   deletePage(slug: string): Promise<void>;
+  /**
+   * v0.26.5 — set `deleted_at = now()` on a page. Returns the slug if a row
+   * was soft-deleted, null if no row matched (already soft-deleted OR not found).
+   * Idempotent-as-null. The page stays in the DB and cascade rows (chunks,
+   * links) stay intact; the autopilot purge phase hard-deletes after 72h.
+   */
+  softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null>;
+  /**
+   * v0.26.5 — clear `deleted_at` on a soft-deleted page. Returns true iff a
+   * row was restored. False if the slug is unknown OR the page is not
+   * currently soft-deleted (idempotent-as-false).
+   */
+  restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean>;
+  /**
+   * v0.26.5 — hard-delete pages whose `deleted_at` is older than the cutoff.
+   * Called by the autopilot purge phase and by the `gbrain pages purge-deleted`
+   * CLI escape hatch. Cascades through existing FKs.
+   */
+  purgeDeletedPages(olderThanHours: number): Promise<{ slugs: string[]; count: number }>;
+  /**
+   * v0.26.5: by default `listPages` excludes soft-deleted rows. Set
+   * `filters.includeDeleted: true` to surface them.
+   */
   listPages(filters?: PageFilters): Promise<Page[]>;
   resolveSlugs(partial: string): Promise<string[]>;
   /**
@@ -236,6 +482,35 @@ export interface BrainEngine {
    */
   getBacklinkCounts(slugs: string[]): Promise<Map<string, number>>;
   /**
+   * v0.27.0: for a list of slugs, return their updated_at timestamps (or created_at fallback).
+   * Used by hybrid search recency boost. Single SQL query, not N+1.
+   * Slugs with no timestamp get no entry in the map.
+   *
+   * @deprecated v0.29.1: prefer getEffectiveDates (composite-keyed, multi-source-safe).
+   * Kept for back-compat with PR #618 callers.
+   */
+  getPageTimestamps(slugs: string[]): Promise<Map<string, Date>>;
+  /**
+   * v0.29.1: for a list of (slug, source_id) refs, return COALESCE(effective_date,
+   * updated_at) per ref. Single SQL query. Composite-keyed map (key format:
+   * `${source_id}::${slug}`) so multi-source brains don't conflate pages with
+   * the same slug across sources (codex pass-1 finding #3).
+   *
+   * Drives the new applyRecencyBoost post-fusion stage. Returns NULL for refs
+   * with no row; map omits them.
+   */
+  getEffectiveDates(refs: Array<{slug: string; source_id: string}>): Promise<Map<string, Date>>;
+  /**
+   * v0.29.1: for a list of (slug, source_id) refs, return the salience score
+   * (emotional_weight × 5 + ln(1 + take_count)) per ref. Single SQL query.
+   * Composite-keyed (`${source_id}::${slug}`) like getEffectiveDates.
+   *
+   * Drives the new applySalienceBoost post-fusion stage. Pages with no row
+   * (or zero emotional_weight + zero takes) get score = 0; the boost stage
+   * skips them.
+   */
+  getSalienceScores(refs: Array<{slug: string; source_id: string}>): Promise<Map<string, number>>;
+  /**
    * Return every page with no inbound links (from any source).
    * Domain comes from the frontmatter `domain` field (null if unset).
    * The caller filters pseudo-pages + derives display domain.
@@ -272,6 +547,121 @@ export interface BrainEngine {
   // Raw data
   putRawData(slug: string, source: string, data: object): Promise<void>;
   getRawData(slug: string, source?: string): Promise<RawData[]>;
+
+  // Files (v0.27.1: binary asset metadata + storage_path. Image bytes never
+  // enter the DB; storage_path references a path inside the brain repo or an
+  // external store).
+  upsertFile(spec: FileSpec): Promise<{ id: number; created: boolean }>;
+  getFile(sourceId: string, storagePath: string): Promise<FileRow | null>;
+  listFilesForPage(pageId: number): Promise<FileRow[]>;
+
+  // ============================================================
+  // v0.28: Takes (typed/weighted/attributed claims) + synthesis evidence
+  // ============================================================
+  /**
+   * Bulk insert/upsert takes. Uses `unnest()` (Postgres) or manual `$N`
+   * placeholders (PGLite). Idempotency: ON CONFLICT (page_id, row_num) DO UPDATE
+   * — re-extract on a changed claim/weight updates the row in place.
+   * Returns the number of rows inserted OR updated.
+   *
+   * Weight outside [0, 1] is clamped server-side and surfaces a stderr
+   * warning per call (`TAKES_WEIGHT_CLAMPED`). Invalid `kind` values
+   * fail the whole batch via the CHECK constraint — caller is responsible
+   * for parser validation upstream.
+   */
+  addTakesBatch(rows: TakeBatchInput[]): Promise<number>;
+
+  /** List takes filtered by holder/kind/active/etc. Resolves page_slug via JOIN. */
+  listTakes(opts?: TakesListOpts): Promise<Take[]>;
+
+  /**
+   * Keyword search across active takes. Uses pg_trgm similarity over claim text.
+   * Honors `takesHoldersAllowList` via WHERE filter so MCP-bound calls cannot
+   * retrieve holders outside the token's allow-list.
+   */
+  searchTakes(query: string, opts?: SearchOpts & { takesHoldersAllowList?: string[] }): Promise<TakeHit[]>;
+
+  /**
+   * Vector search across active takes. Cosine distance against `embedding`.
+   * Skipped (returns []) when no embedding column has been populated yet.
+   */
+  searchTakesVector(
+    embedding: Float32Array,
+    opts?: SearchOpts & { takesHoldersAllowList?: string[] },
+  ): Promise<TakeHit[]>;
+
+  /** Look up embeddings by take id (mirrors getEmbeddingsByChunkIds). */
+  getTakeEmbeddings(ids: number[]): Promise<Map<number, Float32Array>>;
+
+  /** Pre-flight count for `gbrain embed --stale`. WHERE active AND embedding IS NULL. */
+  countStaleTakes(): Promise<number>;
+
+  /** List stale takes (no embedding column in payload — same pattern as listStaleChunks). */
+  listStaleTakes(): Promise<StaleTakeRow[]>;
+
+  /**
+   * Update a take's mutable fields. May NOT change claim/kind/holder per the
+   * supersession invariants — those route through supersedeTake. Throws
+   * `TAKE_ROW_NOT_FOUND` when (page_id, row_num) doesn't exist.
+   */
+  updateTake(
+    pageId: number,
+    rowNum: number,
+    fields: { weight?: number; since_date?: string; source?: string },
+  ): Promise<void>;
+
+  /**
+   * Supersede the take at (page_id, oldRow). Marks old row active=false +
+   * sets superseded_by; appends new row at the next row_num for the page;
+   * returns both row_nums. Atomic (transactional). Cycle prevention: if newRow
+   * sets superseded_by pointing to a chain that comes back to oldRow, throws
+   * `TAKES_SUPERSEDE_CYCLE`. Resolved bets (`resolved_at IS NOT NULL`) cannot
+   * be superseded — throws `TAKE_RESOLVED_IMMUTABLE`.
+   */
+  supersedeTake(
+    pageId: number,
+    oldRow: number,
+    newRow: Omit<TakeBatchInput, 'page_id' | 'row_num' | 'superseded_by'>,
+  ): Promise<{ oldRow: number; newRow: number }>;
+
+  /**
+   * Resolve a bet (or take). Sets resolved_* columns. Immutable: re-resolve
+   * attempts throw `TAKE_ALREADY_RESOLVED`. Use supersede to express a new bet.
+   *
+   * v0.30.0: accepts either `quality` (3-state, primary) or `outcome` (boolean,
+   * back-compat). When both set, `quality` wins. The engine writes BOTH columns
+   * derived from whichever input was given: `quality='correct'/'incorrect'` →
+   * `outcome=true/false`; `quality='partial'` → `outcome=NULL`. The schema
+   * `takes_resolution_consistency` CHECK constraint catches contradictory
+   * states at the DB layer as a defense-in-depth backstop.
+   */
+  resolveTake(pageId: number, rowNum: number, resolution: TakeResolution): Promise<void>;
+
+  /**
+   * v0.30.0: aggregate calibration scorecard. Pure SQL aggregation; no LLM.
+   * Counts resolved bets, computes accuracy, Brier score (correct+incorrect
+   * only), and `partial_rate`. Filtering: `holder` scopes to one identity;
+   * `domainPrefix` scopes to a slug-prefix (e.g. `companies/`); `since`/`until`
+   * scope to a `since_date` window.
+   *
+   * Privacy (D4 from plan): `allowList` is REQUIRED in the TS signature.
+   * The engine applies `WHERE holder = ANY($allowList)` INSIDE the GROUP BY
+   * so hidden-holder rows contribute zero to aggregates. Pass an empty array
+   * to enforce zero-results; pass `undefined` only from server-side trusted
+   * callers that have already verified the request is unrestricted.
+   */
+  getScorecard(opts: TakesScorecardOpts, allowList: string[] | undefined): Promise<TakesScorecard>;
+
+  /**
+   * v0.30.0: calibration curve. Bins resolved correct+incorrect bets by stated
+   * weight (default bucket size 0.1) and reports observed vs predicted frequency
+   * per bucket. Same allow-list contract as `getScorecard`. Excludes partial
+   * (consistent with Brier — partial has no binary outcome to compare against).
+   */
+  getCalibrationCurve(opts: CalibrationCurveOpts, allowList: string[] | undefined): Promise<CalibrationBucket[]>;
+
+  /** Persist think provenance. ON CONFLICT DO NOTHING; returns rows inserted. */
+  addSynthesisEvidence(rows: SynthesisEvidenceInput[]): Promise<number>;
 
   // Dream-cycle significance verdict cache (v0.23).
   // Keyed by (file_path, content_hash). Distinct from raw_data, which is
@@ -381,4 +771,59 @@ export interface BrainEngine {
   logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void>;
   /** Read capture failures within an optional time window. Used by `gbrain doctor`. */
   listEvalCaptureFailures(filter?: { since?: Date }): Promise<EvalCaptureFailure[]>;
+
+  // ============================================================
+  // v0.29 — Salience + Anomaly Detection
+  // ============================================================
+  // The brain surfaces what's unusual and emotionally charged without being
+  // asked. Cost: ~zero at query time (deterministic SQL), with backfill done
+  // during the new `recompute_emotional_weight` cycle phase.
+
+  /**
+   * Batch-load tag + take inputs for the emotional-weight formula. One CTE-shaped
+   * query: `pages` LEFT JOIN aggregated `tags` and aggregated `takes` (each
+   * pre-aggregated in its own CTE so the page × N tags × M takes cartesian
+   * product is avoided).
+   *
+   * If `slugs` is undefined, returns inputs for every page in the brain
+   * (full-mode backfill). If provided, returns only matching slugs (incremental
+   * recompute after sync / synthesize touched specific pages).
+   *
+   * Multi-source-aware: each row carries its `source_id` so the matching
+   * `setEmotionalWeightBatch` UPDATE can composite-key correctly.
+   */
+  batchLoadEmotionalInputs(slugs?: string[]): Promise<EmotionalWeightInputRow[]>;
+
+  /**
+   * Apply pre-computed emotional weights in a single UPDATE. Composite-keyed
+   * on `(slug, source_id)` because `pages.slug` is only unique within a
+   * source — a slug-only UPDATE would fan out across sources, the same bug
+   * that the v0.18.0 link batches fixed for cross-source edges.
+   *
+   * Returns the count of rows actually updated. Pages whose `(slug, source_id)`
+   * tuple doesn't exist (race with delete) are silently skipped.
+   */
+  setEmotionalWeightBatch(rows: EmotionalWeightWriteRow[]): Promise<number>;
+
+  /**
+   * Salience query: pages recently touched, ranked by a deterministic
+   * `(emotional_weight * 5) + ln(1 + take_count) + recency_decay` score.
+   *
+   * The handler computes the time boundary in JS (`now - days * 86400000`)
+   * and binds it as TIMESTAMPTZ so the SQL is identical across PGLite +
+   * Postgres (eng review D5 — avoids dialect drift on `interval` binding).
+   */
+  getRecentSalience(opts: SalienceOpts): Promise<SalienceResult[]>;
+
+  /**
+   * Anomaly detection: cohorts (tag, type) with unusually-high page activity
+   * on a target day vs baseline mean+stddev over the previous N days. Year
+   * cohort is deferred to v0.30 (slug-regex year extraction is fragile).
+   *
+   * Baseline densifies the day series via `generate_series` zero-fill so
+   * sparse-day rare cohorts don't look "normally active" — a sparse-day cohort
+   * with one touch in 30 days has a low baseline mean and high sigma at 7 touches,
+   * not a misleading mean of 1.
+   */
+  findAnomalies(opts: AnomaliesOpts): Promise<AnomalyResult[]>;
 }

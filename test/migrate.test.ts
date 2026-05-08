@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
-import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers } from '../src/core/migrate.ts';
+import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers, hasPendingMigrations } from '../src/core/migrate.ts';
 import type { IdleBlocker } from '../src/core/migrate.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -18,6 +18,49 @@ describe('migrate', () => {
 
   // Integration tests for actual migration execution require DATABASE_URL
   // and are covered in the E2E suite (test/e2e/mechanical.test.ts)
+});
+
+// v0.28.5 — A1: cheap probe used by `connectEngine` to gate `initSchema()`
+// so already-migrated brains don't pay the schema-replay cost on every
+// short-lived CLI invocation. Closes #651 in cooperation with X1's
+// post-upgrade auto-apply, without #652's perf regression.
+describe('hasPendingMigrations', () => {
+  test('returns false on a fully-migrated brain (version === LATEST)', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema(); // applies all migrations through LATEST_VERSION
+      expect(await hasPendingMigrations(engine)).toBe(false);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
+
+  test('returns true when version config is behind LATEST_VERSION', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      // Simulate an older brain by rewinding the version row.
+      await engine.setConfig('version', '1');
+      expect(await hasPendingMigrations(engine)).toBe(true);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
+
+  test('returns true when version config is missing entirely (defensive default)', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      // Don't call initSchema. Probe against an empty PGlite — getConfig should
+      // either return null (treated as version=1) or throw on missing config
+      // table; either way the probe must say "yes pending."
+      expect(await hasPendingMigrations(engine)).toBe(true);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -82,6 +125,133 @@ describe('migrate v20 — sources_table_additive', () => {
 // ─────────────────────────────────────────────────────────────────
 // v0.18.0 — v17 pages_source_id_composite_unique (Step 2, Lane B)
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// v0.26.3 — v33 admin_dashboard_columns_v0_26_3
+// ─────────────────────────────────────────────────────────────────
+// SQL-shape guard: PR #586 referenced 5 columns + a new index that didn't
+// exist in any prior migration. Without v33, /admin/api/agents 503s and
+// the request-log INSERT silently swallows column-doesn't-exist errors.
+// This test pins the column set so a future refactor can't silently drop
+// part of the migration without the test failing.
+describe('migrate v33 — admin_dashboard_columns_v0_26_3', () => {
+  const v33 = MIGRATIONS.find(m => m.version === 33);
+
+  test('v33 exists with the expected name', () => {
+    expect(v33).toBeDefined();
+    expect(v33!.name).toBe('admin_dashboard_columns_v0_26_3');
+  });
+
+  test('v33 adds all 5 columns referenced by serve-http.ts and oauth-provider.ts', () => {
+    const sql = v33!.sql;
+    expect(sql).toContain('ALTER TABLE oauth_clients');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS token_ttl INTEGER');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');
+    expect(sql).toContain('ALTER TABLE mcp_request_log');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS agent_name TEXT');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS params JSONB');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS error_message TEXT');
+  });
+
+  test('v33 backfills mcp_request_log.agent_name from oauth_clients + access_tokens', () => {
+    const sql = v33!.sql;
+    expect(sql).toContain('UPDATE mcp_request_log');
+    expect(sql).toContain('SET agent_name = COALESCE(');
+    expect(sql).toContain('FROM oauth_clients WHERE client_id = m.token_name');
+    expect(sql).toContain('FROM access_tokens WHERE name = m.token_name');
+    expect(sql).toContain('WHERE agent_name IS NULL');
+  });
+
+  test('v33 creates idx_mcp_log_agent_time for the new agent filter', () => {
+    expect(v33!.sql).toContain('idx_mcp_log_agent_time');
+    expect(v33!.sql).toContain('mcp_request_log(agent_name, created_at DESC)');
+  });
+
+  test('v33 uses ADD COLUMN IF NOT EXISTS so re-runs are idempotent', () => {
+    // All ALTER lines must be IF NOT EXISTS — re-running migrations on a
+    // brain that already has v33 columns must be a no-op, not a duplicate
+    // column error.
+    const sql = v33!.sql;
+    const addColumnLines = sql.match(/ADD COLUMN[^,;]+/gi) || [];
+    expect(addColumnLines.length).toBeGreaterThanOrEqual(5);
+    for (const line of addColumnLines) {
+      expect(line).toContain('IF NOT EXISTS');
+    }
+  });
+});
+
+// ============================================================
+// v0.27 — v35 subagent_provider_neutral_persistence_v0_27
+// ============================================================
+// Codex F-OV-1 / D11. The subagent_messages and subagent_tool_executions
+// tables stored Anthropic-shaped tool_use / tool_result blocks as JSONB.
+// When a worker resumes mid-loop and the live model is OpenAI/DeepSeek/etc,
+// the persisted shape is the runtime contract — translation at read time
+// is lossy.
+//
+// Fix: schema_version + provider_id columns. v=1 = legacy Anthropic shape,
+// v=2 = provider-neutral ChatBlock format (commit 2). subagent.ts (commit
+// 2) writes v=2 going forward.
+//
+// Renumbered v34→v35→v36 across master merges: master's v34
+// (destructive_guard_columns) and v35 (auto_rls_event_trigger) landed first.
+describe('migrate v36 — subagent_provider_neutral_persistence_v0_27', () => {
+  const v36 = MIGRATIONS.find(m => m.version === 36);
+
+  test('v36 exists with the expected name', () => {
+    expect(v36).toBeDefined();
+    expect(v36!.name).toBe('subagent_provider_neutral_persistence_v0_27');
+  });
+
+  test('v36 adds schema_version + provider_id to both subagent tables', () => {
+    const sql = v36!.sql;
+    expect(sql).toContain('ALTER TABLE subagent_messages');
+    expect(sql).toContain('ALTER TABLE subagent_tool_executions');
+    // schema_version present in both tables
+    const schemaVersionMatches = sql.match(/ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1/g) || [];
+    expect(schemaVersionMatches.length).toBe(2);
+    // provider_id present in both tables
+    const providerIdMatches = sql.match(/ADD COLUMN IF NOT EXISTS provider_id TEXT/g) || [];
+    expect(providerIdMatches.length).toBe(2);
+  });
+
+  test('v36 keeps DEFAULT 1 so existing rows are taggable as legacy Anthropic shape', () => {
+    // Existing rows backfill to schema_version=1 (legacy) automatically via
+    // DEFAULT. No explicit UPDATE needed; subagent.ts read path checks the
+    // version and dispatches the right mapper.
+    expect(v36!.sql).toContain('DEFAULT 1');
+  });
+
+  test('v36 creates idx_subagent_messages_provider for cost rollups', () => {
+    expect(v36!.sql).toContain('idx_subagent_messages_provider');
+    expect(v36!.sql).toContain('subagent_messages (job_id, provider_id)');
+  });
+
+  test('v36 ALTERs are idempotent (ADD COLUMN IF NOT EXISTS)', () => {
+    const sql = v36!.sql;
+    const addColumnLines = sql.match(/ADD COLUMN[^,;]+/gi) || [];
+    expect(addColumnLines.length).toBe(4);
+    for (const line of addColumnLines) {
+      expect(line).toContain('IF NOT EXISTS');
+    }
+    // Index creation must also be idempotent.
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS');
+  });
+
+  test('PGLite fresh-install schema reflects v36 columns', async () => {
+    const { PGLITE_SCHEMA_SQL } = await import('../src/core/pglite-schema.ts');
+    expect(PGLITE_SCHEMA_SQL).toContain('schema_version      INTEGER     NOT NULL DEFAULT 1');
+    expect(PGLITE_SCHEMA_SQL).toContain('provider_id         TEXT');
+    expect(PGLITE_SCHEMA_SQL).toContain('idx_subagent_messages_provider');
+  });
+
+  test('embedded schema (src/core/schema-embedded.ts) reflects v36 columns', async () => {
+    const { SCHEMA_SQL } = await import('../src/core/schema-embedded.ts');
+    expect(SCHEMA_SQL).toContain('schema_version');
+    expect(SCHEMA_SQL).toContain('provider_id');
+    expect(SCHEMA_SQL).toContain('idx_subagent_messages_provider');
+  });
+});
+
 describe('migrate v21 — pages_source_id_composite_unique', () => {
   const v21 = MIGRATIONS.find(m => m.version === 21);
 
@@ -297,6 +467,86 @@ describe('migration v24 — rls_backfill_missing_tables', () => {
   test('uses a PGLite no-op override so local brains skip Postgres-only RLS ALTER TABLEs', () => {
     const v24 = MIGRATIONS.find(m => m.version === 24);
     expect(v24?.sqlFor?.pglite).toBe('');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// v0.26.7 — migration v35 structural guards (auto-RLS event trigger)
+// ─────────────────────────────────────────────────────────────────
+//
+// The PR review caught that the original v35 had three correctness issues:
+//   - FORCE ROW LEVEL SECURITY locked out non-BYPASSRLS table owners.
+//   - Trigger fired on Supabase-managed schemas (auth/storage/realtime/...).
+//   - EXCEPTION WHEN OTHERS would silently swallow per-table failures and
+//     replace a transactional rollback (loud) with a permissive default (quiet).
+// These tests pin the corrected shape so a future revert can't reintroduce
+// the original bugs.
+describe('migration v35 — auto_rls_event_trigger structural guards', () => {
+  test('exists with the expected name and SQL shape', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    expect(v35).toBeDefined();
+    expect(v35?.name).toBe('auto_rls_event_trigger');
+    expect((v35?.sqlFor as any)?.postgres?.length).toBeGreaterThan(0);
+  });
+
+  test('uses a PGLite no-op override (no event trigger support on PGLite)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    expect(v35?.sqlFor?.pglite).toBe('');
+  });
+
+  test('does NOT issue FORCE ROW LEVEL SECURITY (D1: ENABLE only)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).not.toMatch(/FORCE\s+ROW\s+LEVEL\s+SECURITY/i);
+    expect(sql).toMatch(/ENABLE\s+ROW\s+LEVEL\s+SECURITY/i);
+  });
+
+  test('trigger function is scoped to schema_name = public (D2)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(/schema_name\s*=\s*'public'/);
+  });
+
+  test('WHEN TAG covers CREATE TABLE, CREATE TABLE AS, and SELECT INTO (D6)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(/WHEN\s+TAG\s+IN\s*\([^)]*'CREATE TABLE'[^)]*\)/i);
+    expect(sql).toMatch(/'CREATE TABLE AS'/);
+    expect(sql).toMatch(/'SELECT INTO'/);
+  });
+
+  test('does NOT contain EXCEPTION WHEN OTHERS inside the trigger function (D5 reversed)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    // ddl_command_end fires inside the DDL transaction, so a failed ALTER
+    // aborts the offending CREATE TABLE — that's the security guarantee.
+    // Wrapping in EXCEPTION WHEN OTHERS would convert that loud rollback
+    // into a silent permissive default. Pin the absence.
+    expect(sql.toUpperCase()).not.toContain('EXCEPTION WHEN OTHERS');
+  });
+
+  test('backfill block uses %I.%I identifier quoting (codex correction)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    // The backfill iterates pg_class and ALTERs each non-exempt RLS-off public
+    // table. Mixed-case identifiers require %I quoting; raw concat would break.
+    expect(sql).toMatch(/format\(\s*'ALTER TABLE %I\.%I/);
+  });
+
+  test('backfill exemption regex matches the doctor.ts contract', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    // doctor.ts:418 EXEMPT_RE = /^GBRAIN:RLS_EXEMPT\s+reason=\S.{3,}/
+    // The plpgsql side must use the same pattern (via ~) so the two surfaces
+    // honor identical exemptions.
+    expect(sql).toMatch(/'\^GBRAIN:RLS_EXEMPT\\s\+reason=\\S\.\{3,\}'/);
+  });
+
+  test('backfill is gated on rolbypassrls (matches v24 posture)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(/rolbypassrls/);
+    expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
   });
 });
 
@@ -893,6 +1143,40 @@ describe('migration v31 — eval_capture_tables', () => {
 
   test('LATEST_VERSION caught up to 31', () => {
     expect(LATEST_VERSION).toBeGreaterThanOrEqual(31);
+  });
+});
+
+describe('migration v40 — pages_emotional_weight (v0.29)', () => {
+  // v0.29 ships off master. Master is at v39 (multimodal_dual_column_v0_27_1);
+  // v0.29 lands at v40. Idempotent ADD COLUMN IF NOT EXISTS, so brains that
+  // applied this at any prior number on a feature branch see v40 as new and
+  // run cleanly.
+  test('exists with the expected name', () => {
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    expect(v40).toBeDefined();
+    expect(v40?.name).toBe('pages_emotional_weight');
+  });
+
+  test('adds emotional_weight REAL NOT NULL DEFAULT 0.0 to pages', () => {
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    const sql = v40!.sql || '';
+    expect(sql).toContain('ALTER TABLE pages');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS emotional_weight');
+    expect(sql).toContain('REAL');
+    expect(sql).toContain('NOT NULL DEFAULT 0.0');
+  });
+
+  test('does NOT create an idx_pages_emotional_weight index (eng review D6)', () => {
+    // Salience query orders by computed score, not raw weight; the index
+    // would never be used. Adding it later requires a separate migration.
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    const sql = v40!.sql || '';
+    expect(sql).not.toContain('idx_pages_emotional_weight');
+    expect(sql).not.toContain('CREATE INDEX');
+  });
+
+  test('LATEST_VERSION caught up to 40', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(40);
   });
 });
 

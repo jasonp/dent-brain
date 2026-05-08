@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS sources (
   -- bypassing the git-HEAD up_to_date early-return so CHUNKER_VERSION bumps
   -- actually trigger re-chunking on upgrade.
   chunker_version TEXT,
+  -- v0.26.5: soft-delete + recovery window. `archive` flips archived=true and
+  -- sets archive_expires_at = now() + 72h. The autopilot purge phase
+  -- hard-deletes rows where archive_expires_at <= now(). Promoted from a
+  -- JSONB key to real columns to avoid reserved-key footguns and to make the
+  -- search visibility filter (`NOT s.archived`) a column lookup.
+  archived            BOOLEAN NOT NULL DEFAULT false,
+  archived_at         TIMESTAMPTZ,
+  archive_expires_at  TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -63,14 +71,34 @@ CREATE TABLE IF NOT EXISTS pages (
   -- v0.19.0: distinguishes markdown vs code pages at the DB level.
   -- Drives orphans filter, auto-link bypass, and `query --lang`.
   page_kind     TEXT    NOT NULL DEFAULT 'markdown'
-                CHECK (page_kind IN ('markdown','code')),
+                CHECK (page_kind IN ('markdown','code','image')),
   title         TEXT    NOT NULL,
   compiled_truth TEXT   NOT NULL DEFAULT '',
   timeline      TEXT    NOT NULL DEFAULT '',
   frontmatter   JSONB   NOT NULL DEFAULT '{}',
   content_hash  TEXT,
+  -- v0.29: deterministic 0..1 score (tag emotion + take density + Garry-as-holder ratio).
+  -- Populated by the `recompute_emotional_weight` cycle phase. Default 0.0 so freshly
+  -- imported pages don't pollute salience ranking before the cycle has run.
+  emotional_weight REAL NOT NULL DEFAULT 0.0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- v0.26.5: soft-delete + recovery window. `delete_page` sets deleted_at = now()
+  -- instead of issuing DELETE. The autopilot purge phase hard-deletes pages
+  -- where deleted_at < now() - 72h. Search and `get_page` filter
+  -- `WHERE deleted_at IS NULL` by default; `include_deleted: true` opts in.
+  deleted_at    TIMESTAMPTZ,
+  -- v0.29.1: salience-and-recency, additive opt-in. All NULL by default;
+  -- only consulted when a caller passes `salience='on'` / `recency='on'` or
+  -- the new `since`/`until` filter. effective_date_source is a sentinel for
+  -- the doctor's effective_date_health check (values: 'event_date' | 'date'
+  -- | 'published' | 'filename' | 'fallback'). salience_touched_at is bumped
+  -- by recompute_emotional_weight when emotional_weight changes so the
+  -- salience window picks up newly-salient old pages.
+  effective_date        TIMESTAMPTZ,
+  effective_date_source TEXT,
+  import_filename       TEXT,
+  salience_touched_at   TIMESTAMPTZ,
   CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
 );
 
@@ -81,6 +109,19 @@ CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops)
 CREATE INDEX IF NOT EXISTS idx_pages_updated_at_desc ON pages (updated_at DESC);
 -- v0.18.0: source-scoped scans (per /plan-eng-review Section 4).
 CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
+-- v0.26.5: partial index supports the autopilot purge sweep
+-- (`WHERE deleted_at IS NOT NULL AND deleted_at < now() - INTERVAL '72 hours'`).
+-- Search filters (`WHERE deleted_at IS NULL`) do not benefit from this index
+-- (predicate doesn't match) and don't need their own — soft-deleted cardinality
+-- stays low. Don't add a regular `(deleted_at)` index without measuring.
+CREATE INDEX IF NOT EXISTS pages_deleted_at_purge_idx
+  ON pages (deleted_at) WHERE deleted_at IS NOT NULL;
+-- v0.29.1: expression index used by since/until date-range filters that read
+-- COALESCE(effective_date, updated_at). A partial index on effective_date
+-- alone would NOT help — the planner can't use it for the negative side of
+-- the COALESCE. Expression index is what actually accelerates the filter.
+CREATE INDEX IF NOT EXISTS pages_coalesce_date_idx
+  ON pages ((COALESCE(effective_date, updated_at)));
 
 -- ============================================================
 -- content_chunks: chunked content with embeddings
@@ -108,7 +149,13 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   parent_symbol_path    TEXT[],
   doc_comment           TEXT,
   symbol_name_qualified TEXT,
-  search_vector         TSVECTOR
+  search_vector         TSVECTOR,
+  -- v0.27.1 multimodal. modality discriminates text vs image rows for search
+  -- filtering. embedding_image holds 1024-dim Voyage multimodal vectors;
+  -- mixed-provider brains (e.g. OpenAI 1536 text + Voyage 1024 images) keep
+  -- both columns populated with distinct dim spaces.
+  modality              TEXT NOT NULL DEFAULT 'text',
+  embedding_image       vector(1024)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
@@ -117,6 +164,11 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (em
 -- v0.19.0: partial indexes — only code chunks populate these columns.
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON content_chunks(symbol_name) WHERE symbol_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON content_chunks(language) WHERE language IS NOT NULL;
+-- v0.27.1: partial HNSW for multimodal images. Footprint stays proportional
+-- to image-chunk count, not table size.
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_image
+  ON content_chunks USING hnsw (embedding_image vector_cosine_ops)
+  WHERE embedding_image IS NOT NULL;
 -- v0.20.0 Cathedral II: GIN index on the new chunk-grain FTS vector.
 CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON content_chunks USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_qualified
@@ -340,13 +392,64 @@ CREATE INDEX IF NOT EXISTS idx_access_tokens_hash ON access_tokens (token_hash) 
 -- mcp_request_log: usage logging for remote MCP requests
 -- ============================================================
 CREATE TABLE IF NOT EXISTS mcp_request_log (
-  id         SERIAL PRIMARY KEY,
-  token_name TEXT,
-  operation  TEXT NOT NULL,
-  latency_ms INTEGER,
-  status     TEXT NOT NULL DEFAULT 'success',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id            SERIAL PRIMARY KEY,
+  token_name    TEXT,
+  agent_name    TEXT,
+  operation     TEXT NOT NULL,
+  latency_ms    INTEGER,
+  status        TEXT NOT NULL DEFAULT 'success',
+  params        JSONB,
+  error_message TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================
+-- OAuth 2.1: clients, tokens, authorization codes
+-- ============================================================
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id               TEXT PRIMARY KEY,
+  client_secret_hash      TEXT,
+  client_name             TEXT NOT NULL,
+  redirect_uris           TEXT[],
+  grant_types             TEXT[] DEFAULT '{"client_credentials"}',
+  scope                   TEXT,
+  token_endpoint_auth_method TEXT,
+  client_id_issued_at     BIGINT,
+  client_secret_expires_at BIGINT,
+  token_ttl               INTEGER,
+  deleted_at              TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash   TEXT PRIMARY KEY,
+  token_type   TEXT NOT NULL,
+  client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes       TEXT[],
+  expires_at   BIGINT,
+  resource     TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash              TEXT PRIMARY KEY,
+  client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes                 TEXT[],
+  code_challenge         TEXT NOT NULL,
+  code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
+  redirect_uri           TEXT NOT NULL,
+  state                  TEXT,
+  resource               TEXT,
+  expires_at             BIGINT NOT NULL,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Composite indexes for admin dashboard request log queries
+CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_log_agent_time ON mcp_request_log(agent_name, created_at DESC);
 
 -- ============================================================
 -- files: binary attachments stored in Supabase Storage
@@ -547,7 +650,13 @@ CREATE TABLE IF NOT EXISTS subagent_messages (
   job_id              BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
   message_idx         INTEGER     NOT NULL,
   role                TEXT        NOT NULL,
+  -- v0.27+ stores provider-neutral ChatBlock[] when schema_version=2; legacy
+  -- Anthropic-shape blocks when schema_version=1 (pre-v0.27 jobs replay).
   content_blocks      JSONB       NOT NULL,
+  schema_version      INTEGER     NOT NULL DEFAULT 1,
+  -- Recipe id of the provider that produced this turn (e.g. 'anthropic',
+  -- 'openai', 'deepseek'). NULL on legacy v1 rows; set on v2.
+  provider_id         TEXT,
   tokens_in           INTEGER,
   tokens_out          INTEGER,
   tokens_cache_read   INTEGER,
@@ -558,22 +667,25 @@ CREATE TABLE IF NOT EXISTS subagent_messages (
   CONSTRAINT chk_subagent_messages_role CHECK (role IN ('user','assistant'))
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_messages_job ON subagent_messages (job_id, message_idx);
+CREATE INDEX IF NOT EXISTS idx_subagent_messages_provider ON subagent_messages (job_id, provider_id);
 
 -- Two-phase tool execution ledger. Before tool call: INSERT status='pending'.
 -- After success: UPDATE to 'complete' + output. On failure: 'failed' + error.
 -- Replay re-runs 'pending' rows only if the tool is idempotent.
 CREATE TABLE IF NOT EXISTS subagent_tool_executions (
-  id           BIGSERIAL PRIMARY KEY,
-  job_id       BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
-  message_idx  INTEGER     NOT NULL,
-  tool_use_id  TEXT        NOT NULL,
-  tool_name    TEXT        NOT NULL,
-  input        JSONB       NOT NULL,
-  status       TEXT        NOT NULL,
-  output       JSONB,
-  error        TEXT,
-  started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  ended_at     TIMESTAMPTZ,
+  id              BIGSERIAL PRIMARY KEY,
+  job_id          BIGINT      NOT NULL REFERENCES minion_jobs(id) ON DELETE CASCADE,
+  message_idx     INTEGER     NOT NULL,
+  tool_use_id     TEXT        NOT NULL,
+  tool_name       TEXT        NOT NULL,
+  input           JSONB       NOT NULL,
+  status          TEXT        NOT NULL,
+  output          JSONB,
+  error           TEXT,
+  schema_version  INTEGER     NOT NULL DEFAULT 1,
+  provider_id     TEXT,
+  started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at        TIMESTAMPTZ,
   CONSTRAINT uniq_subagent_tools_use_id UNIQUE (job_id, tool_use_id),
   CONSTRAINT chk_subagent_tools_status CHECK (status IN ('pending','complete','failed'))
 );
@@ -651,7 +763,16 @@ CREATE TABLE IF NOT EXISTS eval_candidates (
   remote                BOOLEAN      NOT NULL,
   job_id                INTEGER,
   subagent_id           INTEGER,
-  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  -- v0.29.1 — agent-explicit recency + salience capture for replay reproducibility.
+  -- All nullable + additive. NDJSON schema_version stays at 1; consumers ignore unknown fields.
+  as_of_ts              TIMESTAMPTZ,
+  salience_param        TEXT,
+  recency_param         TEXT,
+  salience_resolved     TEXT,
+  recency_resolved      TEXT,
+  salience_source       TEXT,
+  recency_source        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_candidates_created_at ON eval_candidates(created_at DESC);
 
@@ -714,6 +835,10 @@ BEGIN
     ALTER TABLE dream_verdicts ENABLE ROW LEVEL SECURITY;
     ALTER TABLE eval_candidates ENABLE ROW LEVEL SECURITY;
     ALTER TABLE eval_capture_failures ENABLE ROW LEVEL SECURITY;
+    -- v0.26 OAuth 2.1 tables
+    ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY;
     RAISE NOTICE 'RLS enabled on all tables (role % has BYPASSRLS)', current_user;
   ELSE
     RAISE WARNING 'Skipping RLS: role % does not have BYPASSRLS privilege. Run as postgres role to enable.', current_user;

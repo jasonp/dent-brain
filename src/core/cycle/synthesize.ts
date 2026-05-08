@@ -243,6 +243,10 @@ export async function runPhaseSynthesize(
       transcripts_discovered: transcripts.length,
       transcripts_processed: worthProcessing.length,
       pages_written: writtenSlugs.length,
+      // v0.29: emit the slug list so the recompute_emotional_weight phase can
+      // union with sync's pagesAffected and recompute weights for every page
+      // synthesize wrote in this cycle.
+      written_slugs: writtenSlugs,
       reverse_write_count: reverseWriteCount,
       child_outcomes: childOutcomes,
       summary_slug: summarySlug,
@@ -273,8 +277,18 @@ async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig> {
   const meetingTranscriptsDir = await engine.getConfig('dream.synthesize.meeting_transcripts_dir');
   const minCharsStr = await engine.getConfig('dream.synthesize.min_chars');
   const excludeStr = await engine.getConfig('dream.synthesize.exclude_patterns');
-  const model = (await engine.getConfig('dream.synthesize.model')) || 'claude-sonnet-4-6';
-  const verdictModel = (await engine.getConfig('dream.synthesize.verdict_model')) || 'claude-haiku-4-5-20251001';
+  // v0.28: resolveModel() unifies CLI flag > new key > deprecated key > models.default > env > fallback
+  const { resolveModel } = await import('../model-config.ts');
+  const model = await resolveModel(engine, {
+    configKey: 'models.dream.synthesize',
+    deprecatedConfigKey: 'dream.synthesize.model',
+    fallback: 'sonnet',
+  });
+  const verdictModel = await resolveModel(engine, {
+    configKey: 'models.dream.synthesize_verdict',
+    deprecatedConfigKey: 'dream.synthesize.verdict_model',
+    fallback: 'haiku',
+  });
   const cooldownHoursStr = await engine.getConfig('dream.synthesize.cooldown_hours');
 
   let excludePatterns: string[] = ['medical', 'therapy'];
