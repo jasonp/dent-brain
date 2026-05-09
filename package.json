@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.35.0",
+  "version": "0.36.1",
   "description": "Postgres-native organizational knowledge brain. Open-source distribution of the substrate that powers Dent Brain. Forked from gbrain (github.com/garrytan/gbrain); the npm package identity tracks upstream (`name: gbrain`) for upstream-test compatibility, while the CLI binary is `dbrain` (with a `gbrain` alias) so personal and organizational installs can coexist on the same machine.",
   "type": "module",
   "main": "src/core/index.ts",
@@ -84,6 +84,7 @@
     "@dqbd/tiktoken": "^1.0.22",
     "@electric-sql/pglite": "0.4.3",
     "@jsquash/avif": "^2.1.1",
+    "@jsquash/png": "^3.1.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
@@ -95,6 +96,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
     "gray-matter": "^4.0.3",
+    "heic-decode": "^2.1.0",
     "marked": "^18.0.0",
     "openai": "^4.0.0",
     "pgvector": "^0.2.0",

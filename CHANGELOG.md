@@ -2,6 +2,103 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.36.1] - 2026-05-08
+
+## **Two production fires fixed: zombie-fork PID exhaustion and granola-sync's transcript SLUG_MISMATCH loop. Plus the transcripts move to their proper `meetings/transcripts/` namespace.**
+
+Two unrelated production issues surfaced in the same hour and got fixed in the same patch.
+
+**The zombie-fork bug.** Production v0.34.2 (which forked off upstream gbrain at v0.25.0) predates upstream's v0.28.1 zombie-reap fix. Every git/ssh/rev-list subprocess spawned by markdown-writer, regfox-ingestor, and granola-sync became a zombie on exit; the Railway container's pids cgroup eventually filled up. Symptom: every `markdown_append_to_page` returned generic "Internal error" because `git pull --ff-only` couldn't `fork(2)`. Other ops (`put_page`, `markdown_replace_page`) kept working because they fork fewer subprocesses per call. Logs were full of `cannot fork() ... Resource temporarily unavailable` and `fatal: unable to create threaded lstat`. Fix: `installSigchldHandler()` is now wired in `src/dent/serve.ts` (production entry point), mirroring `src/cli.ts`. Plus `tini` is the container PID 1 (Dockerfile `ENTRYPOINT ["/sbin/tini", "--"]`) — belt-and-suspenders for native-addon spawns the JS reaper can't see.
+
+**The granola-sync SLUG_MISMATCH loop.** `tools/granola-sync/translator.ts` was generating transcript slugs as `${meetingSlug}--transcript` (double-dash). gbrain's `slugifySegment` collapses consecutive hyphens, so the path-derived slug single-dashed while the frontmatter declared the double-dashed form — `SLUG_MISMATCH` on every periodic git → DB sync, blocking the whole import for all transcript files. Three pages were stuck (May 5–6 meetings); every new granola meeting with a transcript would have added more. Fix: transcripts now generate under a dedicated `meetings/transcripts/<date>-<title>` sub-namespace, which (a) matches gbrain's slugification rules, and (b) coincides with the `meetings/transcripts/` entry already in `gbrain.yml`'s `db_only` storage tier — transcripts stop bloating dent-brain-data's git history going forward. The 3 stuck files were migrated in dent-brain-data with a companion commit (sibling meeting pages updated to point at the new slugs).
+
+### What this means for you
+
+Production stops accumulating zombies. Append works reliably under load. Sync stops re-failing the 3 transcript pages, which means the per-300s background sync will start re-importing dent-brain-data updates cleanly again — your morning briefings will reflect the previous day's writes. Future granola meetings with transcripts route into `meetings/transcripts/<date>-<title>.md` automatically; the existing `db_only` storage tier means those files stay out of git history.
+
+### To take advantage of v0.36.1
+
+1. **Redeploy to Railway** to ship the zombie-reap + tini fix. Same redeploy as v0.36.0, just with one more commit in it. The container restart we did during diagnosis is temporary relief — the v0.34.2 image still has the leak, just zombies are at zero right now. Without v0.36.1 deployed, you'll hit the same wall in hours-to-days.
+2. **Refresh granola-sync on every teammate's laptop** (re-run `/dent-extensions install granola-sync`). The new transcript-slug shape is in `tools/granola-sync/translator.ts`; teammates running the old code will keep generating `--transcript` files and re-introducing the SLUG_MISMATCH bug locally — except now the data migration in dent-brain-data has moved everyone's transcripts to the new namespace, so any old-shape file from a stale daemon would land in `meetings/` rather than `meetings/transcripts/` and resync-fail again.
+
+### Itemized changes
+
+- `src/dent/serve.ts` — imports + invokes `installSigchldHandler()` at module load. Was only wired in `src/cli.ts`; production runs `serve.ts` directly via Dockerfile CMD, so the reaper was effectively absent in the deployed binary.
+- `Dockerfile` — `RUN apk add ... tini` and `ENTRYPOINT ["/sbin/tini", "--"]`. Tini reaps anything the JS handler can't reach (native addons, intermediate sh subshells).
+- `tools/granola-sync/translator.ts` — transcript slug shape: `meetings/transcripts/${isoDate}-${titleSlug}` (was `${meetingSlug}--transcript`). Inline comment documents the slug-collapse interaction.
+- `tools/granola-sync/README.md` — updated transcript-page path doc to match new namespace.
+- Companion commit in `dent-brain-data`: `meetings/X--transcript.md` → `meetings/transcripts/X.md` for the 3 stuck pages, frontmatter slugs updated, sibling meeting pages' `Diarized transcript: \`...\`` references updated. Pushed as `f4f16ed`.
+
+## [0.36.0] - 2026-05-08
+
+## **Email → Dent Brain. Layer 1 ships every-6h on each teammate's laptop, Layer 2 fires nightly under their Claude subscription, FileMaker fallback intact end-to-end.**
+
+The email pipeline goes live. Gmail messages where your configured `workEmail` is on either side flow into the brain on a 6-hour cadence: Layer 1 is a launchd-fired Bun collector (no LLM) that pulls via direct Google OAuth, applies a noise filter that catches the obvious marketing patterns (`e.<brand>.com`, `email.<brand>.com`, `mailchimp.com`, `sendgrid.net`, `luma-mail.com`, social-platform digests), classifies signature requests, and writes one daily digest page to `inbox/<email-slug>/<date>` via dent-brain MCP. Email bodies never enter an LLM context here — that's the whole point of the layer.
+
+Layer 2 is a Claude Code Desktop scheduled task that fires daily at 3am on each teammate's laptop, under their own Claude subscription. Reads digests, walks each Triage entry, resolves the other party (brain query → FileMaker fallback via FM MCP), appends a timeline bullet to the right entity page with `[Source: gmail/<id>]` idempotency markers, stamps the digest processed. FM is intact because Desktop scheduled tasks inherit the teammate's full MCP set; no agent-token hunting, no API key on the laptop, no prod DATABASE_URL exposure.
+
+The architectural journey here was the work. We started with a ClawVisor-via-MCP path that required teammates to dig agent tokens out of a third-party dashboard — hostile UX. Pivoted to direct Google OAuth via a shared "Dent Brain" Google Cloud OAuth app (test mode, manual whitelist), so the teammate-side install is one browser tab and one "this app isn't verified → Allow." Layer 2 went through three iterations — gstack `/schedule` (vetoed: cloud-only, no FM), native `gbrain agent run` (blocked: needs prod DATABASE_URL on the laptop), Bun script with deterministic-only logic (rejected: drops the LLM-judgment step the gbrain recipe explicitly calls for) — before landing on Claude Code Desktop scheduled tasks, which solve every constraint simultaneously.
+
+The README also got a long-overdue rewrite. The top-level README.md has been pure upstream gbrain copy since the fork; it's now dent-focused, explaining what's added on top (per-teammate ingestors, cron enrichers, domain skills, server-side enhancements), the teammate onboarding flow, the architecture, the repo layout delta. Upstream gbrain README preserved at `README.gbrain.md` for the substrate documentation. Establishes the iron rule: dent-brain stays compatible with the latest gbrain, always.
+
+### What this means for you
+
+Every teammate who runs `/dent-extensions install email-sync` and registers the 3am Routine gets their work-email correspondence flowing into entity timelines automatically. Each teammate authorizes their own Gmail; nobody else's tokens ever leave their laptop. Daily digests act as the queue between the deterministic collector and the LLM enricher — and since digests stay in the brain (not git), there's no commit-spam from machine-generated content.
+
+When you open Claude Code in the morning and run `/dent-tell-me-about <person>`, the timeline now reflects yesterday's email correspondence in addition to meetings + registrations + the rest of the brain. New senders that resolve cleanly against FM auto-stub their entity page. Ambiguous ones land in `inbox/unresolved/<date>` for a manual sweep with full FM access.
+
+### To take advantage of v0.36.0
+
+Three things, in order:
+
+1. **Set up the Google Cloud OAuth app once** (admin only): create a project, enable Gmail + Calendar APIs, configure the OAuth consent screen as External in test mode, add scopes (`gmail.readonly`, `calendar.readonly`, `contacts.readonly`), add each teammate's Gmail as a Test User, create an OAuth Client ID of type **Desktop app**. Save the Client ID + Client Secret somewhere local — they'll be passed to install.sh per-teammate.
+2. **Each teammate runs the install** (or `/dent-extensions install email-sync` once that path is wired): `DENT_GOOGLE_CLIENT_ID=... DENT_GOOGLE_CLIENT_SECRET=... DENT_EMAIL_WORK_EMAIL=... bash tools/email-sync/install.sh`. The installer handles the OAuth dance, drops the launchd plist, and copies the Layer-2 skill body to `~/.dent-brain/skills/process-inbox.md`.
+3. **Each teammate registers the Layer-2 Routine** in any Claude Code Desktop session: *"Create a daily scheduled task at 3am called dent-process-inbox with these instructions: 'Read `~/.dent-brain/skills/process-inbox.md` and follow the instructions exactly.'"* Then **Run now** once to smoke-test against any unprocessed digests.
+
+Existing granola-sync and regfox-ingestor keep working unchanged.
+
+### Itemized changes
+
+- `tools/email-sync/google-client.ts` — direct Gmail API client, self-refreshing access tokens (60s pre-expiry buffer), `users.me/profile` health probe, `users/me/messages` list + get with metadata-only fetches, `header()` / `parseAddress()` / `parseAddressList()` helpers.
+- `tools/email-sync/oauth-flow.ts` — one-time interactive OAuth dance. Loopback HTTP server on a random free port, `prompt=consent` to force `refresh_token` issuance even on re-runs, structured success / error HTML for the browser tab. CLI entry point fired by `install.sh`.
+- `tools/email-sync/collect.ts` — orchestration. `workEmail`-strict scope (Gmail query + belt-and-suspenders re-check), Gmail health probe matches OAuth-issued email against configured `workEmail` (mismatch aborts before any writes). `markdown_replace_page` swapped for `put_page` because inbox digests are transient (db-only) and shouldn't bloat the data git repo.
+- `tools/email-sync/noise-filter.ts` — extended with marketing-subdomain regex (`@(e|em|email|mail|news|notify|notifications|updates|marketing|promo|promos|broadcast)\.<brand>\.<tld>`) + email-service apex denylist (mailchimp, sendgrid, mailgun, amazonses, klaviyo, customer.io, loops.so, convertkit, substack, luma-mail.com, meetup, eventbrite, social-platform digests). Unit-tested 15/15 against real-data smoke run; zero false positives on real correspondence.
+- `tools/email-sync/install.sh` — env-vars / prompts pattern preserved from granola-sync. Probes existing tokens before re-doing the OAuth dance (skip if valid + match `workEmail`). Final Gmail probe matches the OAuth-issued profile against `workEmail` and aborts (deleting tokens) on mismatch. Copies `process-inbox` skill body to `~/.dent-brain/skills/` (intentionally outside `~/.claude/scheduled-tasks/` — Claude Desktop's owned namespace, would collide with the Routines tool's own writes).
+- `skills/dent/process-inbox/SKILL.md` — Layer 2 enricher. **Iron rule** at top of "Per-digest processing": process strictly serially, no parallel writes (added after a smoke-test Run-now hit the brain's 30/min `markdown_append_to_page` rate limit and aborted mid-flight with no persisted writes). FM fallback path intact (the A5 escalation rule from `/dent-append-evidence`). Per-run cap at 50 digests for cost control.
+- `tools/extensions/registry.ts` — `email-sync` entry registered. Description rewritten to reflect direct-OAuth + Desktop-scheduled-task architecture.
+- `README.md` — replaced upstream gbrain copy with dent-focused intro. What's added on top of gbrain (4 categories), teammate onboarding flow, architecture diagram, repo layout delta. Old README preserved at `README.gbrain.md`.
+- `.gitignore` — belt-and-suspenders patterns for OAuth credentials: `client_secret*.json`, `*.apps.googleusercontent.com.json`, `google-tokens*.json`. `_reference/` already ignored.
+
+## [0.35.0] - 2026-05-08
+
+## **Sync from upstream gbrain v0.30.0. Admin dashboard + salience + multimodal + calibration. Backfill the substrate, get back to feature work.**
+
+The fork had drifted 25 commits behind upstream over 7 days — a real problem because dent-brain's stated principle is "always compatible with the latest gbrain." This release closes the gap and brings in v0.26.0 → v0.30.0 of the substrate: OAuth 2.1 admin dashboard at `localhost:3131/admin`, MCP keys, RFC 6749 hardening, RCE close on shell-job submission, scope-aware operations, auto-RLS event trigger, destructive-guard, soft-delete recovery window, pluggable embedding providers via Vercel AI SDK, image-similarity search, Voyage multimodal embeddings, takes + think + unified model config, LongMemEval benchmark harness, salience + anomaly detection, thin-client mode, calibration scorecards.
+
+The merge itself was lower-conflict than expected — our 78 commits ahead were almost entirely additive (per-teammate ingestors, dent skills, plugin marketplace work) in directories upstream doesn't touch. Real conflicts only in shared bookkeeping files: `CHANGELOG.md`, `CLAUDE.md`, `VERSION`, `package.json`, `bun.lock`, `llms-full.txt`, `src/cli.ts` (CLI_ONLY command set merged as union), `src/core/operations.ts` (combined `get_page` description, switched to upstream's `QUERY_DESCRIPTION` constant). 4838 / 5301 unit tests pass post-merge; 13 failures broken down: 3 fixed in-flight (build-llms regen, dream-cycle 8→10 phase update), 8 dent ingestor tests pass in isolation but fail under upstream's new parallel runner (test pollution, not real bugs), 2 are env-dependent.
+
+### What this means for you
+
+The admin dashboard is the visible win. `gbrain serve --http --port 3131` now starts a production-grade OAuth 2.1 server with an embedded React admin panel at `/admin` — register OAuth clients (Perplexity, ChatGPT, Cowork, your own scripts), issue scoped tokens (`read` / `write` / `admin`), watch the request log. Every major AI client connects, every request is scoped, every action is logged. Teammate onboarding can eventually drop the manual "admin generates a bearer token, pastes into Slack" step in favor of teammate self-service.
+
+Salience + anomaly detection mean the brain can surface what's hot without you asking — `get_recent_salience`, `find_anomalies`, `get_recent_transcripts` all available now via MCP and CLI. The embedding pipeline is provider-agnostic (Voyage, OpenAI, Google, Anthropic, etc.); image-similarity search works via `query --image <path>`.
+
+### To take advantage of v0.35.0
+
+1. **Redeploy the dent-brain server on Railway** to pick up the new MCP server with the admin dashboard route. From this repo: `railway up --detach`. Once deployed, the dashboard will be live at `https://dent-brain.dentthefuture.com/admin`. Bootstrap token printed on first start of the new server — paste into the login screen, register agents, scope their tokens.
+2. **Apply DB migrations**: `railway run dbrain apply-migrations --yes` once the server is up, to add the OAuth tables (`oauth_clients`, `oauth_authorization_codes`, etc.) plus the salience / anomaly columns. The deploy automatically runs `dbrain doctor --json` on first boot which initializes the schema; this is just a belt-and-suspenders for any DB that came up partial.
+3. **No teammate-side action needed.** Existing bearer tokens keep working (legacy `access_tokens` table is still honored alongside the new OAuth tables).
+
+### Itemized changes
+
+- Upstream merge: v0.26.0 OAuth 2.1 + admin dashboard + HTTP server (`admin/`, `src/commands/serve-http.ts`, `src/core/oauth-provider.ts`); v0.26.x OAuth hardening, RCE close, auto-RLS, destructive-guard, soft-delete; v0.27 pluggable embedding providers + Voyage multimodal; v0.28 takes/think/LongMemEval/zombie-reap; v0.29 salience/anomaly + thin-client mode; v0.30 calibration scorecards.
+- `package.json` — version 0.35.0, deps merged (added `@jsquash/avif`, `@jsquash/png`, `heic-decode`, `ai`, `cookie-parser`, `cors`, `eventsource-parser`, `exifr`, `express`, `express-rate-limit`, kept dent's `@supabase/ssr` + `@supabase/supabase-js`). Test pipeline adopts upstream's `verify` + `run-unit-parallel.sh` shape; `sync:upstream` script kept; `dbrain` binary name kept.
+- `src/cli.ts` — `CLI_ONLY` set merged (upstream's salience/anomalies/takes/think/transcripts/remote/etc + dent's `ingest`); both `ingest --dry-run` and upstream's `eval cross-modal` / `eval longmemeval` no-DB fast-paths preserved.
+- `src/core/operations.ts` — combined `get_page` description (token-economy + soft-delete recovery); `query` switched to the upstream `QUERY_DESCRIPTION` constant from `operations-descriptions.ts` (includes salience/anomaly routing guidance).
+- `CLAUDE.md` — kept dent-specific sections (privacy rule, community PR wave, fork notes); pulled in upstream's expanded Key Files index, version locations table, build/test/E2E lifecycle docs.
+- `test/e2e/dream-cycle-eight-phase-pglite.test.ts` — updated to expect the v0.26.5 + v0.29 10-phase order (`recompute_emotional_weight` + `purge` added).
+- `llms-full.txt` — regenerated against the merged docs.
+
 ## [0.34.2] - 2026-05-06
 
 ## **Granola sync now reads more meetings, files them smarter, and links every named person to their entity page automatically.**
