@@ -26,6 +26,17 @@
  *   GBRAIN_HTTP_TRUST_PROXY    Set to '1' to honor X-Forwarded-For
  */
 
+// SIGCHLD reaper: must run at module load, before anything spawns children.
+// Without this, every git / ssh / rev-list subprocess (markdown-writer,
+// regfox-ingestor, granola-sync) becomes a zombie when it exits, and the
+// container eventually hits RLIMIT_NPROC / pids-cgroup exhaustion. The
+// classic symptom is `cannot fork() ... Resource temporarily unavailable`
+// in markdown_append_to_page failures. Production v0.34.2 forked off
+// upstream gbrain at v0.25.0 — predates the v0.28.1 reap fix — and `cli.ts`
+// is the only entry point that called installSigchldHandler() until v0.36.
+import { installSigchldHandler } from '../core/zombie-reap.ts';
+installSigchldHandler();
+
 import { createHash } from 'node:crypto';
 import { PostgresEngine } from '../core/postgres-engine.ts';
 import { operations, type Operation, OperationError, type OperationContext } from '../core/operations.ts';

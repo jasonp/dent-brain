@@ -21,7 +21,11 @@ ENV NODE_ENV=production
 # git+SSH using the deploy key in DENT_BRAIN_DATA_DEPLOY_KEY. The bun
 # alpine base ships neither tool. ca-certificates is required so SSH
 # verifies github.com on first contact (StrictHostKeyChecking=accept-new).
-RUN apk add --no-cache git openssh-client ca-certificates
+# tini is PID 1 — reaps any zombies our SIGCHLD handler can't reach
+# (e.g. native-addon child processes). Belt-and-suspenders against
+# the v0.34.2 RLIMIT_NPROC exhaustion bug: serve.ts now installs a
+# Node-side SIGCHLD reaper, AND tini reaps anything that escapes it.
+RUN apk add --no-cache git openssh-client ca-certificates tini
 
 # Copy installed deps
 COPY --from=deps /app/node_modules ./node_modules
@@ -36,6 +40,10 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null http://localhost:${PORT:-3000}/health || exit 1
 
-# Run the HTTP MCP server directly via Bun. sh wrapper interpolates $PORT
-# from Railway, falling back to 3000 for local `docker run`.
+# Run the HTTP MCP server through tini as PID 1. tini forwards signals
+# to bun and reaps any orphaned children (git/ssh/rev-list subprocesses
+# our SIGCHLD handler in serve.ts already covers, but belt-and-suspenders
+# against native-addon spawns the JS reaper can't see). sh wrapper
+# interpolates $PORT from Railway, falling back to 3000 for local `docker run`.
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["sh", "-c", "bun run src/dent/serve.ts --port ${PORT:-3000}"]
