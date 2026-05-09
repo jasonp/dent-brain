@@ -49,6 +49,13 @@ import { markdownWriteOperations } from './operations/markdown-write.ts';
 import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
 import { startScheduledPull, DEFAULT_PULL_INTERVAL_SECONDS, type ScheduledPullHandle } from './markdown-writer/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
+import {
+  startNightlyMaintenance,
+  DEFAULT_NIGHTLY_HOUR_UTC,
+  DEFAULT_NIGHTLY_PHASES,
+  type NightlyMaintenanceHandle,
+} from './nightly-maintenance.ts';
+import type { CyclePhase } from '../core/cycle.ts';
 import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
 import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
 
@@ -194,6 +201,32 @@ if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_
   }
 } else if (!process.env.DENT_BRAIN_REGFOX_API_KEY) {
   console.error('[dent-brain] regfox-ingestor: not started (DENT_BRAIN_REGFOX_API_KEY unset)');
+}
+
+// Nightly brain maintenance — embed --stale + extract links + backlinks.
+// Once per UTC day. Requires the data repo (uses brain-dir for the
+// extract phase's filesystem walk fallback). Never starts if the data
+// repo isn't wired — there's no useful maintenance to do without it.
+let nightlyCron: NightlyMaintenanceHandle | null = null;
+if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
+  const hourUtcRaw = process.env.DENT_BRAIN_NIGHTLY_HOUR_UTC;
+  const hourUtc = hourUtcRaw !== undefined ? Number.parseInt(hourUtcRaw, 10) : DEFAULT_NIGHTLY_HOUR_UTC;
+  if (Number.isFinite(hourUtc) && hourUtc >= 0 && hourUtc <= 23) {
+    const phasesRaw = (process.env.DENT_BRAIN_NIGHTLY_PHASES ?? '').trim();
+    const phases: CyclePhase[] = phasesRaw
+      ? (phasesRaw.split(',').map((s) => s.trim()).filter(Boolean) as CyclePhase[])
+      : DEFAULT_NIGHTLY_PHASES;
+    nightlyCron = startNightlyMaintenance(engine, {
+      brainDir: '/app/dent-brain-data',
+      hourUtc,
+      phases,
+    });
+    console.error(
+      `[dent-brain] nightly-maintenance: fires daily at ${String(hourUtc).padStart(2, '0')}:00 UTC, phases=${phases.join(',')}`,
+    );
+  } else {
+    console.error('[dent-brain] nightly-maintenance: disabled (DENT_BRAIN_NIGHTLY_HOUR_UTC out of range)');
+  }
 }
 
 const limiters = buildDefaultLimiters();
@@ -529,6 +562,7 @@ const shutdown = async (signal: string) => {
   try {
     if (scheduledPull) scheduledPull.stop();
     if (regfoxCron) regfoxCron.stop();
+    if (nightlyCron) nightlyCron.stop();
     server.stop(false);
     await engine.disconnect();
     console.error('[dent-brain] shutdown complete');

@@ -2,6 +2,32 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.36.2] - 2026-05-09
+
+## **Nightly brain maintenance — embed --stale + extract links + backlinks fire automatically every UTC day, server-side, no laptops involved.**
+
+After today's manual `embed --stale` + `extract links` runs (6,747 chunks embedded, 373 links created), the obvious next step was to never have to do that by hand again. v0.36.2 wires a fourth internal cron into `src/dent/serve.ts` — sibling of the existing scheduled-pull and regfox-ingestor loops — that runs `runCycle` with the deterministic phases (`backlinks`, `extract`, `embed`) once per UTC day. Lives in the same Railway container, so every teammate's laptop being off doesn't matter; deduplication via `engine.getConfig('dent_nightly_last_run')` so a container restart between scheduled fires can't double-trigger.
+
+What's deliberately NOT in the nightly cycle: `synthesize`, `patterns`, `recompute_emotional_weight` are all LLM-driven (real $$$ per pass, deserve their own decision); `purge` is destructive (hard-deletes soft-deleted pages past 72h, fine to add later); `sync` already fires every 5 minutes via `markdown-writer/cron.ts`; `lint` is a pre-commit concern, not a cron one.
+
+### What this means for you
+
+Tomorrow at 09:00 UTC (02:00 Pacific) the brain will silently maintain itself: any chunks that drifted stale because their parent page was edited get re-embedded; the typed-link graph picks up new entity references introduced by the day's writes; backlinks recompute. Health metrics that drifted today (link_density_score: 0 → 2 → ?) keep climbing organically as more granola/email/regfox writes accumulate. No teammate has to remember to fire anything.
+
+### To take advantage of v0.36.2
+
+Just deploy. The cron starts itself on container boot once the new image is live. Defaults are fine for production:
+- `DENT_BRAIN_NIGHTLY_HOUR_UTC=9` (i.e. 02:00 PT). Override if you'd rather the run land at a different time-of-day.
+- `DENT_BRAIN_NIGHTLY_PHASES=backlinks,extract,embed`. Override only if you want to add `purge` or remove a phase. Don't add LLM-driven phases (`synthesize`, `patterns`, `recompute_emotional_weight`) without budget signoff — those phases each call subagents per page and can run multi-dollar.
+
+Look for a `[dent-brain] nightly-maintenance: firing for 2026-05-10 (phases=backlinks,extract,embed)` line in Railway logs ~24h after deploy to confirm the first scheduled fire.
+
+### Itemized changes
+
+- `src/dent/nightly-maintenance.ts` (new) — `startNightlyMaintenance(engine, opts)` returns a `{ stop }` handle. Tick checks every 60s; gates on `now.getUTCHours() >= hourUtc` AND `lastRunConfig` not on today's UTC date. `nightlyTick` is exported for tests, returns one of `'fired' | 'too_early' | 'already_today' | 'failed'`. Marks the slot taken via `setConfig` BEFORE invoking `runCycle` so a multi-tick race during the run itself can't double-fire (advisory-lock inside `runCycle` is the second line of defense). On `runCycle` exception, logs and returns `'failed'` — does NOT roll back the last-run mark, because hot-looping on a persistent failure is worse than skipping a day.
+- `src/dent/serve.ts` — imports the new module, instantiates after the regfox-ingestor block (gated on `DENT_BRAIN_DATA_DEPLOY_KEY` being set), wires `nightlyCron.stop()` into the SIGTERM/SIGINT shutdown path. Env-var overrides for hour-of-day + phase list.
+- `test/dent/nightly-maintenance.test.ts` (new) — 3 unit tests for the gating logic (too-early, already-today-skip, both-gates-pass-fires-runCycle). The runCycle invocation itself is covered by upstream's dream-cycle E2E tests.
+
 ## [0.36.1] - 2026-05-08
 
 ## **Two production fires fixed: zombie-fork PID exhaustion and granola-sync's transcript SLUG_MISMATCH loop. Plus the transcripts move to their proper `meetings/transcripts/` namespace.**
