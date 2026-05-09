@@ -2,6 +2,33 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.36.1] - 2026-05-08
+
+## **Two production fires fixed: zombie-fork PID exhaustion and granola-sync's transcript SLUG_MISMATCH loop. Plus the transcripts move to their proper `meetings/transcripts/` namespace.**
+
+Two unrelated production issues surfaced in the same hour and got fixed in the same patch.
+
+**The zombie-fork bug.** Production v0.34.2 (which forked off upstream gbrain at v0.25.0) predates upstream's v0.28.1 zombie-reap fix. Every git/ssh/rev-list subprocess spawned by markdown-writer, regfox-ingestor, and granola-sync became a zombie on exit; the Railway container's pids cgroup eventually filled up. Symptom: every `markdown_append_to_page` returned generic "Internal error" because `git pull --ff-only` couldn't `fork(2)`. Other ops (`put_page`, `markdown_replace_page`) kept working because they fork fewer subprocesses per call. Logs were full of `cannot fork() ... Resource temporarily unavailable` and `fatal: unable to create threaded lstat`. Fix: `installSigchldHandler()` is now wired in `src/dent/serve.ts` (production entry point), mirroring `src/cli.ts`. Plus `tini` is the container PID 1 (Dockerfile `ENTRYPOINT ["/sbin/tini", "--"]`) — belt-and-suspenders for native-addon spawns the JS reaper can't see.
+
+**The granola-sync SLUG_MISMATCH loop.** `tools/granola-sync/translator.ts` was generating transcript slugs as `${meetingSlug}--transcript` (double-dash). gbrain's `slugifySegment` collapses consecutive hyphens, so the path-derived slug single-dashed while the frontmatter declared the double-dashed form — `SLUG_MISMATCH` on every periodic git → DB sync, blocking the whole import for all transcript files. Three pages were stuck (May 5–6 meetings); every new granola meeting with a transcript would have added more. Fix: transcripts now generate under a dedicated `meetings/transcripts/<date>-<title>` sub-namespace, which (a) matches gbrain's slugification rules, and (b) coincides with the `meetings/transcripts/` entry already in `gbrain.yml`'s `db_only` storage tier — transcripts stop bloating dent-brain-data's git history going forward. The 3 stuck files were migrated in dent-brain-data with a companion commit (sibling meeting pages updated to point at the new slugs).
+
+### What this means for you
+
+Production stops accumulating zombies. Append works reliably under load. Sync stops re-failing the 3 transcript pages, which means the per-300s background sync will start re-importing dent-brain-data updates cleanly again — your morning briefings will reflect the previous day's writes. Future granola meetings with transcripts route into `meetings/transcripts/<date>-<title>.md` automatically; the existing `db_only` storage tier means those files stay out of git history.
+
+### To take advantage of v0.36.1
+
+1. **Redeploy to Railway** to ship the zombie-reap + tini fix. Same redeploy as v0.36.0, just with one more commit in it. The container restart we did during diagnosis is temporary relief — the v0.34.2 image still has the leak, just zombies are at zero right now. Without v0.36.1 deployed, you'll hit the same wall in hours-to-days.
+2. **Refresh granola-sync on every teammate's laptop** (re-run `/dent-extensions install granola-sync`). The new transcript-slug shape is in `tools/granola-sync/translator.ts`; teammates running the old code will keep generating `--transcript` files and re-introducing the SLUG_MISMATCH bug locally — except now the data migration in dent-brain-data has moved everyone's transcripts to the new namespace, so any old-shape file from a stale daemon would land in `meetings/` rather than `meetings/transcripts/` and resync-fail again.
+
+### Itemized changes
+
+- `src/dent/serve.ts` — imports + invokes `installSigchldHandler()` at module load. Was only wired in `src/cli.ts`; production runs `serve.ts` directly via Dockerfile CMD, so the reaper was effectively absent in the deployed binary.
+- `Dockerfile` — `RUN apk add ... tini` and `ENTRYPOINT ["/sbin/tini", "--"]`. Tini reaps anything the JS handler can't reach (native addons, intermediate sh subshells).
+- `tools/granola-sync/translator.ts` — transcript slug shape: `meetings/transcripts/${isoDate}-${titleSlug}` (was `${meetingSlug}--transcript`). Inline comment documents the slug-collapse interaction.
+- `tools/granola-sync/README.md` — updated transcript-page path doc to match new namespace.
+- Companion commit in `dent-brain-data`: `meetings/X--transcript.md` → `meetings/transcripts/X.md` for the 3 stuck pages, frontmatter slugs updated, sibling meeting pages' `Diarized transcript: \`...\`` references updated. Pushed as `f4f16ed`.
+
 ## [0.36.0] - 2026-05-08
 
 ## **Email → Dent Brain. Layer 1 ships every-6h on each teammate's laptop, Layer 2 fires nightly under their Claude subscription, FileMaker fallback intact end-to-end.**

@@ -91,7 +91,15 @@ export function translateMeeting(
   const isoDate = isoDateOf(doc.created_at);
   const titleSlug = kebab(doc.title || `granola-${doc.id.slice(0, 8)}`);
   const meetingSlug = `meetings/${isoDate}-${titleSlug}`;
-  const transcriptSlug = transcript && transcript.length > 0 ? `${meetingSlug}--transcript` : null;
+  // Transcripts go into a dedicated sub-namespace, not as a `--transcript`
+  // suffix. gbrain's `slugifySegment` collapses consecutive hyphens, so a
+  // suffix-with-double-dash file would always SLUG_MISMATCH on re-import
+  // (path-derived slug single-dashes; frontmatter double-dashed). The
+  // sub-namespace also matches `gbrain.yml`'s existing `meetings/transcripts/`
+  // db_only tier — transcripts stop bloating the dent-brain-data git history.
+  const transcriptSlug = transcript && transcript.length > 0
+    ? `meetings/transcripts/${isoDate}-${titleSlug}`
+    : null;
   const sourceRef = `granola/${doc.id}`;
   const { emails, names } = attendeeList(doc);
 

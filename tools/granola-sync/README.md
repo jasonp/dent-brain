@@ -50,7 +50,7 @@ For each kept meeting:
   - `## Chapters` — if Granola produced them
   - `## Attendees` — name + email list
   - `## Raw transcript` — link to the transcript page
-- **Transcript page** at `meetings/<YYYY-MM-DD>-<title-slug>--transcript.md`
+- **Transcript page** at `meetings/transcripts/<YYYY-MM-DD>-<title-slug>.md`
   with the diarized utterance log (mic vs system audio, relative timestamps).
   Only created if a local transcript exists in Granola's cache (older meetings
   whose transcripts have synced+deleted locally won't get this).
