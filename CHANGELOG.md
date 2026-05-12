@@ -2,6 +2,29 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.2] - 2026-05-12
+
+## **Cowork plugin now bundles the ingestor installers. New teammates no longer need a git clone to install granola-sync or email-sync.**
+
+Before this release, `/dent-extensions install granola-sync` required the teammate to have a personal git clone of the dent-brain repo at `~/gh/dent-brain` or `~/Code/dent-brain` — the skill would shell out to `<clone>/tools/granola-sync/install.sh`. That meant every non-developer teammate hit a hidden second install step (clone the repo + have SSH access to the GitHub fork) before they could set up Granola sync.
+
+v0.37.2 bundles `tools/extensions/`, `tools/granola-sync/`, and `tools/email-sync/` directly into the Cowork plugin marketplace artifact, alongside the existing `fm-mcp/` vendor. The dent-extensions skill now resolves the installer out of the plugin cache at `~/.claude/plugins/cache/dent-brain/dent-brain/<version>/tools/extensions/bin/dent-extensions`. Plugin install → ingestor install. One artifact, one auth path.
+
+### To take advantage of v0.37.2
+
+Existing teammates: reinstall the Cowork plugin (or wait for Cowork to refresh its catalog and offer the update). After that, `/dent-extensions install granola-sync` works without a clone.
+
+Developers (anyone editing `tools/granola-sync/` etc.): the legacy clone-based path still works as a fallback — invoke `./tools/extensions/bin/dent-extensions install <id>` directly from your clone if you want YOUR local edits to be what runs.
+
+### Itemized changes
+
+#### Added
+- `scripts/build-plugin.ts` now copies `tools/extensions/`, `tools/granola-sync/`, and `tools/email-sync/` into the plugin marketplace bundle. Adds ~50KB to the bundle; aligns ingestor versions with plugin versions automatically.
+- `skills/dent/extensions/SKILL.md` rewritten Step 1 to prefer the plugin-cache path. Falls back to clone-based detection if no plugin (>=0.37.2) is installed.
+
+#### Changed
+- Plugin marketplace bundle bumped from 0.37.1 to 0.37.2.
+
 ## [0.37.1] - 2026-05-12
 
 ## **Fix: Cowork plugin marketplace bundle now actually rebuilds on release.**

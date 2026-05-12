@@ -82,56 +82,41 @@ Walks the teammate through `tools/extensions/cli.ts` — a Bun script in the den
 5. **Test** it in dry-run mode to verify wiring before letting it run scheduled.
 6. **Uninstall** — stops the launchd agent, removes the plist, removes the install dir.
 
-## Step 1. Find or update the local clone
+## Step 1. Locate the dent-extensions CLI
 
-The teammate must have a checkout of `dent-brain` on disk. Three states to handle:
+As of v0.37.2 the installer scripts ship inside the Cowork plugin bundle itself — no git clone required for typical teammates. The CLI lives at `~/.claude/plugins/cache/dent-brain/dent-brain/<version>/tools/extensions/bin/dent-extensions`. The skill needs to find the active version directory and invoke the CLI there.
 
-### State A: clone is missing entirely
+### Preferred path: use the plugin-cache copy
 
-If the teammate has never cloned the repo, hand them this:
-
-```bash
-mkdir -p ~/gh && cd ~/gh && git clone git@github.com:jasonp/dent-brain.git
-cd ~/gh/dent-brain
-./tools/extensions/bin/dent-extensions list
-```
-
-(Or `~/Code` or wherever they prefer their clones — just be consistent.)
-
-### State B: clone exists but is stale (the most common gotcha)
-
-This is the case the agent hits when running `ls ~/gh/dent-brain/tools/extensions/bin/dent-extensions` returns "no such file or directory" but `ls ~/gh/dent-brain/` succeeds. The teammate has the repo but their checkout predates the extensions tool.
-
-DO NOT report "not located". Instead, hand them this:
+Hand the teammate THIS one-liner. It auto-resolves the latest installed plugin version and invokes the CLI from inside it:
 
 ```bash
-cd ~/gh/dent-brain
-git pull
-./tools/extensions/bin/dent-extensions list
+PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/dent-brain/dent-brain/[0-9]*/ 2>/dev/null | sort -V | tail -1) \
+  && [ -n "$PLUGIN_DIR" ] && "$PLUGIN_DIR/tools/extensions/bin/dent-extensions" list \
+  || echo "FALLBACK_NEEDED"
 ```
 
-### State C: clone is current
+If that prints an extensions list, you're done — the teammate is on a plugin version that bundles the installers and there's no clone or pull step required. Move to Step 2.
 
-The CLI is at `<clone-path>/tools/extensions/bin/dent-extensions`. They run it directly.
+### Fallback path: developer with a git clone
 
-### Detection logic the agent should use
-
-When the teammate first invokes the skill, prefer this single one-liner over branching detection — it works for all three states:
+If the one-liner above prints `FALLBACK_NEEDED` (no plugin installed, or installed plugin predates v0.37.2 and lacks `tools/`), the teammate is either a developer working from a clone OR running a pre-v0.37.2 plugin. Use the legacy clone-based path:
 
 ```bash
 ( cd ~/gh/dent-brain 2>/dev/null && git pull --ff-only --quiet origin main && ./tools/extensions/bin/dent-extensions list ) \
   || ( cd ~/Code/dent-brain 2>/dev/null && git pull --ff-only --quiet origin main && ./tools/extensions/bin/dent-extensions list ) \
-  || echo "No dent-brain clone found at ~/gh/dent-brain or ~/Code/dent-brain. Run: git clone git@github.com:jasonp/dent-brain.git ~/gh/dent-brain && cd ~/gh/dent-brain && ./tools/extensions/bin/dent-extensions list"
+  || echo "No dent-brain plugin (>=0.37.2) and no clone found. Either: (a) reinstall the Cowork plugin to pick up the bundled installers, or (b) git clone git@github.com:jasonp/dent-brain.git ~/gh/dent-brain"
 ```
 
-That command:
-1. Tries `~/gh/dent-brain` first, runs `git pull` to refresh, then lists extensions
-2. Falls back to `~/Code/dent-brain` if that's where they keep it
-3. Falls back to clone instructions if neither exists
+### Which path you'll actually hit
 
-Hand the teammate THIS one-liner whenever they invoke the skill. It auto-handles all three states without an awkward "I couldn't find it" round trip.
+| Teammate type | Path used |
+|---|---|
+| Non-developer with current plugin installed | Preferred (plugin cache). Zero git involved. |
+| Developer hacking on this repo | Fallback (clone). They typically WANT the clone because they're editing `tools/granola-sync/` and want their edits to be what runs. |
+| Teammate on a pre-v0.37.2 plugin | Fallback, but the right fix is to reinstall the plugin — newer bundles include the installers. |
 
-If the teammate's clone is somewhere unusual (e.g. `~/projects/dent-brain`), they tell you and you adjust the one-liner accordingly.
+For the developer case: if you're working in a clone and want `/dent-extensions` to use YOUR clone's installer instead of the bundled one, just run `./tools/extensions/bin/dent-extensions install <id>` directly from the clone. The skill's auto-detection is a convenience for non-developers; developers can bypass it.
 
 ## Step 2. Pre-install: confirm Granola itself is set up
 

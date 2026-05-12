@@ -385,6 +385,20 @@ function main() {
     console.log('  copied: fm-mcp/ (vendored server, separate install)');
   }
 
+  // Per-teammate ingestor installers + the dent-extensions CLI that drives
+  // them. Bundling these into the plugin marketplace means teammates no
+  // longer need a git clone of the code repo to run `/dent-extensions
+  // install granola-sync` — the skill resolves the installer out of the
+  // plugin cache instead. See skills/dent/extensions/SKILL.md.
+  const TOOLS_DIR = join(MARKETPLACE_DIR, 'tools');
+  mkdirSync(TOOLS_DIR, { recursive: true });
+  for (const sub of ['extensions', 'granola-sync', 'email-sync'] as const) {
+    const src = join(REPO_ROOT, 'tools', sub);
+    if (!existsSync(src)) continue;
+    copyDir(src, join(TOOLS_DIR, sub));
+    console.log(`  copied: tools/${sub}/ (per-teammate installer)`);
+  }
+
   // TOP-LEVEL marketplace.json — the file that makes
   // `add github:<owner>/<repo>` work (both Code and Cowork).
   mkdirSync(TOP_LEVEL_MARKETPLACE_DIR, { recursive: true });

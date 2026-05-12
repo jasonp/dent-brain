@@ -1,0 +1,10 @@
+{
+  "_comment": "config.json is REQUIRED for email-sync. The installer (`/dent-extensions install email-sync`) writes this file for you, including the shared Dent Brain Google OAuth Client ID + Secret. workEmail is the strict privacy boundary — emails on other addresses on the same inbox never enter the brain. The tokens file is populated by the one-time OAuth dance the installer runs (see oauth-flow.ts).",
+  "workEmail": "REPLACE_WITH_YOUR_WORK_EMAIL",
+  "googleClientId": "REPLACE_WITH_DENT_BRAIN_GOOGLE_CLIENT_ID",
+  "googleClientSecret": "REPLACE_WITH_DENT_BRAIN_GOOGLE_CLIENT_SECRET",
+  "googleTokensPath": "${HOME}/.dent-brain/email-sync/google-tokens.json",
+  "authUser": "0",
+  "cursorPath": "${HOME}/.dent-brain/email-sync/cursor.json",
+  "cacheDir": "${HOME}/.dent-brain/email-sync/cache"
+}
