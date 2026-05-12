@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.37.4",
+  "version": "0.37.5",
   "description": "Postgres-native organizational knowledge brain. Open-source distribution of the substrate that powers Dent Brain. Forked from gbrain (github.com/garrytan/gbrain); the npm package identity tracks upstream (`name: gbrain`) for upstream-test compatibility, while the CLI binary is `dbrain` (with a `gbrain` alias) so personal and organizational installs can coexist on the same machine.",
   "type": "module",
   "main": "src/core/index.ts",
@@ -40,6 +40,7 @@
     "build:llms": "bun run scripts/build-llms.ts",
     "build:pglite-snapshot": "bun run scripts/build-pglite-snapshot.ts",
     "build:plugin": "bun run scripts/build-plugin.ts",
+    "check:prod-version": "bun run scripts/check-prod-version.ts",
     "setup": "bun run scripts/setup.ts",
     "test": "bash scripts/run-unit-parallel.sh",
     "test:full": "bun run verify && bash scripts/run-unit-parallel.sh && bun run test:slow && ([ -n \"$DATABASE_URL\" ] && bash scripts/run-e2e.sh || echo '[test:full] skipped E2E (no DATABASE_URL); run docker-compose -f docker-compose.ci.yml up + bun run test:e2e to include' 1>&2)",

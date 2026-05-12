@@ -2,6 +2,28 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.5] - 2026-05-12
+
+## **Adds `check:prod-version` script + makes it a /ship pre-flight requirement. Catches the broken-GitHub-Railway-hook drift that caused today's zombie-reaper recurrence on production.**
+
+The May 8 zombie-reaper fix sat on `main` for four days without reaching production because this project's GitHub → Railway auto-deploy hook is broken. The fix was real, the code was correct, but production kept running pre-fix code until the v0.37.4 `railway redeploy` finally promoted it. From the user's perspective: `markdown_append_to_page` failures with no useful detail, recurring exactly like the pattern we'd "fixed" days earlier.
+
+This release adds a guard. `scripts/check-prod-version.ts` reads `./VERSION` and hits the production MCP server's `initialize` handshake. If the server is BEHIND main, the script exits 1 with a clear "run `railway redeploy --yes`" message. CLAUDE.md's pre-ship requirements section now lists `bun run check:prod-version` alongside the test suite, so every future /ship sees it.
+
+### To take advantage of v0.37.5
+
+Nothing required on teammate laptops. The check is admin-side, runs as part of /ship workflow on a maintainer's machine. After this PR merges, future ship runs will surface the drift before it compounds.
+
+### Itemized changes
+
+#### Added
+- `scripts/check-prod-version.ts` — standalone TS check. Reads `~/.claude.json` for the MCP URL + bearer token, calls `initialize`, compares `serverInfo.version` against `./VERSION`. Exits 0 if in sync or production is ahead. Exits 1 with railway-redeploy instructions if production is behind.
+- `package.json` script alias: `bun run check:prod-version`.
+- `CLAUDE.md` pre-ship section now requires `bun run check:prod-version`. Post-ship section documents the manual `railway redeploy --yes` workflow as the canonical deploy mechanism for this project.
+
+#### Plugin marketplace
+- Bumped to 0.37.5. Bundle root VERSION updated.
+
 ## [0.37.4] - 2026-05-12
 
 ## **New `/dent-update` skill brings teammates up to date across all three propagation lanes in one pass. Also: fixes a quiet bug where `/dent-process-inbox` was never actually shipping in the plugin.**
