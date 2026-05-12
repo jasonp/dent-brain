@@ -21,24 +21,24 @@ mutating: true
 
 ## CRITICAL: what `install` actually does (no prompts)
 
-`dent-extensions install granola-sync` is **NOT INTERACTIVE**. It runs `bash tools/granola-sync/install.sh` which performs exactly these 6 steps and exits in ~3 seconds:
+`dent-extensions install granola-sync` runs `bash tools/granola-sync/install.sh` which performs these 7 steps and exits in ~3 seconds (or pauses briefly on first install to prompt for the Granola API key):
 
 1. Verifies `bun` is on `$PATH` (errors with install hint if not).
 2. Verifies `~/.claude.json` has a `dent-brain` MCP entry with a `Bearer` token (errors with a "run /dent-onboard-teammate first" hint if not). It does NOT extract, copy, display, or ask about the token — only checks that the entry exists.
-3. Verifies `Granola.app` is installed AND `~/Library/Application Support/Granola/cache-v6.json` exists (i.e. teammate has opened Granola at least once). Errors with detailed setup steps if either is missing.
-4. Copies 5 runtime files to `~/.dent-brain/granola-sync/`.
-5. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
-6. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
+3. Verifies `Granola.app` is installed (where the teammate mints the API key). Errors with download/setup steps if missing.
+4. Verifies a working Granola API key is in the macOS keychain (service `dent-brain.granola-sync`, account `$USER`). If missing or rejected by `https://public-api.granola.ai/v1/notes`, prompts the teammate to paste a key (Granola → Settings → Connectors → API keys → Create new key) and stores it via `security add-generic-password`.
+5. Copies 6 runtime files to `~/.dent-brain/granola-sync/`.
+6. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
+7. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
 
 What `install` does NOT do:
 
-- Does NOT prompt for a bearer token.
+- Does NOT prompt for the dent-brain bearer token (auto-discovered from `~/.claude.json`).
 - Does NOT open `$EDITOR`.
 - Does NOT write a `config.json` (config.json is fully optional, only created if the teammate manually edits one to override defaults).
 - Does NOT ask the teammate for an email, name, or any other identity field.
-- Does NOT have a "what to expect during the prompts" phase — there are no prompts.
 
-If you find yourself describing prompts, editors, or token-pasting, you've hallucinated. Re-read this section and re-describe the install accurately: "I'll run the installer. It takes ~3 seconds, no prompts, then you'll have an hourly Granola sync."
+The ONE prompt: when no working Granola API key is in the keychain, Step 4 asks the teammate to paste a `grn_…` key (hidden input). Re-runs with a valid key in keychain skip the prompt — fully non-interactive.
 
 After the install completes, macOS will show a Background Items notification mentioning "Jarred Sumner". Tell the teammate up front so it doesn't surprise them — that's the developer ID of Bun (the JavaScript runtime the daemon uses). It's expected and safe. The installer's final output explains the same thing.
 
@@ -61,10 +61,11 @@ The granola-sync extension specifically needs ZERO config. The installer has no 
 
 The `dent-extensions` CLI runs on the **teammate's laptop**, not in the agent's environment. Extensions touch:
 
-- `~/Library/Application Support/Granola/...` (the teammate's local Granola cache)
+- `https://public-api.granola.ai/v1/` (Granola public API, authenticated with the teammate's key)
+- macOS keychain (service `dent-brain.granola-sync`, where the Granola API key lives)
 - `~/.dent-brain/granola-sync/` (the teammate's per-extension install dir)
 - `~/Library/LaunchAgents/com.dent.granola-sync.plist` (macOS launchd)
-- `~/.claude.json` (read-only — for token discovery)
+- `~/.claude.json` (read-only — for bearer-token discovery)
 
 None of those are reachable from a Cowork sandbox or any cloud agent environment. The agent's role is to **tell the teammate what to type into their terminal**, not to run the CLI directly. Do NOT try to invoke `dent-extensions` via Bash from the agent — it won't find the CLI and even if it did it would be operating on the wrong filesystem.
 
@@ -159,7 +160,7 @@ Always start with `list` — gives the teammate a complete picture before they m
 Dent Brain extensions (1):
 
   ○ not-installed    granola-sync     Granola → Dent Brain sync
-                     Hourly daemon that watches your local Granola cache and pushes Dent-related meeting notes + transcripts into the brain. Filters by title keyword + Dent team domain so personal/non-Dent meetings stay local.
+                     Hourly daemon that pulls meetings from the Granola public API (key in macOS keychain) and pushes Dent-related notes + transcripts into the brain. Filters by four orthogonal signals (Granola folder, title, body/transcript, attendee email domain) so personal/non-Dent meetings stay local.
                      → Not installed. Run `dent-extensions install granola-sync` to set it up.
 ```
 
@@ -198,12 +199,13 @@ Two things happen right after `launchctl bootstrap`:
 tail -50 ~/.dent-brain/<extension-id>/sync.log
 ```
 
-You should see lines like `[granola-sync] Granola cache: N documents, M local transcripts` followed by per-doc decisions and a `done:` summary. If you see those, it worked.
+You should see lines like `[granola-sync] Granola API: authenticated` followed by per-note decisions and a `done:` summary. If you see those, it worked.
 
 If the first run failed, common fixes:
 
-- **`MCP HTTP 401`** — bearer token in `~/.claude.json` is wrong/expired. Re-run `/dent-onboard-teammate` to mint a new one. The daemon picks up the new value on the next run; no re-install needed.
-- **`Granola cache not found`** — the teammate has Granola installed but hasn't opened it yet. Open the Granola app, sign in, then re-run the daemon manually (`bun ~/.dent-brain/granola-sync/sync.ts`).
+- **`MCP HTTP 401`** — dent-brain bearer token in `~/.claude.json` is wrong/expired. Re-run `/dent-onboard-teammate` to mint a new one. The daemon picks up the new value on the next run; no re-install needed.
+- **`Granola API key rejected`** / **`Granola API 401`** — the API key was revoked or never minted. Re-run install.sh; it'll re-prompt and update the keychain. Or rotate manually: `security add-generic-password -U -s dent-brain.granola-sync -a "$USER" -w 'grn_...'`.
+- **`No Granola API key in keychain`** — the keychain entry is missing. Re-run install.sh and paste the key when prompted.
 - **`No dent-brain MCP configured`** — the teammate hasn't run `claude mcp add dent-brain ...` yet. Route them to `/dent-onboard-teammate` first.
 
 ## Step 6. Privacy contract — say this every time
