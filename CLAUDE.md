@@ -108,6 +108,12 @@ All bulk commands stream through `src/core/progress.ts` — heartbeats within 1s
 
 Run `bun test` AND `bun run test:e2e` (full DB lifecycle). Both must pass.
 
+**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1 with railway-redeploy instructions. Reason: this project's GitHub → Railway auto-deploy hook is broken, so merges to main do NOT propagate to production automatically. Shipping more changes on top of un-deployed fixes compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence. If the check fails, run `railway redeploy --yes` from the repo root and wait ~90s before retrying.
+
+## Post-ship requirements (production deploy)
+
+After every merge to main, manually run `railway redeploy --yes` from the repo root. The GitHub → Railway integration on this project does not work; merges do not auto-deploy. Confirm the new version reached production by re-running `bun run check:prod-version` (should report in-sync) or by hitting the MCP `initialize` endpoint and reading `serverInfo.version`.
+
 ## Post-ship requirements (MANDATORY)
 
 After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran it automatically that counts; otherwise run it manually. Files that MUST be checked: README.md, CLAUDE.md, CHANGELOG.md, TODOS.md, docs/.
