@@ -6,14 +6,20 @@ description: |
   written by the email-sync collector, walks each Triage entry, finds
   or resolves the other party (the non-self person on the email),
   appends a timeline bullet to that entity's page, then marks the
-  digest `processed: true`. Designed to run as a daily Sonnet
-  Claude Code Desktop scheduled task.
+  digest `processed: true`.
+
+  **Runtime: Cowork scheduled routine** (daily, Sonnet). Runs server-side
+  on Anthropic's infrastructure so it fires regardless of whether the
+  teammate's laptop is awake or the Desktop app is open. Calls dent-brain
+  MCP for page operations and fm-mcp for FileMaker entity resolution —
+  both reachable from Cowork. See `docs/reference/runtime-conventions.md`
+  for the Code-Desktop-vs-Cowork surface convention.
 
   The brain is the queue: Layer 1 (laptop daemon) writes digests at
   `inbox/<email-slug>/<YYYY-MM-DD>.md`; this skill reads them, enriches,
-  and stamps them processed. If the laptop was off for several days,
-  the next run catches up automatically by processing every
-  unprocessed digest in chronological order.
+  and stamps them processed. If a run is missed for several days, the
+  next run catches up automatically by processing every unprocessed
+  digest in chronological order.
 triggers:
   - "dent-process-inbox"
   - "process inbox"

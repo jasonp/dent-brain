@@ -6,6 +6,10 @@ description: |
   + Railway + the GitHub deploy key, and getting the plugin installed
   in Cowork. Mirrors the gbrain/gstack model of "run setup once, get
   walked through every decision."
+
+  **Runtime: Claude Code Desktop only** (clones the repo, writes config
+  files, calls `gh`/`supabase`/`railway` CLIs, generates SSH keys). See
+  `docs/reference/runtime-conventions.md`.
 triggers:
   - "{{prefix}}-setup"
   - "set up dbrain"

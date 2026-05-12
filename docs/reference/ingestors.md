@@ -27,7 +27,9 @@ Two per-teammate launchd daemons. Both install via `dent-extensions install <id>
 ## email enrichment (Layer 2 — agent task)
 
 - **Where:** `skills/dent/process-inbox/SKILL.md`
-- **Schedule:** daily, currently a Claude Code Desktop scheduled task; better fit for a Cowork routine (unattended execution; no laptop-awake requirement)
+- **Runtime:** **Cowork scheduled routine** (daily, Sonnet). Server-side execution means it fires regardless of laptop state. Empirically confirmed Cowork can reach fm-mcp for the FileMaker fallback.
 - **Reads from brain:** every `inbox/...` page without `processed: true` frontmatter, chronologically
 - **Does:** resolves the other party on each email (FileMaker lookup via fm-mcp + `detect_entities`), appends a timeline bullet to that entity's page, stamps the digest `processed: true`
-- **Catch-up:** if the laptop was off (or Layer 2 didn't fire), the next run processes all backlog digests in order. No state outside the brain.
+- **Catch-up:** if a run is missed, the next run processes all backlog digests in order. No state outside the brain.
+
+See `docs/reference/runtime-conventions.md` for the Code-Desktop-vs-Cowork surface convention that puts Layer 1 (collection) on Code Desktop and Layer 2 (enrichment) on Cowork.

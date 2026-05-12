@@ -1,6 +1,6 @@
 ---
 name: {{prefix}}-onboard-teammate
-description: Admin-side flow to onboard a new teammate to dent-brain. Generates a bearer token, produces a one-paste `claude mcp add` install command for the teammate, and verifies registration via the audit log.
+description: Admin-side flow to onboard a new teammate to dent-brain. Generates a bearer token, produces a one-paste `claude mcp add` install command for the teammate, and verifies registration via the audit log. **Runtime: Claude Code Desktop only** (writes to local config files, runs shell commands). See `docs/reference/runtime-conventions.md`.
 triggers:
   - "onboard teammate"
   - "onboard new user"
