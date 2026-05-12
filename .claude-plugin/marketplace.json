@@ -10,7 +10,7 @@
     {
       "name": "dent-brain",
       "description": "Dent The Future, Inc. brain skills.",
-      "version": "0.37.5",
+      "version": "0.37.6",
       "source": "./plugin/marketplace",
       "category": "productivity",
       "author": {
