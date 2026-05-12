@@ -84,15 +84,15 @@ Walks the teammate through `tools/extensions/cli.ts` — a Bun script in the den
 
 ## Step 1. Locate the dent-extensions CLI
 
-As of v0.37.2 the installer scripts ship inside the Cowork plugin bundle itself — no git clone required for typical teammates. The CLI lives at `~/.claude/plugins/cache/dent-brain/dent-brain/<version>/tools/extensions/bin/dent-extensions`. The skill needs to find the active version directory and invoke the CLI there.
+As of v0.37.2 the installer scripts ship inside the Cowork plugin bundle itself — no git clone of the dent-brain repo required for typical teammates. Claude Code installs the plugin by cloning the dent-brain repo into `~/.claude/plugins/marketplaces/dent-brain/`, and the rendered bundle (including `tools/extensions/bin/dent-extensions`) lives at `<clone>/plugin/marketplace/tools/extensions/bin/dent-extensions`. As of v0.37.6 the skill points there directly.
 
-### Preferred path: use the plugin-cache copy
+### Preferred path: use the marketplace-clone copy
 
-Hand the teammate THIS one-liner. It auto-resolves the latest installed plugin version and invokes the CLI from inside it:
+Hand the teammate THIS one-liner. It invokes the CLI from the installed plugin clone:
 
 ```bash
-PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/dent-brain/dent-brain/[0-9]*/ 2>/dev/null | sort -V | tail -1) \
-  && [ -n "$PLUGIN_DIR" ] && "$PLUGIN_DIR/tools/extensions/bin/dent-extensions" list \
+BUNDLE_DIR=~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace \
+  && [ -x "$BUNDLE_DIR/tools/extensions/bin/dent-extensions" ] && "$BUNDLE_DIR/tools/extensions/bin/dent-extensions" list \
   || echo "FALLBACK_NEEDED"
 ```
 

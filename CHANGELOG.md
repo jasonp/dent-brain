@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.6] - 2026-05-12
+
+## **Fix: `/dent-update` and `/dent-extensions` were looking in the wrong directory for installed plugin files. Drift detection now works.**
+
+When the user actually tried `/dent-update` after we shipped it, the skill reported "plugin cache is empty" and stopped, even though the plugin was clearly installed and running (skills working, MCP calls succeeding). Investigation revealed Claude Code installs source-style plugins like dent-brain by git-cloning the full repo into `~/.claude/plugins/marketplaces/<plugin>/`, and reads rendered skills from `<clone>/plugin/marketplace/.claude/skills/`. The `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` path pattern I had built `/dent-update` and `/dent-extensions` against only applies to bundle-style plugins (like last30days-skill) — not source-style ones.
+
+Both skills now point at the correct path. As a bonus, the new `/dent-update` flow can `git -C ~/.claude/plugins/marketplaces/dent-brain pull --ff-only origin main` to refresh the installed plugin clone directly, bypassing Claude Desktop's plugin UI button (which has been observed to silently fail to trigger the underlying git pull).
+
+### To take advantage of v0.37.6
+
+After this lands and reaches your laptop (via `git -C ~/.claude/plugins/marketplaces/dent-brain pull origin main`), `/dent-update` will correctly detect plugin freshness, find the bundled installers, and re-run them on outdated daemons.
+
+### Itemized changes
+
+#### Fixed
+- `skills/dent/update/SKILL.md` — Step 1 now reads from `~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace/` instead of the wrong `~/.claude/plugins/cache/...` path. Step 2 detects plugin freshness via `git fetch + rev-list --count HEAD..origin/main` and offers to `git pull` directly. Steps 4 and 5 reference `$BUNDLE_DIR` consistently.
+- `skills/dent/extensions/SKILL.md` — `/dent-extensions install <id>` now resolves the bundled CLI at `~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace/tools/extensions/bin/dent-extensions`. Fallback to clone path preserved for developers.
+
+#### Plugin marketplace
+- Bumped to 0.37.6 with the corrected SKILL.md files rendered into the bundle.
+
 ## [0.37.5] - 2026-05-12
 
 ## **Adds `check:prod-version` script + makes it a /ship pre-flight requirement. Catches the broken-GitHub-Railway-hook drift that caused today's zombie-reaper recurrence on production.**

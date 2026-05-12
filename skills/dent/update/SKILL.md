@@ -39,18 +39,25 @@ This skill must run in **Claude Code Desktop**, not Cowork. The bash installers 
 
 ## Step 1. Read current state (no writes yet)
 
-Run all the inspections in parallel and present a status table.
+Claude Code installs `dent-brain` by git-cloning the full repo into `~/.claude/plugins/marketplaces/dent-brain/`. The runtime bundle lives at `<clone>/plugin/marketplace/` (rendered by `bun run build:plugin` on each release). There's no separate `~/.claude/plugins/cache/dent-brain/` directory — that path pattern applies to bundle-style plugins (e.g. last30days-skill), not source-style ones like this one. Earlier versions of this skill checked the wrong path; v0.37.6 fixes that.
+
+Run the inspections and present a status table.
 
 ```bash
+# The runtime path: git clone of the dent-brain repo with rendered skills inside.
+MARKETPLACE_CLONE=~/.claude/plugins/marketplaces/dent-brain
+BUNDLE_DIR="$MARKETPLACE_CLONE/plugin/marketplace"
+
 echo "=== Plugin marketplace metadata ==="
-cat ~/.claude/plugins/marketplaces/dent-brain/.claude-plugin/marketplace.json 2>/dev/null | grep -E '"version"' | head -1
+cat "$MARKETPLACE_CLONE/.claude-plugin/marketplace.json" 2>/dev/null | grep -E '"version"' | head -1
 
-echo "=== Plugin bundle versions in local cache ==="
-ls -1 ~/.claude/plugins/cache/dent-brain/dent-brain/ 2>/dev/null
+echo "=== Bundle VERSION (what the rendered skills + tools/ are at) ==="
+cat "$BUNDLE_DIR/VERSION" 2>/dev/null || echo "(missing — clone predates v0.37.4)"
 
-echo "=== Latest installed plugin path ==="
-PLUGIN_DIR=$(ls -d ~/.claude/plugins/cache/dent-brain/dent-brain/[0-9]*/ 2>/dev/null | sort -V | tail -1)
-echo "$PLUGIN_DIR"
+echo "=== Clone git state — is it up to date with GitHub HEAD? ==="
+git -C "$MARKETPLACE_CLONE" fetch origin main --quiet 2>/dev/null
+git -C "$MARKETPLACE_CLONE" log HEAD..origin/main --oneline 2>/dev/null | head -10
+echo "(empty above = clone is current; lines listed = clone is behind by that many releases)"
 
 echo "=== Installed daemons ==="
 for d in ~/.dent-brain/*/; do
@@ -75,23 +82,41 @@ Present a compact status table:
 ```
 LANE                STATE
 ─────────────────────────────────────────────────────────
-Plugin marketplace  fetched v0.37.3, latest in cache: v0.37.3 ✓
-MCP server          v0.37.3 (Railway, healthy)
-granola-sync daemon installed v0.37.0 — UPDATE AVAILABLE (bundle has v0.37.3)
-email-sync daemon   installed v0.37.3 ✓ (last run 2h ago, exit 0)
+Plugin clone        v0.37.5 ✓ (up to date with origin/main)
+MCP server          v0.37.5 (Railway, healthy)
+granola-sync daemon installed v0.37.0 — UPDATE AVAILABLE (bundle has v0.37.5)
+email-sync daemon   installed v0.37.5 ✓ (last run 2h ago, exit 0)
 ```
 
 ## Step 2. Lane 1 detection — plugin freshness
 
-Compare the marketplace.json's `version` field against the highest version dir in `~/.claude/plugins/cache/dent-brain/dent-brain/`. If the cache is empty or behind:
+The plugin clone at `~/.claude/plugins/marketplaces/dent-brain/` is a normal git working tree. Claude Code's plugin UI is supposed to `git pull` it when the user clicks Update, but the trigger is not always reliable.
 
-- **If cache is empty:** "Your Claude Code knows the marketplace exists but hasn't downloaded the bundle yet. Open Claude Desktop, go to Plugins → dent-brain, click Install (or Update). Then re-run `/dent-update`."
-- **If cache has an older version than marketplace:** "Your installed plugin is v{installed} but marketplace knows about v{marketplace}. Open Claude Desktop's plugin manager, click Update. Then re-run `/dent-update`."
-- **If marketplace itself is stale** (an older version than what GitHub HEAD now declares — hard to detect without a network call, so just note it): "If you haven't refreshed the catalog recently, do so: in Claude Desktop, Plugins → dent-brain marketplace → Refresh. The marketplace metadata is pull-based; without a refresh, Cowork won't see new releases."
+Detect freshness by comparing the local HEAD against `origin/main`:
 
-If Lane 1 is behind, **STOP here**. The daemon re-install in Step 5 reads from the plugin cache; if the cache is stale, we'd just re-install the same outdated daemon.
+```bash
+git -C ~/.claude/plugins/marketplaces/dent-brain fetch origin main --quiet
+BEHIND=$(git -C ~/.claude/plugins/marketplaces/dent-brain rev-list --count HEAD..origin/main 2>/dev/null)
+echo "BEHIND_COMMITS: $BEHIND"
+```
 
-If Lane 1 is current, continue.
+- **If `BEHIND` is 0:** clone is current. Move to Step 3.
+- **If `BEHIND` > 0:** clone is behind. Two paths to fix:
+  1. **Recommended — let me pull it for you:** `git -C ~/.claude/plugins/marketplaces/dent-brain pull --ff-only origin main`. Idempotent, fast, no Claude Desktop interaction required.
+  2. **UI path:** open Claude Desktop → Plugins → dent-brain → click Update. Works when Claude Desktop's plugin UI is cooperating (which it sometimes isn't — the git-pull-on-click trigger has been observed to silently no-op).
+
+Use AskUserQuestion:
+
+> Your plugin clone is N commits behind origin/main. The rendered skills + bundled
+> tools/ in your install are stale. Updating brings them current.
+>
+> A) Pull the clone now (recommended — fastest, no Claude Desktop interaction)
+> B) Use Claude Desktop's plugin UI instead (Plugins → dent-brain → Update)
+> C) Skip — I know what I'm doing
+
+If A: run the git pull, verify `git status` shows clean, then continue to Step 3.
+
+If B/C and BEHIND > 0, **STOP**. The daemon re-install in Step 5 reads from `$BUNDLE_DIR`; if it's stale, we'd just re-install the same outdated daemon code.
 
 ## Step 3. Lane 2 status — server version (informational)
 
@@ -104,7 +129,7 @@ If plugin and server are >2 minor versions apart, surface a warning: "Your plugi
 For each entry in the registry that's currently installed at `~/.dent-brain/<id>/`:
 
 1. Read the installed version: `cat ~/.dent-brain/<id>/.installed-version 2>/dev/null` (will be `unknown` for installs that predate the version marker — treat as outdated).
-2. Read the bundle's source version: the `VERSION` file at the repo root inside the plugin cache, i.e. `cat $PLUGIN_DIR/VERSION` (the v0.37.4 plugin bundle ships this).
+2. Read the bundle's source version: `cat $BUNDLE_DIR/VERSION` where `$BUNDLE_DIR=~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace` (the v0.37.4 plugin bundle started shipping this file at the bundle root).
 3. If `installed != bundle` (or installed is `unknown`), the daemon is outdated.
 
 Build a list of daemons that need re-install. If the list is empty: "All daemons current at v{version}. Nothing to do." Skip to Step 6.
@@ -127,7 +152,7 @@ Options:
 If A or B: for each chosen daemon, run:
 
 ```bash
-bash $PLUGIN_DIR/tools/<id>/install.sh
+bash $BUNDLE_DIR/tools/<id>/install.sh
 ```
 
 Stream stdout/stderr to the teammate so they see progress and any prompts. After install completes:
@@ -137,7 +162,7 @@ Stream stdout/stderr to the teammate so they see progress and any prompts. After
 If C: print a one-liner the teammate can run later:
 
 ```bash
-bash $(ls -d ~/.claude/plugins/cache/dent-brain/dent-brain/[0-9]*/ | sort -V | tail -1)tools/granola-sync/install.sh
+bash ~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace/tools/granola-sync/install.sh
 ```
 
 ## Step 6. Summary
