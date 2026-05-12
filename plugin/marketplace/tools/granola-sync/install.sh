@@ -136,12 +136,21 @@ else
   done
 fi
 
-# 5. Copy runtime files
+# 5. Copy runtime files + stamp installed version (used by /dent-update for drift detection).
 mkdir -p "$INSTALL_DIR"
 for f in sync.ts types.ts filter.ts translator.ts mcp-client.ts granola-api.ts; do
   cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
 done
-echo "    copied 6 runtime files."
+# Resolve the bundle version. If SCRIPT_DIR is inside a plugin cache,
+# `<cache>/VERSION` will be present. If running from a git clone, fall
+# back to the repo's VERSION. Used by /dent-update to detect daemon drift.
+BUNDLE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -f "$BUNDLE_ROOT/VERSION" ]; then
+  cp "$BUNDLE_ROOT/VERSION" "$INSTALL_DIR/.installed-version"
+else
+  echo "unknown" > "$INSTALL_DIR/.installed-version"
+fi
+echo "    copied 6 runtime files (installed-version: $(cat "$INSTALL_DIR/.installed-version"))."
 
 # 6. Render and install plist
 PLIST_RENDERED="$(mktemp)"

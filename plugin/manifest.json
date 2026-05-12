@@ -28,7 +28,8 @@
       "tell-me-about",
       "flag-fact",
       "whoami",
-      "update-dbrain",
+      "update",
+      "process-inbox",
       "setup-filemaker-mcp",
       "signal-detector"
     ]
