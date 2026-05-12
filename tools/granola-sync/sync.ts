@@ -2,45 +2,34 @@
 /**
  * Granola → Dent Brain sync daemon.
  *
- * Runs hourly (via launchd) on each teammate's laptop. Reads Granola's local
- * cache, filters to Dent-related meetings, translates each one into a brain
- * meeting page + transcript page, and dispatches MCP calls against the
- * production dent-brain server using the teammate's personal bearer token.
+ * Runs hourly (via launchd) on each teammate's laptop. Pulls meeting notes
+ * from the Granola public API, filters to org-related meetings, translates
+ * each one into a brain meeting page + transcript page, and dispatches MCP
+ * calls against the production dent-brain server using the teammate's
+ * personal bearer token.
  *
- * Idempotent on `[Source: granola/<document-id>]` — re-runs are safe.
+ * Idempotent on `[Source: granola/<note-id>]` and slug — re-runs are safe.
  *
  * Usage:
  *   bun sync.ts                     # use config from ~/.dent-brain/granola-sync/config.json
  *   bun sync.ts --dry-run           # plan only, no MCP calls
  *   bun sync.ts --limit 3           # cap how many meetings get processed
  *   bun sync.ts --since 2026-04-01  # override the cursor's lastSyncedCreatedAt
- *   bun sync.ts --doc-id <id>       # sync a single specific Granola document
+ *   bun sync.ts --doc-id not_...    # sync a single specific Granola note
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import type {
-  GranolaCache,
-  GranolaDocument,
-  GranolaTranscriptSegment,
-  SyncConfig,
-  SyncCursor,
-} from './types.ts';
+import type { Note, SyncConfig, SyncCursor } from './types.ts';
 import { McpClient } from './mcp-client.ts';
 import { isOrgRelated } from './filter.ts';
 import type { FilterContext } from './filter.ts';
 import { translateMeeting } from './translator.ts';
+import { GranolaApi, readKeyFromKeychain, KEYCHAIN_SERVICE, keychainAccount } from './granola-api.ts';
 
-const SYNC_VERSION = '0.1.0';
+const SYNC_VERSION = '0.2.0';
 const DEFAULT_CONFIG_PATH = join(homedir(), '.dent-brain', 'granola-sync', 'config.json');
-
-// Granola finishes post-meeting transcribe + summarize asynchronously, often
-// 30-45 minutes after the meeting ends. If we evaluate a doc before Granola
-// is done writing to it, we'd see no notes/summary/transcript and dead-list
-// it. Skip docs whose updated_at is too recent — they're still "settling."
-// Next run picks them up once Granola has stopped touching them.
-const SETTLE_DELAY_MS = 45 * 60 * 1000;
 
 function parseFlags(argv: string[]) {
   const flags = {
@@ -72,13 +61,12 @@ function parseFlags(argv: string[]) {
 
 function printHelp() {
   process.stderr.write(
-    `Granola → Dent Brain sync daemon\n\nUsage: bun sync.ts [flags]\n  --dry-run                Plan only, no writes.\n  --limit <n>              Cap meetings processed (default: no cap).\n  --since YYYY-MM-DD       Override cursor (re-sync from this date).\n  --doc-id <granola-id>    Sync exactly one document (bypasses cursor, dedup, and settle delay).\n  --config <path>          Override config path (default: ~/.dent-brain/granola-sync/config.json).\n  --verbose | -v           Log every doc decision.\n  --help | -h              Print this help.\n`,
+    `Granola → Dent Brain sync daemon\n\nUsage: bun sync.ts [flags]\n  --dry-run                Plan only, no writes.\n  --limit <n>              Cap meetings processed (default: no cap).\n  --since YYYY-MM-DD       Override cursor (re-sync from this date).\n  --doc-id <not_...>       Sync exactly one note (bypasses cursor + dedup).\n  --config <path>          Override config path (default: ~/.dent-brain/granola-sync/config.json).\n  --verbose | -v           Log every note decision.\n  --help | -h              Print this help.\n`,
   );
 }
 
 /** Read the dent-brain MCP server URL + bearer token straight from
- *  `~/.claude.json` (set by `claude mcp add dent-brain ...`). Returns null
- *  if claude.json is missing, malformed, or has no dent-brain entry. */
+ *  `~/.claude.json` (set by `claude mcp add dent-brain ...`). */
 function discoverFromClaudeJson(): { serverUrl: string; bearerToken: string } | null {
   const path = join(homedir(), '.claude.json');
   if (!existsSync(path)) return null;
@@ -98,10 +86,6 @@ function discoverFromClaudeJson(): { serverUrl: string; bearerToken: string } | 
 }
 
 function loadConfig(path: string): SyncConfig {
-  // Discover token + URL from ~/.claude.json (the same place `claude mcp add`
-  // wrote them during onboarding). The config file's serverUrl/bearerToken,
-  // if present, override these — but the standard setup leaves them empty so
-  // the teammate has ONE source of truth.
   const discovered = discoverFromClaudeJson();
 
   let raw: Record<string, unknown> = {};
@@ -128,13 +112,9 @@ function loadConfig(path: string): SyncConfig {
     process.exit(1);
   }
 
-  const cachePath = String(raw.granolaCachePath ?? `${homedir()}/Library/Application Support/Granola/cache-v6.json`).replace('${HOME}', homedir());
-
   const orgKeywords = Array.isArray(raw.orgKeywords) && raw.orgKeywords.length > 0
     ? (raw.orgKeywords as unknown[]).map((k) => String(k).toLowerCase())
     : ['dent'];
-  // Backwards-compat: old configs called this `dentDomains`. Read whichever is
-  // present; default to dentthefuture.com.
   const rawDomains = Array.isArray(raw.orgDomains) && raw.orgDomains.length > 0
     ? raw.orgDomains
     : Array.isArray(raw.dentDomains) && raw.dentDomains.length > 0
@@ -149,7 +129,6 @@ function loadConfig(path: string): SyncConfig {
   return {
     serverUrl,
     bearerToken,
-    granolaCachePath: cachePath,
     cursorPath: String(raw.cursorPath ?? join(homedir(), '.dent-brain', 'granola-sync', 'cursor.json')).replace('${HOME}', homedir()),
     orgKeywords,
     orgDomains,
@@ -167,7 +146,16 @@ function loadCursor(path: string): SyncCursor {
       syncVersion: SYNC_VERSION,
     };
   }
-  return JSON.parse(readFileSync(path, 'utf-8'));
+  const parsed: SyncCursor = JSON.parse(readFileSync(path, 'utf-8'));
+  // Migration v0.1 → v0.2: old cursor stored cache UUIDs that don't match
+  // the API's `not_…` IDs. Drop them — slug-level dedup in the brain still
+  // prevents duplicate writes when an already-filed meeting comes through.
+  const legacy = (parsed.syncedDocumentIds ?? []).filter((id) => !/^not_/.test(id));
+  if (legacy.length > 0) {
+    parsed.syncedDocumentIds = parsed.syncedDocumentIds.filter((id) => /^not_/.test(id));
+    console.error(`[granola-sync] migration: dropped ${legacy.length} legacy cache UUIDs from cursor`);
+  }
+  return parsed;
 }
 
 function saveCursor(path: string, cursor: SyncCursor) {
@@ -175,69 +163,9 @@ function saveCursor(path: string, cursor: SyncCursor) {
   writeFileSync(path, JSON.stringify(cursor, null, 2), 'utf-8');
 }
 
-interface DocPick {
-  doc: GranolaDocument;
-  transcript: GranolaTranscriptSegment[] | undefined;
-}
-
-function loadGranolaDocs(cachePath: string): {
-  docs: GranolaDocument[];
-  transcripts: Record<string, GranolaTranscriptSegment[]>;
-  docToFolders: Map<string, string[]>;
-} {
-  if (!existsSync(cachePath)) {
-    console.error(`Granola cache not found at ${cachePath}.`);
-    console.error('Open the Granola app at least once so it creates the cache, then re-run.');
-    process.exit(1);
-  }
-  const cache: GranolaCache = JSON.parse(readFileSync(cachePath, 'utf-8'));
-  const docMap = cache.cache?.state?.documents ?? {};
-  const sharedMap = cache.cache?.state?.sharedDocuments ?? {};
-  const docs: GranolaDocument[] = [];
-  for (const id of Object.keys(docMap)) docs.push(docMap[id]);
-  for (const id of Object.keys(sharedMap)) {
-    if (!docs.find((d) => d.id === id)) docs.push(sharedMap[id]);
-  }
-  const transcripts = cache.cache?.state?.transcripts ?? {};
-
-  // Build docId → [folderTitle, ...]. Granola stores `documentLists` as
-  // { listId: [docId, ...] } and `documentListsMetadata` as either an array
-  // or a record keyed by listId, each with a `title` field.
-  const docToFolders = new Map<string, string[]>();
-  const lists = cache.cache?.state?.documentLists ?? {};
-  const meta = cache.cache?.state?.documentListsMetadata ?? {};
-  const metaArr = Array.isArray(meta) ? meta : Object.values(meta);
-  const titleByListId = new Map<string, string>();
-  for (const m of metaArr) {
-    if (m?.id && m?.title) titleByListId.set(m.id, String(m.title));
-  }
-  for (const [listId, docIds] of Object.entries(lists)) {
-    const title = titleByListId.get(listId);
-    if (!title || !Array.isArray(docIds)) continue;
-    for (const docId of docIds) {
-      const arr = docToFolders.get(docId) ?? [];
-      if (!arr.includes(title)) arr.push(title);
-      docToFolders.set(docId, arr);
-    }
-  }
-
-  return { docs, transcripts, docToFolders };
-}
-
-// `brainEmails` was a 5th filter signal — match attendee email against any
-// entity already in the brain. It was hard-stubbed to empty because
-// `list_pages` times out on the production brain (17k+ pages). The new
-// folder/title/body/domain signals make it unnecessary in practice: a
-// meeting with a tracked partner almost always has the org keyword in the
-// title or transcript, or a teammate on the invite. If we ever want to
-// resurrect the signal, the right shape is a dedicated server-side op
-// (e.g. `list_entity_emails`) rather than walking pages.
-
 interface ExistingPage {
   exists: boolean;
-  /** Length of the compiled_truth body, used as a "richness" proxy. */
   bodyLength: number;
-  /** True if `created_via: granola-sync` — safe to overwrite. */
   fromGranola: boolean;
 }
 
@@ -258,9 +186,6 @@ async function fetchPage(client: McpClient, slug: string): Promise<ExistingPage>
 async function ensureMeetingPage(client: McpClient, slug: string, content: string, dryRun: boolean): Promise<'created' | 'existed' | 'updated'> {
   const existing = await fetchPage(client, slug);
   if (existing.exists) {
-    // Update if the existing page came from us AND the new content is materially
-    // richer (e.g. the original was an empty stub, Granola has now captured notes).
-    // 50-char threshold catches the bare-stub case (~120 chars) vs a real page (~500+).
     const newBody = content.split('---\n').slice(2).join('---\n');
     if (existing.fromGranola && newBody.length > existing.bodyLength + 50) {
       if (dryRun) return 'updated';
@@ -289,13 +214,6 @@ async function ensureAttendeeStub(
   isoDate: string,
   dryRun: boolean,
 ): Promise<{ slug: string; created: boolean }> {
-  // Try email-based lookup via search/query (the brain doesn't have a
-  // direct "find page by email" op exposed, but list_pages with frontmatter
-  // filtering would). For now, derive a slug from name/email and check
-  // whether that slug exists. Not perfect — won't find pages where the
-  // person is filed under a different slug. Acceptable for v0.1 since
-  // we already cached brainEmails for the filter step (we re-use that
-  // set as a "known email" check up the call stack).
   const local = email.split('@')[0] ?? email;
   const base = (displayName ?? local).toLowerCase()
     .normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -331,20 +249,13 @@ interface DetectEntitiesResult {
   unknowns: string[];
 }
 
-function meetingBodyForDetection(doc: GranolaDocument, transcript: GranolaTranscriptSegment[] | undefined): string {
+function meetingBodyForDetection(note: Note): string {
   const parts: string[] = [];
-  if (typeof doc.title === 'string') parts.push(doc.title);
-  if (typeof doc.summary === 'string') parts.push(doc.summary);
-  if (typeof doc.notes_markdown === 'string') parts.push(doc.notes_markdown);
-  if (typeof doc.overview === 'string' && doc.overview) parts.push(doc.overview);
-  if (Array.isArray(doc.chapters)) {
-    for (const ch of doc.chapters) {
-      if (ch?.title) parts.push(ch.title);
-      if (ch?.summary) parts.push(ch.summary);
-    }
-  }
-  if (transcript) {
-    for (const seg of transcript) {
+  if (typeof note.title === 'string' && note.title) parts.push(note.title);
+  if (note.summary_text) parts.push(note.summary_text);
+  if (note.summary_markdown) parts.push(note.summary_markdown);
+  if (Array.isArray(note.transcript)) {
+    for (const seg of note.transcript) {
       if (seg?.text) parts.push(seg.text);
     }
   }
@@ -354,18 +265,13 @@ function meetingBodyForDetection(doc: GranolaDocument, transcript: GranolaTransc
 async function appendMentionedToMeeting(
   client: McpClient,
   meetingSlug: string,
-  doc: GranolaDocument,
-  transcript: GranolaTranscriptSegment[] | undefined,
+  note: Note,
   attendeeNames: string[],
   dryRun: boolean,
 ): Promise<{ matched: number }> {
-  const text = meetingBodyForDetection(doc, transcript);
+  const text = meetingBodyForDetection(note);
   if (!text || text.trim().length < 20) return { matched: 0 };
 
-  // We discard `result.unknowns` — capitalized phrases that don't match any
-  // brain entity. Useful in theory for surfacing un-tracked people, but the
-  // signal-to-noise is poor (lots of "Yeah", "And", page-headers) and the
-  // log lines aren't worth the disk. Re-enable later if there's a real use.
   let result: DetectEntitiesResult;
   try {
     result = await client.tool<DetectEntitiesResult>('detect_entities', { text });
@@ -374,7 +280,6 @@ async function appendMentionedToMeeting(
     return { matched: 0 };
   }
 
-  // Dedupe by slug, keeping highest confidence per entity.
   const bySlug = new Map<string, DetectEntitiesResult['matches'][number]>();
   for (const m of result.matches ?? []) {
     const prev = bySlug.get(m.slug);
@@ -382,18 +287,6 @@ async function appendMentionedToMeeting(
   }
   const allMatches = Array.from(bySlug.values());
 
-  // First-name fallback is dangerous — saying "Chris" in a transcript hits
-  // every Chris in the brain. Disambiguation rules, in order:
-  //
-  //   (a) Attendee match. If any candidate in a first-name group has a title
-  //       that matches an attendee's display name, the calendar invite is
-  //       ground truth — keep those, drop the rest. Handles the "Steve was on
-  //       the call → 'Steve' in transcript = Steve Broback" case.
-  //   (b) Brain-unique. If no attendee disambiguates and exactly one entity
-  //       in the brain matches that first name, keep it.
-  //   (c) Otherwise drop the whole group as ambiguous.
-  //
-  // Exact-title and alias matches always pass.
   const attendeeNameSet = new Set<string>();
   for (const n of attendeeNames) {
     const t = (n ?? '').trim().toLowerCase();
@@ -411,18 +304,12 @@ async function appendMentionedToMeeting(
     }
   }
   const keepFirstNameSlugs = new Set<string>();
-  const ambiguousFirstNames = new Set<string>();
-  for (const [key, arr] of firstNameGroups) {
+  for (const [, arr] of firstNameGroups) {
     const inviteHits = arr.filter((m) => attendeeNameSet.has(m.title.trim().toLowerCase()));
     if (inviteHits.length > 0) {
-      // (a) Attendee match wins.
       for (const m of inviteHits) keepFirstNameSlugs.add(m.slug);
     } else if (arr.length === 1) {
-      // (b) Brain-unique fallback.
       keepFirstNameSlugs.add(arr[0].slug);
-    } else {
-      // (c) Drop the group.
-      ambiguousFirstNames.add(key);
     }
   }
   const matches = allMatches
@@ -433,9 +320,6 @@ async function appendMentionedToMeeting(
 
   if (matches.length === 0) return { matched: 0 };
 
-  // Note: attendees may also appear here. We don't dedupe against the
-  // attendee list — the meeting frontmatter already carries them, and the
-  // small redundancy is harmless.
   const lines = ['## Mentioned', '', 'People, companies, and projects mentioned in this meeting (auto-detected from notes + transcript):', ''];
   for (const m of matches) {
     lines.push(`- [[${m.slug}]] (${m.title})`);
@@ -464,9 +348,6 @@ async function appendBulletToAttendee(
   displayName: string | undefined,
   dryRun: boolean,
 ): Promise<{ action: 'appended' | 'created-stub' | 'failed'; slug?: string }> {
-  // ensureAttendeeStub is idempotent — it checks pageExists and skips if
-  // found, so we always fall through here regardless of whether the email
-  // already maps to an entity page.
   const stub = await ensureAttendeeStub(client, email, displayName, isoDate, dryRun);
   if (dryRun) return { action: stub.created ? 'created-stub' : 'appended', slug: stub.slug };
   try {
@@ -482,6 +363,27 @@ async function appendBulletToAttendee(
   }
 }
 
+async function loadGranolaApi(): Promise<GranolaApi> {
+  const key = await readKeyFromKeychain();
+  if (!key) {
+    console.error(`No Granola API key in keychain (service=${KEYCHAIN_SERVICE}, account=${keychainAccount()}).`);
+    console.error(`Mint a key in Granola: Settings → Connectors → API keys → Create new key.`);
+    console.error(`Then re-run \`bash tools/granola-sync/install.sh\` (or store manually:`);
+    console.error(`  security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${keychainAccount()} -w 'grn_...').`);
+    process.exit(1);
+  }
+  const api = new GranolaApi(key);
+  try {
+    await api.validate();
+  } catch (e) {
+    console.error(`[granola-sync] FATAL: Granola API key rejected — ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Re-run install.sh to update the keychain entry, or update directly:`);
+    console.error(`  security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${keychainAccount()} -w 'grn_...'`);
+    process.exit(2);
+  }
+  return api;
+}
+
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
   const config = loadConfig(flags.configPath);
@@ -489,8 +391,9 @@ async function main() {
   const sinceCutoff = flags.since ? new Date(flags.since).toISOString() : cursor.lastSyncedCreatedAt;
 
   console.error(`[granola-sync] mode=${flags.dryRun ? 'DRY RUN' : 'APPLY'} cursor=${sinceCutoff}`);
-  const { docs, transcripts, docToFolders } = loadGranolaDocs(config.granolaCachePath);
-  console.error(`[granola-sync] Granola cache: ${docs.length} documents, ${Object.keys(transcripts).length} local transcripts, ${docToFolders.size} folder-tagged`);
+
+  const api = await loadGranolaApi();
+  console.error(`[granola-sync] Granola API: authenticated`);
 
   const client = new McpClient({ serverUrl: config.serverUrl, bearerToken: config.bearerToken });
   if (!flags.dryRun) {
@@ -508,119 +411,112 @@ async function main() {
     orgDomains: config.orgDomains,
     orgFolders: config.orgFolders,
     fileAll: config.fileAll,
-    docToFolders,
   };
   console.error(
     `[granola-sync] filter: keywords=[${config.orgKeywords.join(', ')}] folders=[${config.orgFolders.join(', ')}] domains=[${config.orgDomains.join(', ')}] fileAll=${config.fileAll}`,
   );
 
-  // Order documents oldest-first so we sync chronologically and the cursor
-  // always advances safely (even on partial failure).
-  const inWindow = docs
-    .filter((d) => !d.deleted_at)
-    .filter((d) => d.valid_meeting !== false)
-    .filter((d) => {
-      if (flags.docId) return d.id === flags.docId;
-      const created = new Date(d.created_at).getTime();
-      const cutoff = new Date(sinceCutoff).getTime();
-      return Number.isFinite(created) && created > cutoff;
-    })
-    .filter((d) => flags.docId ? true : !cursor.syncedDocumentIds.includes(d.id));
-
-  const now = Date.now();
-  const isSettled = (d: GranolaDocument) => {
-    const ts = d.updated_at ? new Date(d.updated_at).getTime() : new Date(d.created_at).getTime();
-    return Number.isFinite(ts) && now - ts >= SETTLE_DELAY_MS;
-  };
-  // --doc-id bypasses the settle delay so an operator can force-process a
-  // specific document (e.g. for recovery / debugging).
-  const unsettled = flags.docId ? [] : inWindow.filter((d) => !isSettled(d));
-  const candidates = inWindow
-    .filter((d) => flags.docId || isSettled(d))
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-
-  if (unsettled.length > 0) {
-    console.error(`[granola-sync] ${unsettled.length} document(s) still settling (updated within last ${SETTLE_DELAY_MS / 60000}m) — will retry next run`);
-    if (flags.verbose) {
-      for (const d of unsettled) {
-        const ageMin = Math.round((now - new Date(d.updated_at ?? d.created_at).getTime()) / 60000);
-        console.error(`  WAIT "${d.title ?? '(no title)'}" — updated ${ageMin}m ago`);
-      }
+  // Build the candidate list of note IDs to fetch in full.
+  //  --doc-id: one note, bypasses cursor + dedup.
+  //  default: paginated /v1/notes?created_after=<cursor>, dedup against syncedDocumentIds.
+  const candidateIds: string[] = [];
+  let listed = 0;
+  if (flags.docId) {
+    candidateIds.push(flags.docId);
+  } else {
+    const seen = new Set(cursor.syncedDocumentIds);
+    for await (const summary of api.iterNotes({ createdAfter: sinceCutoff })) {
+      listed++;
+      if (seen.has(summary.id)) continue;
+      candidateIds.push(summary.id);
     }
+    // Order chronologically by listing's natural order from API (which is
+    // typically newest-first). Sort ascending by id-discovery isn't safe;
+    // we re-sort using `created_at` after fetching full notes.
   }
-  console.error(`[granola-sync] ${candidates.length} candidate document(s) after cursor + dedup + settle filters`);
+  console.error(`[granola-sync] Granola API: ${listed} note(s) listed, ${candidateIds.length} candidate(s) after dedup`);
 
   let kept = 0, skipped = 0, processed = 0;
   let createdMeetings = 0, existedMeetings = 0, updatedMeetings = 0, createdTranscripts = 0;
   let bulletsAppended = 0, stubsCreated = 0, bulletsFailed = 0;
   let mentionedMatches = 0;
   const newSyncedIds: string[] = [];
+  let latestCreatedAt = sinceCutoff;
 
-  function hasContent(doc: GranolaDocument, transcript: GranolaTranscriptSegment[] | undefined): boolean {
-    if (transcript && transcript.length > 0) return true;
-    if (doc.notes_markdown && doc.notes_markdown.trim().length > 0) return true;
-    if (doc.summary && doc.summary.trim().length > 0) return true;
-    if (Array.isArray(doc.chapters) && doc.chapters.length > 0) return true;
+  function hasContent(note: Note): boolean {
+    if (note.transcript && note.transcript.length > 0) return true;
+    if (note.summary_text && note.summary_text.trim().length > 0) return true;
+    if (note.summary_markdown && note.summary_markdown.trim().length > 0) return true;
     return false;
   }
 
-  for (const doc of candidates) {
+  // Fetch full notes (with transcript) and process in created_at ascending
+  // order so the cursor advances safely even on partial failure.
+  const fullNotes: Note[] = [];
+  for (const id of candidateIds) {
+    if (processed >= flags.limit && !flags.docId) break;
+    try {
+      const note = await api.getNote(id, { includeTranscript: true });
+      fullNotes.push(note);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 404 = note exists but doesn't yet have summary + transcript — Granola
+      // is still processing. It'll show up again on a future run.
+      if (/\s404\s/.test(msg)) {
+        if (flags.verbose) console.error(`  WAIT note ${id} — not yet processed (404), will retry next run`);
+        continue;
+      }
+      console.error(`[granola-sync] getNote ${id} failed: ${msg}`);
+    }
+  }
+  fullNotes.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  for (const note of fullNotes) {
     if (processed >= flags.limit) break;
-    const verdict = isOrgRelated(doc, transcripts[doc.id], filterCtx);
+    const verdict = isOrgRelated(note, filterCtx);
     if (!verdict.keep) {
       skipped++;
-      if (flags.verbose) console.error(`  SKIP "${doc.title ?? '(no title)'}" — ${verdict.reason}`);
-      // Still mark as seen so we don't re-evaluate every run.
-      newSyncedIds.push(doc.id);
+      if (flags.verbose) console.error(`  SKIP "${note.title ?? '(no title)'}" — ${verdict.reason}`);
+      newSyncedIds.push(note.id);
+      latestCreatedAt = note.created_at > latestCreatedAt ? note.created_at : latestCreatedAt;
       continue;
     }
-    const tr = transcripts[doc.id];
-    if (!hasContent(doc, tr)) {
+    if (!hasContent(note)) {
       skipped++;
-      if (flags.verbose) console.error(`  SKIP "${doc.title ?? '(no title)'}" — Dent-related but Granola captured no content (no notes, no summary, no transcript)`);
-      newSyncedIds.push(doc.id);
+      if (flags.verbose) console.error(`  SKIP "${note.title ?? '(no title)'}" — Dent-related but Granola returned no content`);
+      newSyncedIds.push(note.id);
+      latestCreatedAt = note.created_at > latestCreatedAt ? note.created_at : latestCreatedAt;
       continue;
     }
     kept++;
     processed++;
-    console.error(`\n  KEEP "${doc.title ?? '(no title)'}" — ${verdict.reason}`);
+    console.error(`\n  KEEP "${note.title ?? '(no title)'}" — ${verdict.reason}`);
 
-    const transcript = tr;
-    const t = translateMeeting(doc, transcript);
+    const t = translateMeeting(note);
 
-    // Meeting page
     const meeting = await ensureMeetingPage(client, t.meetingSlug, t.meetingContent, flags.dryRun);
     if (meeting === 'created') createdMeetings++;
     else if (meeting === 'updated') updatedMeetings++;
     else existedMeetings++;
     console.error(`    meeting page: ${meeting} (${t.meetingSlug})`);
 
-    // Transcript page (if any)
     if (t.transcriptSlug && t.transcriptContent) {
       const tr = await ensureTranscriptPage(client, t.transcriptSlug, t.transcriptContent, flags.dryRun);
       if (tr === 'created') createdTranscripts++;
-      console.error(`    transcript:   ${tr} (${t.transcriptSlug}, ${transcript?.length ?? 0} segments)`);
+      console.error(`    transcript:   ${tr} (${t.transcriptSlug}, ${note.transcript?.length ?? 0} segments)`);
     } else {
-      console.error(`    transcript:   none in local cache`);
+      console.error(`    transcript:   none on the note`);
     }
 
-    // Mentioned section — only refresh when the meeting page was just
-    // (re)written. `replace_page` wipes prior content, so the append below
-    // rebuilds the section from scratch each time. On 'existed' we leave
-    // the previous section in place to avoid duplicate sections.
     if (meeting === 'created' || meeting === 'updated') {
       const attendeeNamesArr = Object.values(t.attendeeNames ?? {}).filter((n): n is string => typeof n === 'string' && n.length > 0);
-      const m = await appendMentionedToMeeting(client, t.meetingSlug, doc, transcript, attendeeNamesArr, flags.dryRun);
+      const m = await appendMentionedToMeeting(client, t.meetingSlug, note, attendeeNamesArr, flags.dryRun);
       mentionedMatches += m.matched;
       if (m.matched > 0) {
         console.error(`    mentioned:    ${m.matched} entities`);
       }
     }
 
-    // Per-attendee bullets — bullet lands on every attendee's entity page,
-    // including the teammate's own page. The teammate's timeline IS a
-    // legitimate record of the meetings they attended; idempotency on
-    // [Source: granola/<id>] prevents duplicates on re-runs.
     for (const e of t.attendeeEmails) {
       const r = await appendBulletToAttendee(client, e, t.attendeeBullet, t.isoDate, t.attendeeNames[e], flags.dryRun);
       if (r.action === 'appended') bulletsAppended++;
@@ -628,28 +524,16 @@ async function main() {
       else if (r.action === 'failed') bulletsFailed++;
     }
 
-    newSyncedIds.push(doc.id);
+    newSyncedIds.push(note.id);
+    latestCreatedAt = note.created_at > latestCreatedAt ? note.created_at : latestCreatedAt;
   }
 
-  // Update cursor: advance to the latest doc we processed (kept or skipped),
-  // but never past the oldest unsettled doc — otherwise an unsettled doc with
-  // an older created_at than a settled one we just processed would get
-  // permanently filtered out by the `created > cutoff` check next run.
   const allProcessed = [...cursor.syncedDocumentIds, ...newSyncedIds];
-  const latestProcessedMs = candidates.length > 0
-    ? new Date(candidates[candidates.length - 1].created_at).getTime()
-    : new Date(cursor.lastSyncedCreatedAt).getTime();
-  const oldestUnsettledMs = unsettled.length > 0
-    ? Math.min(...unsettled.map((d) => new Date(d.created_at).getTime()))
-    : Infinity;
-  const advanceMs = Math.min(latestProcessedMs, oldestUnsettledMs - 1);
-  const latestProcessedTime = Number.isFinite(advanceMs) && advanceMs > 0
-    ? new Date(advanceMs).toISOString()
-    : cursor.lastSyncedCreatedAt;
-
   const newCursor: SyncCursor = {
-    lastSyncedCreatedAt: latestProcessedTime,
-    syncedDocumentIds: allProcessed.slice(-500), // keep tail bounded
+    // --doc-id is a force-run; don't advance the cursor (it might be an old
+    // note synced by an operator out of band).
+    lastSyncedCreatedAt: flags.docId ? cursor.lastSyncedCreatedAt : latestCreatedAt,
+    syncedDocumentIds: allProcessed.slice(-500),
     cursorUpdatedAt: new Date().toISOString(),
     syncVersion: SYNC_VERSION,
   };

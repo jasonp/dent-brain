@@ -420,8 +420,9 @@ walkthrough only handles the install.
 
 dent-brain extensions are per-teammate ingestors that run on your laptop
 and push signal into the brain automatically. The flagship today is
-**granola-sync** — an hourly daemon that watches your Granola.ai cache,
-filters for Dent meetings, and pushes notes + transcripts to the brain.
+**granola-sync** — an hourly daemon that pulls meetings from the Granola
+public API (you'll mint an API key during install), filters for Dent
+meetings, and pushes notes + transcripts to the brain.
 
 ### Agent prompt
 

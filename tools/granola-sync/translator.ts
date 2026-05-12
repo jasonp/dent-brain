@@ -1,12 +1,10 @@
 /**
- * Pure translator: GranolaDocument + transcript segments → meeting page +
- * transcript page + per-attendee timeline bullet.
- *
- * No side effects. The orchestrator (sync.ts) takes the plan and dispatches
- * MCP calls.
+ * Pure translator: Granola Note → meeting page + transcript page + per-attendee
+ * timeline bullet. No side effects. The orchestrator (sync.ts) takes the plan
+ * and dispatches MCP calls.
  */
 
-import type { GranolaDocument, GranolaTranscriptSegment } from './types.ts';
+import type { Note } from './types.ts';
 
 export interface TranslatedMeeting {
   /** Meeting page slug, e.g. `meetings/2026-04-14-jason-and-amitai-call`. */
@@ -21,11 +19,9 @@ export interface TranslatedMeeting {
   isoDate: string;
   /** Stable provenance ref present in every bullet/page. */
   sourceRef: string;
-  /** Lowercased attendee emails (sans the teammate themselves). Caller uses
-   *  these to email-match against existing entity pages and emit timeline
-   *  bullets / create new stubs. */
+  /** Lowercased attendee emails. */
   attendeeEmails: string[];
-  /** Display names keyed by lowercased email — best effort from calendar event. */
+  /** Display names keyed by lowercased email. */
   attendeeNames: Record<string, string>;
   /** The single bullet to land on each matched attendee's `## Timeline`. */
   attendeeBullet: string;
@@ -41,28 +37,17 @@ function kebab(s: string): string {
     .slice(0, 80);
 }
 
-function isoDateOf(raw: string | undefined): string {
+function isoDateOf(raw: string | undefined | null): string {
   if (!raw) return new Date().toISOString().slice(0, 10);
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10);
 }
 
-function timeOf(raw: string | undefined): string {
-  if (!raw) return '00:00:00';
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return '00:00:00';
-  const h = String(d.getUTCHours()).padStart(2, '0');
-  const m = String(d.getUTCMinutes()).padStart(2, '0');
-  const s = String(d.getUTCSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
-
-function attendeeList(doc: GranolaDocument): { emails: string[]; names: Record<string, string> } {
-  const ev = doc.google_calendar_event;
+function attendeeList(note: Note): { emails: string[]; names: Record<string, string> } {
   const seen = new Set<string>();
   const emails: string[] = [];
   const names: Record<string, string> = {};
-  const add = (email: string | undefined, name?: string) => {
+  const add = (email: string | undefined | null, name?: string | null) => {
     if (!email) return;
     const e = email.trim().toLowerCase();
     if (!e || seen.has(e)) return;
@@ -70,43 +55,44 @@ function attendeeList(doc: GranolaDocument): { emails: string[]; names: Record<s
     emails.push(e);
     if (name) names[e] = name.trim();
   };
-  for (const a of ev?.attendees ?? []) add(a.email, a.displayName);
-  add(ev?.creator?.email, ev?.creator?.displayName);
-  add(ev?.organizer?.email);
+  // Prefer `attendees` (carries names); fall back to calendar invitees (email-only) + organiser.
+  for (const a of note.attendees ?? []) add(a.email, a.name ?? undefined);
+  for (const i of note.calendar_event?.invitees ?? []) add(i.email);
+  add(note.calendar_event?.organiser);
   return { emails, names };
 }
 
 function quote(s: string): string {
-  // Wrap a string in JSON-style quotes if it contains characters YAML cares about.
   if (/[:#\n]/.test(s) || /^\s|\s$/.test(s) || /^[!&*?{}|>'"%@`]/.test(s)) {
     return JSON.stringify(s);
   }
   return s;
 }
 
-export function translateMeeting(
-  doc: GranolaDocument,
-  transcript: GranolaTranscriptSegment[] | undefined,
-): TranslatedMeeting {
-  const isoDate = isoDateOf(doc.created_at);
-  const titleSlug = kebab(doc.title || `granola-${doc.id.slice(0, 8)}`);
+function speakerTag(seg: { speaker: { source: string; diarization_label?: string } }): string {
+  if (seg.speaker.diarization_label) return `(${seg.speaker.diarization_label})`;
+  // macOS API uses `speaker` where the legacy cache used `system_audio`. Display as `(remote)`
+  // to keep the human reading the transcript oriented on which side of the call spoke.
+  if (seg.speaker.source === 'speaker') return '(remote)';
+  if (seg.speaker.source === 'microphone') return '(local)';
+  return `(${seg.speaker.source ?? '?'})`;
+}
+
+export function translateMeeting(note: Note): TranslatedMeeting {
+  const ev = note.calendar_event;
+  const eventStart = ev?.scheduled_start_time ?? null;
+  const isoDate = isoDateOf(eventStart ?? note.created_at);
+  const eventTitle = note.title || ev?.event_title || `Untitled meeting (Granola ${note.id.slice(4, 12)})`;
+  const titleSlug = kebab(eventTitle || `granola-${note.id.slice(4, 12)}`);
   const meetingSlug = `meetings/${isoDate}-${titleSlug}`;
-  // Transcripts go into a dedicated sub-namespace, not as a `--transcript`
-  // suffix. gbrain's `slugifySegment` collapses consecutive hyphens, so a
-  // suffix-with-double-dash file would always SLUG_MISMATCH on re-import
-  // (path-derived slug single-dashes; frontmatter double-dashed). The
-  // sub-namespace also matches `gbrain.yml`'s existing `meetings/transcripts/`
-  // db_only tier — transcripts stop bloating the dent-brain-data git history.
-  const transcriptSlug = transcript && transcript.length > 0
+  // Transcripts go into a dedicated sub-namespace so the path-derived slug
+  // matches the frontmatter slug (gbrain's slugifySegment collapses consecutive
+  // hyphens — a `--transcript` suffix would SLUG_MISMATCH on re-import).
+  const transcriptSlug = note.transcript && note.transcript.length > 0
     ? `meetings/transcripts/${isoDate}-${titleSlug}`
     : null;
-  const sourceRef = `granola/${doc.id}`;
-  const { emails, names } = attendeeList(doc);
-
-  const ev = doc.google_calendar_event;
-  const eventTitle = doc.title || ev?.summary || `Untitled meeting (Granola ${doc.id.slice(0, 8)})`;
-  const startISO = ev?.start?.dateTime ?? ev?.start?.date;
-  const endISO = ev?.end?.dateTime ?? ev?.end?.date;
+  const sourceRef = `granola/${note.id}`;
+  const { emails, names } = attendeeList(note);
 
   // ---------- Meeting page ----------
   const fmLines = [
@@ -115,13 +101,12 @@ export function translateMeeting(
     `slug: ${meetingSlug}`,
     'type: meeting',
     'created_via: granola-sync',
-    `granola_document_id: ${doc.id}`,
+    `granola_document_id: ${note.id}`,
     `meeting_date: ${isoDate}`,
   ];
-  if (startISO) fmLines.push(`meeting_start: ${quote(String(startISO))}`);
-  if (endISO) fmLines.push(`meeting_end: ${quote(String(endISO))}`);
-  if (ev?.location) fmLines.push(`meeting_location: ${quote(ev.location)}`);
-  if (ev?.htmlLink) fmLines.push(`calendar_url: ${quote(ev.htmlLink)}`);
+  if (ev?.scheduled_start_time) fmLines.push(`meeting_start: ${quote(ev.scheduled_start_time)}`);
+  if (ev?.scheduled_end_time) fmLines.push(`meeting_end: ${quote(ev.scheduled_end_time)}`);
+  if (note.web_url) fmLines.push(`granola_url: ${quote(note.web_url)}`);
   if (emails.length > 0) {
     fmLines.push('attendees:');
     for (const e of emails) fmLines.push(`  - ${e}`);
@@ -132,31 +117,20 @@ export function translateMeeting(
   const bodyParts: string[] = [];
   bodyParts.push(`# ${eventTitle}`);
   bodyParts.push('');
-  bodyParts.push(`Meeting on ${isoDate}${startISO ? ` at ${startISO}` : ''}. [Source: ${sourceRef}]`);
+  bodyParts.push(`Meeting on ${isoDate}${eventStart ? ` at ${eventStart}` : ''}. [Source: ${sourceRef}]`);
   bodyParts.push('');
 
-  if (doc.summary && doc.summary.trim().length > 0) {
+  if (note.summary_text && note.summary_text.trim().length > 0) {
     bodyParts.push('## Summary');
     bodyParts.push('');
-    bodyParts.push(doc.summary.trim());
+    bodyParts.push(note.summary_text.trim());
     bodyParts.push('');
   }
 
-  if (doc.notes_markdown && doc.notes_markdown.trim().length > 0) {
+  if (note.summary_markdown && note.summary_markdown.trim().length > 0) {
     bodyParts.push('## Notes');
     bodyParts.push('');
-    bodyParts.push(doc.notes_markdown.trim());
-    bodyParts.push('');
-  }
-
-  if (Array.isArray(doc.chapters) && doc.chapters.length > 0) {
-    bodyParts.push('## Chapters');
-    bodyParts.push('');
-    for (const ch of doc.chapters) {
-      if (!ch?.title) continue;
-      const t = ch.start_timestamp ? ` (${timeOf(ch.start_timestamp)})` : '';
-      bodyParts.push(`- **${ch.title}**${t}${ch.summary ? `: ${ch.summary}` : ''}`);
-    }
+    bodyParts.push(note.summary_markdown.trim());
     bodyParts.push('');
   }
 
@@ -173,7 +147,7 @@ export function translateMeeting(
   if (transcriptSlug) {
     bodyParts.push('## Raw transcript');
     bodyParts.push('');
-    bodyParts.push(`Diarized transcript (mic vs system audio): \`${transcriptSlug}\``);
+    bodyParts.push(`Diarized transcript: \`${transcriptSlug}\``);
     bodyParts.push('');
   }
 
@@ -181,36 +155,37 @@ export function translateMeeting(
 
   // ---------- Transcript page ----------
   let transcriptContent: string | null = null;
-  if (transcriptSlug && transcript) {
+  if (transcriptSlug && note.transcript) {
+    const segments = note.transcript;
     const trFmLines = [
       '---',
       `title: ${quote(`${eventTitle} — Raw transcript`)}`,
       `slug: ${transcriptSlug}`,
       'type: transcript',
       'created_via: granola-sync',
-      `granola_document_id: ${doc.id}`,
+      `granola_document_id: ${note.id}`,
       `meeting_date: ${isoDate}`,
       `meeting_page: ${meetingSlug}`,
-      `segment_count: ${transcript.length}`,
+      `segment_count: ${segments.length}`,
       '---',
     ];
     const trBodyParts: string[] = [];
     trBodyParts.push(`# ${eventTitle} — Raw transcript`);
     trBodyParts.push('');
-    trBodyParts.push(`Captured by Granola during the ${isoDate} meeting. ${transcript.length} segments. [Source: ${sourceRef}]`);
+    trBodyParts.push(`Captured by Granola during the ${isoDate} meeting. ${segments.length} segments. [Source: ${sourceRef}]`);
     trBodyParts.push('');
     trBodyParts.push('See [the meeting page](' + meetingSlug + ') for summary, notes, and attendees.');
     trBodyParts.push('');
     trBodyParts.push('## Transcript');
     trBodyParts.push('');
     trBodyParts.push('```');
-    // Compute a meeting-relative time using the first segment as t=0.
-    const first = transcript[0];
-    const baseMs = first?.start_timestamp ? new Date(first.start_timestamp).getTime() : NaN;
-    for (const seg of transcript) {
+    // Relative timestamps from the first segment.
+    const first = segments[0];
+    const baseMs = first?.start_time ? new Date(first.start_time).getTime() : NaN;
+    for (const seg of segments) {
       let stamp = '';
-      if (Number.isFinite(baseMs) && seg.start_timestamp) {
-        const diffMs = new Date(seg.start_timestamp).getTime() - baseMs;
+      if (Number.isFinite(baseMs) && seg.start_time) {
+        const diffMs = new Date(seg.start_time).getTime() - baseMs;
         if (Number.isFinite(diffMs) && diffMs >= 0) {
           const total = Math.floor(diffMs / 1000);
           const h = String(Math.floor(total / 3600)).padStart(2, '0');
@@ -219,7 +194,7 @@ export function translateMeeting(
           stamp = `[${h}:${m}:${s}] `;
         }
       }
-      const tag = seg.source === 'system_audio' ? '(remote)' : seg.source === 'microphone' ? '(local)' : `(${seg.source ?? '?'})`;
+      const tag = speakerTag(seg);
       const text = (seg.text ?? '').replace(/\s+/g, ' ').trim();
       if (!text) continue;
       trBodyParts.push(`${stamp}${tag} ${text}`);

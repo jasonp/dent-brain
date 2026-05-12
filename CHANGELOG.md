@@ -2,6 +2,46 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.0] - 2026-05-12
+
+## **granola-sync now talks to Granola's public API. The local cache is encrypted, so the old path stopped working — this restores meeting + transcript sync for every Dent teammate.**
+
+Granola encrypted `~/Library/Application Support/Granola/cache-v6.json` in their latest desktop release. Our hourly daemon was reading that file directly, so as of last week it was effectively a no-op — passing through `KEEP` decisions on already-filed meetings but unable to discover anything new. v0.37 swaps the source of truth: the daemon now hits `https://public-api.granola.ai/v1/` with a per-teammate API key (minted in Granola → Settings → Connectors → API keys, stored in the macOS keychain under service `dent-brain.granola-sync`). The whole flow stays per-laptop and per-teammate; no shared credentials, no server-side proxy.
+
+A few behavioral wins fall out of the move: the API only returns notes that already have a summary and transcript, so the old 45-minute "settle delay" disappears (notes that aren't ready return 404 and we silently retry next run). Folder filtering moves from a pre-built `documentLists` map to each note's own `folder_membership[]` — same outcome, less bookkeeping. And the brain finally gets the diarized transcript with absolute ISO timestamps, not relative offsets.
+
+A few things you lose: the API doesn't expose Granola's `chapters` field or the human-typed `notes_markdown` (only the AI summary in `summary_text` + `summary_markdown`). The `## Chapters` section is gone from meeting pages. The `## Notes` section now contains the AI summary in markdown form.
+
+### To take advantage of v0.37.0
+
+If you have granola-sync installed, re-run the installer once. It will detect that the keychain entry is missing, prompt you to paste a `grn_…` key (input is hidden), validate it against `/v1/notes`, store it via `security add-generic-password`, and reload the launchd agent. Subsequent re-installs skip the prompt as long as the stored key still works.
+
+```bash
+# 1. In the Granola desktop app: Settings → Connectors → API keys → Create new key
+# 2. From your dent-brain checkout:
+bash tools/granola-sync/install.sh
+```
+
+The cursor auto-migrates: legacy cache UUIDs get stripped from `syncedDocumentIds` on the first new-format run; `lastSyncedCreatedAt` is preserved so you don't re-walk all history. Slug-based dedup in the brain means meetings already filed under `granola/<uuid>` won't get re-written under `granola/not_…` source refs — they log as `existed` and move on.
+
+### Itemized changes
+
+#### Added
+- `tools/granola-sync/granola-api.ts` — typed REST client for `https://public-api.granola.ai/v1/` with throttling (~4.5 req/s, well under the 5/s sustained limit), 429 backoff respecting `Retry-After`, paginated `iterNotes()`, `getNote()` with optional transcript, `validate()` ping, and a keychain reader that shells out to `/usr/bin/security`.
+- `install.sh` Step 4: interactive Granola API key prompt with live validation against `/v1/notes?page_size=1`. Idempotent — working keys skip the prompt on subsequent installs.
+
+#### Changed
+- `tools/granola-sync/sync.ts` rewritten to paginate via the API instead of reading the local cache. `--doc-id` now expects `not_…` IDs. Settle delay removed (the API only returns processed notes). 404s from `getNote()` are silently retried on the next run.
+- `tools/granola-sync/types.ts` replaced with the public API shapes (`Note`, `NoteSummary`, `Transcript`, `Folder`, `CalendarEvent`). `SyncConfig.granolaCachePath` removed.
+- `tools/granola-sync/filter.ts` folder hits now come from each note's `folder_membership[]` (no pre-built map). Body text matches against `summary_text` + `summary_markdown` + transcript. Attendee emails resolved from `note.attendees`, `calendar_event.invitees`, and `calendar_event.organiser`.
+- `tools/granola-sync/translator.ts` meeting page uses `summary_text` → `## Summary` and `summary_markdown` → `## Notes`. Frontmatter has `granola_url` instead of `calendar_url`. Transcript timestamps use ISO `start_time`/`end_time`; speaker `source: 'speaker'` renders as `(remote)`.
+- Cursor migration on first run of the new version strips any non-`not_…` IDs from `syncedDocumentIds` and preserves `lastSyncedCreatedAt`.
+- README, registry description, dent-extensions SKILL.md, and TEAMMATE_INSTALL.md all updated to reflect the API-based flow.
+
+#### Removed
+- All references to `~/Library/Application Support/Granola/cache-v6.json` and the 45-minute settle delay logic.
+- `## Chapters` section on meeting pages (Granola's public API doesn't expose chapters).
+
 ## [0.36.2] - 2026-05-09
 
 ## **Nightly brain maintenance — embed --stale + extract links + backlinks fire automatically every UTC day, server-side, no laptops involved.**

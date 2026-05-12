@@ -16,7 +16,7 @@ export const EXTENSIONS: Extension[] = [
     id: 'granola-sync',
     name: 'Granola → Dent Brain sync',
     description:
-      'Hourly daemon that watches your local Granola cache and pushes Dent-related meeting notes + transcripts into the brain. Filters via four signals (Granola folder, title keyword, body/transcript mention, attendee domain) so personal/non-Dent meetings stay local.',
+      'Hourly daemon that pulls meetings from the Granola public API (key stored in macOS keychain) and pushes Dent-related notes + transcripts into the brain. Filters via four signals (Granola folder, title keyword, body/transcript mention, attendee domain) so personal/non-Dent meetings stay local.',
     kind: 'launchd-daemon',
     sourceDir: 'tools/granola-sync',
     installScript: 'install.sh',
