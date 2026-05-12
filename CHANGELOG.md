@@ -2,6 +2,23 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.1] - 2026-05-12
+
+## **Fix: Cowork plugin marketplace bundle now actually rebuilds on release.**
+
+v0.37.0 shipped the granola-sync API rewrite but didn't run `bun run build:plugin`, so Claude Desktop's plugin Customize UI was still showing v0.34.1 — the last time anyone manually rebuilt the marketplace bundle. The MCP server itself was reporting v0.37.0 correctly via the initialize handshake; only the plugin-side metadata was stale.
+
+This patch regenerates the six plugin marketplace files at v0.37.1 and documents the build:plugin step in CLAUDE.md and `docs/reference/release-ops.md` so future releases don't skip it.
+
+### Itemized changes
+
+#### Fixed
+- Plugin marketplace bundle bumped from 0.34.1 to 0.37.1: `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and rendered skill copies under `plugin/marketplace/.claude/skills/` (all auto-derived by `bun run build:plugin`).
+
+#### Changed
+- `CLAUDE.md` — the Version locations section now lists `bun run build:plugin` as a required auto-derive step alongside `bun run build:llms`, with a warning that skipping it leaves the plugin UI showing the previous version.
+- `docs/reference/release-ops.md` — full plugin-bundle entry under "Auto-derived" with the file list, the run-order requirement, and the consequence of skipping.
+
 ## [0.37.0] - 2026-05-12
 
 ## **granola-sync now talks to Granola's public API. The local cache is encrypted, so the old path stopped working — this restores meeting + transcript sync for every Dent teammate.**

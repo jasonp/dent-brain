@@ -112,7 +112,7 @@ After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran 
 
 ## Version locations
 
-The version moves in five files together: `VERSION`, `package.json`, `CHANGELOG.md`, `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived: `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`). Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
+The version moves in five files together: `VERSION`, `package.json`, `CHANGELOG.md`, `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived (must be regenerated before /ship pushes the version commit): `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`), and the Cowork plugin marketplace bundle — `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and the rendered skill copies under `plugin/marketplace/.claude/skills/` (all via `bun run build:plugin`). **If you skip `build:plugin`, Claude Desktop's plugin UI shows the previous version forever** — the MCP server reports the new version via the initialize handshake, but the plugin metadata stays stale. Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
 
 ## CHANGELOG voice
 
