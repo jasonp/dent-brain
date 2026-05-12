@@ -1,6 +1,6 @@
 ---
 name: dent-extensions
-description: Manage local Dent Brain extensions — list, install, configure, test, or uninstall the per-teammate ingestors (Granola sync, future Gmail watch, etc.). Each teammate runs their own copy of each extension on their laptop with their own bearer token, so personal meetings/emails stay local. Use this skill to inspect what's available, see the status of what you've already set up, or add/remove an ingestor.
+description: Manage local Dent Brain extensions — list, install, configure, test, or uninstall the per-teammate ingestors (Granola sync, future Gmail watch, etc.). Each teammate runs their own copy of each extension on their laptop with their own bearer token, so personal meetings/emails stay local. Use this skill to inspect what's available, see the status of what you've already set up, or add/remove an ingestor. **Runtime: Claude Code Desktop only** for install/uninstall (the bash installer needs shell, keychain, and launchd access — unavailable in Cowork's sandbox); status/list can be read anywhere. See `docs/reference/runtime-conventions.md`.
 triggers:
   - "manage my extensions"
   - "what dent brain extensions are available"

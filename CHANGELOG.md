@@ -2,6 +2,41 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.3] - 2026-05-12
+
+## **Runtime convention: Claude Code Desktop for install/setup, Cowork for enrichment + day-to-day. The email enrichment routine (`/dent-process-inbox`) is now officially a Cowork scheduled routine.**
+
+Two surfaces, two jobs. Code Desktop has the shell, keychain, launchd, and filesystem — everything install scripts need. Cowork has pre-authorized scheduled routines that fire server-side regardless of laptop state — what unattended enrichment needs. Until v0.37.3 the convention was implicit and one skill (`/dent-process-inbox`) explicitly contradicted it by labeling itself a Code Desktop scheduled task. This release makes the convention explicit and flips that one skill.
+
+The empirical green light was confirming Cowork can reach the FileMaker MCP, which `/dent-process-inbox` needs for entity resolution fallback. No fm-mcp hosting work required.
+
+### To take advantage of v0.37.3
+
+Move the existing `/dent-process-inbox` scheduled task from Code Desktop to Cowork:
+
+1. In **Cowork**: invoke the `/schedule` skill (or use Cowork's UI for scheduled routines) to create a daily routine that runs `/dent-process-inbox`. Pick a time during your working hours so any same-day debugging happens while you're at a keyboard.
+2. Verify the first run completes — should see triage entries enriched and digests stamped `processed: true`.
+3. In **Code Desktop**: tear down the local scheduled task with `rm -rf ~/.claude/scheduled-tasks/dent-process-inbox/` (the local copy is now redundant).
+
+If you don't make the migration, `/dent-process-inbox` still works as a Code Desktop scheduled task — the skill is runtime-agnostic. But you give up the unattended-execution guarantee.
+
+### Itemized changes
+
+#### Added
+- `docs/reference/runtime-conventions.md` — the convention, the table of which skill runs on which surface, and the rationale (sandbox boundaries, scheduling semantics, the Layer 1 / Layer 2 split for ingestors).
+
+#### Changed
+- `CLAUDE.md` — Reference files index now points at `runtime-conventions.md` and `ingestors.md`.
+- `skills/dent/onboard-teammate/SKILL.md` description — flagged Claude-Code-Desktop-only.
+- `skills/dent/setup/SKILL.md` description — flagged Claude-Code-Desktop-only.
+- `skills/dent/extensions/SKILL.md` description — flagged Claude-Code-Desktop-only for install/uninstall (status/list works anywhere).
+- `skills/dent/add-ingestor/SKILL.md` description — flagged Claude-Code-Desktop-only.
+- `skills/dent/process-inbox/SKILL.md` description — flipped from "Claude Code Desktop scheduled task" to **Cowork scheduled routine**.
+- `docs/reference/ingestors.md` — Layer 2 row updated to reflect the Cowork runtime.
+
+#### Plugin marketplace
+- Bumped from 0.37.2 to 0.37.3 with regenerated skill copies under `plugin/marketplace/.claude/skills/`.
+
 ## [0.37.2] - 2026-05-12
 
 ## **Cowork plugin now bundles the ingestor installers. New teammates no longer need a git clone to install granola-sync or email-sync.**

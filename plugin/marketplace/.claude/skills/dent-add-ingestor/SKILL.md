@@ -8,6 +8,10 @@ description: |
   commit in the markdown data repo. This skill walks the admin through
   the five-step wiring: pick the source, configure auth, write the
   translator, deploy, smoke-test.
+
+  **Runtime: Claude Code Desktop only** (edits TypeScript in the code
+  repo, configures Railway env vars, runs `git push` to deploy). See
+  `docs/reference/runtime-conventions.md`.
 triggers:
   - "dent-add-ingestor"
   - "add a new ingestor"
