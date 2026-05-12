@@ -115,12 +115,21 @@ echo "    workEmail:        $DENT_EMAIL_WORK_EMAIL"
 echo "    googleClientId:   ${DENT_GOOGLE_CLIENT_ID:0:24}..."
 echo "    authUser:         $DENT_EMAIL_AUTHUSER"
 
-# 4. Copy runtime files
+# 4. Copy runtime files + stamp installed version (used by /dent-update for drift detection).
 mkdir -p "$INSTALL_DIR"
 for f in collect.ts types.ts mcp-client.ts google-client.ts oauth-flow.ts noise-filter.ts link-gen.ts digest.ts; do
   cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
 done
-echo "    copied 8 runtime files."
+# Resolve the bundle version. If SCRIPT_DIR is inside a plugin cache,
+# `<cache>/VERSION` will be present. If running from a git clone, fall
+# back to the repo's VERSION. Used by /dent-update to detect daemon drift.
+BUNDLE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -f "$BUNDLE_ROOT/VERSION" ]; then
+  cp "$BUNDLE_ROOT/VERSION" "$INSTALL_DIR/.installed-version"
+else
+  echo "unknown" > "$INSTALL_DIR/.installed-version"
+fi
+echo "    copied 8 runtime files (installed-version: $(cat "$INSTALL_DIR/.installed-version"))."
 
 # 4b. Install the Layer-2 skill body to a stable location the teammate's
 #     Claude Code Desktop scheduled task will reference. Sits OUTSIDE

@@ -2,6 +2,32 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.4] - 2026-05-12
+
+## **New `/dent-update` skill brings teammates up to date across all three propagation lanes in one pass. Also: fixes a quiet bug where `/dent-process-inbox` was never actually shipping in the plugin.**
+
+We have three lanes that propagate updates independently — Cowork plugin (skill content), Railway redeploy (MCP server), and daemon re-install (launchd workers). Before this release, a teammate who saw a changelog entry had to know which lane the change rode in on and trigger the right action manually. `/dent-update` collapses that into one skill: it detects drift across all three lanes, reports server + plugin versions for visibility, and re-runs the daemon installers idempotently for anything outdated.
+
+While building the skill I noticed that `process-inbox` was in `skills/dent/` on disk but never declared in `plugin/manifest.json`'s templates list — so it wasn't shipping in the Cowork plugin bundle. We talked about it as a "Cowork scheduled routine" in v0.37.3 but no teammate's Cowork install actually had the skill. Adding it to the templates list closes the loop.
+
+### To take advantage of v0.37.4
+
+Refresh the Cowork plugin to pull v0.37.4 (in Claude Desktop's plugin marketplace UI), then in Claude Code Desktop invoke `/dent-update`. The skill walks you through any daemon re-installs needed. Once `/dent-process-inbox` is in your installed plugin, you can wire it as a Cowork scheduled routine per the v0.37.3 instructions.
+
+### Itemized changes
+
+#### Added
+- `skills/dent/update/SKILL.md` — new `/dent-update` skill. Reads plugin marketplace version, plugin cache versions, daemon `.installed-version` markers, and the MCP server version. Reports drift, walks the teammate through plugin-side refreshes (which Claude Desktop's UI owns), and re-runs daemon installers for any outdated daemon. Idempotent. Code-Desktop-only per the v0.37.3 runtime convention.
+- `plugin/marketplace/VERSION` — the plugin bundle root now carries the VERSION file. `tools/<id>/install.sh` reads it to stamp `~/.dent-brain/<id>/.installed-version` so `/dent-update` can detect daemon drift on subsequent runs.
+- `tools/granola-sync/install.sh` and `tools/email-sync/install.sh` — write `.installed-version` into the daemon's runtime dir at install time.
+
+#### Fixed
+- `plugin/manifest.json` `templates` list — `process-inbox` was missing, so the skill body was never copied into the marketplace bundle. Now included. (Symptom: `/dent-process-inbox` was unreachable from Cowork even though we labeled it as a Cowork scheduled routine in v0.37.3.)
+- `plugin/manifest.json` `templates` list — `update-dbrain` placeholder replaced with `update` (the actual skill name).
+
+#### Plugin marketplace
+- Bumped from 0.37.3 to 0.37.4. Bundle now ships 10 skills (was 8), the new `VERSION` file, and the updated install scripts.
+
 ## [0.37.3] - 2026-05-12
 
 ## **Runtime convention: Claude Code Desktop for install/setup, Cowork for enrichment + day-to-day. The email enrichment routine (`/dent-process-inbox`) is now officially a Cowork scheduled routine.**

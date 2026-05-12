@@ -399,6 +399,11 @@ function main() {
     console.log(`  copied: tools/${sub}/ (per-teammate installer)`);
   }
 
+  // Stamp VERSION at the bundle root. Each daemon's install.sh reads this
+  // and writes it into `~/.dent-brain/<id>/.installed-version` so
+  // /dent-update can detect daemon drift.
+  writeFileSync(join(MARKETPLACE_DIR, 'VERSION'), VERSION + '\n');
+
   // TOP-LEVEL marketplace.json — the file that makes
   // `add github:<owner>/<repo>` work (both Code and Cowork).
   mkdirSync(TOP_LEVEL_MARKETPLACE_DIR, { recursive: true });
