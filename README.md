@@ -36,7 +36,7 @@ itself never holds raw inboxes.
 
 | Extension | Source | Schedule | What it does |
 |---|---|---|---|
-| `granola-sync` | Local Granola cache | Hourly (launchd) | Watches Granola meeting notes + transcripts; filters by org-domain attendees / folder / title-keyword; pushes Dent-related meetings into `meetings/`. |
+| `granola-sync` | Granola public API | Hourly (launchd) | Pulls Granola meeting notes + transcripts via the public API (key in macOS keychain); filters by org-domain attendees / folder / title-keyword; pushes Dent-related meetings into `meetings/`. |
 | `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only), filters noise, classifies signature requests, writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
 | `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
@@ -122,8 +122,10 @@ After this, the teammate can:
 For the per-teammate ingestors, the install scripts handle their own
 credentials:
 
-- **Granola sync** auto-discovers everything from `~/.claude.json` +
-  the local Granola cache — zero teammate input needed.
+- **Granola sync** auto-discovers the brain bearer token from
+  `~/.claude.json`; the installer prompts the teammate once for a
+  Granola API key (minted in Granola → Settings → Connectors → API
+  keys) and stores it in the macOS keychain.
 - **Email sync** runs a one-time browser OAuth dance against the
   shared "Dent Brain" Google Cloud OAuth app (test mode, manual
   whitelist). The teammate clicks through one "this app isn't

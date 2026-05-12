@@ -1,100 +1,84 @@
 /**
- * Shapes from `~/Library/Application Support/Granola/cache-v6.json`.
- * Only the fields the sync needs are typed; Granola adds more, treat
- * extras as unknown.
+ * Granola public API v1 shapes. Authoritative spec lives at
+ * https://docs.granola.ai/api-reference/openapi.json — only the fields the
+ * sync uses are typed; the API may add more, treat extras as unknown.
  */
 
-export interface GranolaCalendarAttendee {
+export interface User {
+  name: string | null;
   email: string;
-  responseStatus?: string;
-  self?: boolean;
-  displayName?: string;
 }
 
-export interface GranolaCalendarEvent {
-  id?: string;
-  summary?: string;
-  location?: string;
-  start?: { dateTime?: string; date?: string; timeZone?: string };
-  end?: { dateTime?: string; date?: string; timeZone?: string };
-  attendees?: GranolaCalendarAttendee[];
-  creator?: { email?: string; displayName?: string };
-  organizer?: { email?: string };
-  htmlLink?: string;
-}
-
-export interface GranolaChapter {
-  title?: string;
-  summary?: string;
-  start_timestamp?: string;
-  end_timestamp?: string;
-}
-
-export interface GranolaDocument {
+export interface Folder {
   id: string;
-  title?: string;
-  created_at: string;
-  updated_at?: string;
-  notes_plain?: string;
-  notes_markdown?: string;
-  summary?: string | null;
-  overview?: string | null;
-  type?: string;
-  valid_meeting?: boolean;
-  transcribe?: boolean;
-  google_calendar_event?: GranolaCalendarEvent;
-  chapters?: GranolaChapter[] | null;
-  people?: unknown;
-  user_id?: string;
-  workspace_id?: string;
-  privacy_mode_enabled?: boolean;
-  show_private_notes?: boolean;
-  transcript_deleted_at?: string | null;
-  deleted_at?: string | null;
-  status?: string;
-  audio_file_handle?: string | null;
-  [k: string]: unknown;
+  object: 'folder';
+  name: string;
+  parent_folder_id: string | null;
 }
 
-export interface GranolaTranscriptSegment {
-  document_id: string;
-  start_timestamp: string;
-  end_timestamp?: string;
+export interface CalendarInvitee {
+  email: string;
+}
+
+export interface CalendarEvent {
+  event_title: string | null;
+  invitees: CalendarInvitee[];
+  organiser: string | null;
+  calendar_event_id: string | null;
+  scheduled_start_time: string | null;
+  scheduled_end_time: string | null;
+}
+
+export interface Speaker {
+  /** macOS: `microphone` | `speaker`. iOS currently always `microphone`. */
+  source: 'microphone' | 'speaker' | string;
+  /** Anonymous diarization bucket on iOS (`Speaker A`, etc.). */
+  diarization_label?: string;
+}
+
+export interface TranscriptSegment {
+  speaker: Speaker;
   text: string;
-  source?: 'microphone' | 'system_audio' | string;
-  id?: string;
-  is_final?: boolean;
-  transcriber_user_id?: string | null;
+  start_time: string;
+  end_time: string;
 }
 
-export interface GranolaListMetadata {
+export interface NoteSummary {
   id: string;
-  title?: string;
-  [k: string]: unknown;
+  object: 'note';
+  title: string | null;
+  owner: User;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface GranolaCache {
-  cache: {
-    state: {
-      documents?: Record<string, GranolaDocument>;
-      sharedDocuments?: Record<string, GranolaDocument>;
-      transcripts?: Record<string, GranolaTranscriptSegment[]>;
-      meetingsMetadata?: Record<string, unknown>;
-      /** Map of list ID → array of document IDs filed in that list. */
-      documentLists?: Record<string, string[]>;
-      /** Per-list metadata (title, icon, etc.). Granola stores it as
-       *  either an array or a record keyed by list ID. */
-      documentListsMetadata?: GranolaListMetadata[] | Record<string, GranolaListMetadata>;
-      [k: string]: unknown;
-    };
-  };
+export interface Note extends NoteSummary {
+  web_url: string;
+  calendar_event: CalendarEvent | null;
+  attendees: User[];
+  folder_membership: Folder[];
+  summary_text: string;
+  summary_markdown: string | null;
+  /** Present only when `?include=transcript`. */
+  transcript: TranscriptSegment[] | null;
+}
+
+export interface ListNotesOutput {
+  notes: NoteSummary[];
+  hasMore: boolean;
+  cursor: string | null;
+}
+
+export interface ListFoldersOutput {
+  folders: Folder[];
+  hasMore: boolean;
+  cursor: string | null;
 }
 
 export interface SyncCursor {
   /** ISO timestamp of the most-recent `created_at` we've successfully synced. */
   lastSyncedCreatedAt: string;
-  /** Document IDs we've already pushed to the brain. Belt + suspenders against
-   *  `created_at` ties or clock skew. */
+  /** Note IDs (Granola `not_…` format) we've already pushed to the brain. */
   syncedDocumentIds: string[];
   /** When this cursor was last written. */
   cursorUpdatedAt: string;
@@ -103,33 +87,22 @@ export interface SyncCursor {
 }
 
 export interface SyncConfig {
-  /** Production MCP endpoint, e.g. https://dent-brain.dentthefuture.com/mcp.
-   *  When absent, auto-discovered from `~/.claude.json` → mcpServers["dent-brain"].url. */
+  /** Production MCP endpoint. Discovered from `~/.claude.json` by default. */
   serverUrl: string;
-  /** The teammate's personal bearer token. When absent, auto-discovered from
-   *  `~/.claude.json` → mcpServers["dent-brain"].headers.Authorization (with
-   *  the "Bearer " prefix stripped). One source of truth: when the teammate
-   *  rotates their token via `/dent-onboard-teammate`, the new value is in
-   *  claude.json and the daemon picks it up next run. */
+  /** Teammate's personal bearer token. Discovered from `~/.claude.json` by default. */
   bearerToken: string;
-  /** Path to Granola's cache file. Defaults to the standard macOS location. */
-  granolaCachePath: string;
   /** Path to the cursor JSON. Defaults to `~/.dent-brain/granola-sync/cursor.json`. */
   cursorPath: string;
   /** Keywords identifying the org. Whole-word matched against title and body.
    *  Defaults to `['dent']`. */
   orgKeywords: string[];
-  /** Email domains for the org's team (e.g. `dentthefuture.com`). Any attendee
-   *  on one of these domains marks the meeting as org-relevant. Defaults to
-   *  `['dentthefuture.com']`. Backwards-compat: a `dentDomains` field in the
-   *  config is read as a fallback. */
+  /** Email domains for the org's team (e.g. `dentthefuture.com`). Defaults
+   *  to `['dentthefuture.com']`. Backwards-compat alias: `dentDomains`. */
   orgDomains: string[];
-  /** Granola folder names (case-insensitive) treated as auto-include. Defaults
-   *  to `['Dent']`. */
+  /** Granola folder names (case-insensitive) treated as auto-include.
+   *  Defaults to `['Dent']`. */
   orgFolders: string[];
   /** If true, every Granola meeting is filed (folder/title/body/domain checks
-   *  are skipped). Default false. Use with care: turning this on for a
-   *  cross-org user (e.g. someone whose Granola has Dent + TK + Reclaim
-   *  Curiosity meetings) leaks the other orgs' content into this brain. */
+   *  are skipped). Default false. */
   fileAll: boolean;
 }

@@ -4,28 +4,23 @@
 # What it does:
 #   1. Verifies bun is installed; bails with a hint if not.
 #   2. Verifies the dent-brain MCP server is registered in ~/.claude.json
-#      (token + URL are auto-discovered at runtime — no second copy needed).
-#   3. Verifies Granola itself is installed and has been opened at least once.
-#   4. Copies sync.ts + types.ts + filter.ts + translator.ts + mcp-client.ts
-#      to ~/.dent-brain/granola-sync/.
-#   5. Renders the launchd plist template with absolute paths and copies it
-#      to ~/Library/LaunchAgents/com.dent.granola-sync.plist.
-#   6. Loads the agent. Runs once immediately (RunAtLoad=true).
+#      (token + URL are auto-discovered at runtime).
+#   3. Verifies Granola itself is installed (the user mints the API key there).
+#   4. Verifies the Granola API key in the macOS keychain. If missing or
+#      invalid, prompts the user to paste a key and stores it via `security`.
+#   5. Copies sync.ts + types.ts + filter.ts + translator.ts + mcp-client.ts
+#      + granola-api.ts to ~/.dent-brain/granola-sync/.
+#   6. Renders the launchd plist template and loads it.
 #   7. Prints a heads-up about the macOS Background Items notification.
 #
-# No config.json is needed for the default setup — `dentDomains` defaults
-# to ['dentthefuture.com'], paths default to standard macOS locations, and
-# the bearer token + server URL are read from ~/.claude.json. To override,
-# write a config.json after install.
-#
-# Idempotent — safe to re-run after pulling repo updates to refresh the script.
+# Idempotent — safe to re-run after pulling repo updates. If a working API key
+# is already in the keychain, you won't be re-prompted.
 #
 # Usage:
 #   bash tools/granola-sync/install.sh
 #
 # Uninstall:
 #   tools/extensions/bin/dent-extensions uninstall granola-sync
-#
 
 set -euo pipefail
 
@@ -33,6 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.dent-brain/granola-sync"
 PLIST_PATH="${HOME}/Library/LaunchAgents/com.dent.granola-sync.plist"
 LABEL="com.dent.granola-sync"
+KEYCHAIN_SERVICE="dent-brain.granola-sync"
+KEYCHAIN_ACCOUNT="${USER:-default}"
 
 echo "==> Granola sync installer"
 echo "    source: $SCRIPT_DIR"
@@ -49,8 +46,7 @@ fi
 BUN_PATH="$(command -v bun)"
 echo "    bun: $BUN_PATH"
 
-# 2. Verify the dent-brain MCP server is registered in claude.json. We don't
-#    copy the token — the daemon reads it fresh from claude.json at every run.
+# 2. Verify the dent-brain MCP server is registered in claude.json.
 CLAUDE_JSON="${HOME}/.claude.json"
 if [ ! -f "$CLAUDE_JSON" ]; then
   echo
@@ -73,12 +69,8 @@ DISCOVERED_URL="$(sed -n '2p' /tmp/granola-claude-discover.$$)"
 rm -f /tmp/granola-claude-discover.$$
 echo "    dent-brain MCP discovered: $DISCOVERED_URL"
 
-# 3. Verify Granola itself is installed and has been opened. Without these,
-#    the daemon will succeed at install time but fail on first run with
-#    "Granola cache not found" — better to surface the gap up front.
+# 3. Verify Granola itself is installed (the user needs it to mint the key).
 GRANOLA_APP="/Applications/Granola.app"
-GRANOLA_CACHE="${HOME}/Library/Application Support/Granola/cache-v6.json"
-
 if [ ! -d "$GRANOLA_APP" ]; then
   echo
   echo "ERROR: Granola is not installed."
@@ -86,37 +78,72 @@ if [ ! -d "$GRANOLA_APP" ]; then
   echo "Granola is the meeting note-taker this daemon syncs from. To set it up:"
   echo "  1. Download Granola from https://granola.ai/download"
   echo "  2. Install + open it; sign in with your @dentthefuture.com Google account"
-  echo "     (the same one your Dent calendar invites go to)"
-  echo "  3. In Granola Settings → Permissions, grant:"
-  echo "       - Microphone access (so it captures your voice)"
-  echo "       - Screen Recording access (so it captures the other side of the call)"
-  echo "  4. Sit through one meeting with Granola open so it learns + creates its cache"
-  echo "  5. Re-run this installer."
+  echo "  3. In Granola Settings → Permissions, grant Mic + Screen Recording access"
+  echo "  4. Re-run this installer."
   exit 1
 fi
-echo "    Granola.app: installed at $GRANOLA_APP"
+echo "    Granola.app: installed"
 
-if [ ! -f "$GRANOLA_CACHE" ]; then
+# 4. Verify the Granola API key in the keychain. If missing or invalid, prompt.
+validate_key() {
+  # Returns 0 if the key authenticates against /v1/notes, non-zero otherwise.
+  local key="$1"
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $key" \
+    "https://public-api.granola.ai/v1/notes?page_size=1" || echo 000)
+  [ "$code" = "200" ]
+}
+
+EXISTING_KEY="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w 2>/dev/null || true)"
+if [ -n "$EXISTING_KEY" ] && validate_key "$EXISTING_KEY"; then
+  echo "    Granola API key: present in keychain, validated ✓"
+else
+  if [ -n "$EXISTING_KEY" ]; then
+    echo "    Granola API key: present in keychain but REJECTED by the API — re-prompting."
+  else
+    echo "    Granola API key: not in keychain — prompting."
+  fi
   echo
-  echo "ERROR: Granola cache not found at $GRANOLA_CACHE."
+  echo "    Mint a key in the Granola desktop app:"
+  echo "      Granola → Settings → Connectors → API keys → Create new key"
+  echo "    Paste it below (input is hidden). It will be stored in your macOS keychain"
+  echo "    under service '$KEYCHAIN_SERVICE' / account '$KEYCHAIN_ACCOUNT'."
   echo
-  echo "Granola is installed but you haven't opened it (or signed in) yet. The"
-  echo "daemon needs Granola's local cache to read meeting notes from."
-  echo "  1. Open Granola.app, sign in with your @dentthefuture.com Google account"
-  echo "  2. In Granola Settings → Permissions, grant Mic + Screen Recording access"
-  echo "  3. Re-run this installer."
-  exit 1
+  if [ ! -t 0 ]; then
+    echo "ERROR: stdin is not a TTY — cannot prompt for the API key."
+    echo "Store it manually, then re-run the installer:"
+    echo "  security add-generic-password -U -s '$KEYCHAIN_SERVICE' -a '$KEYCHAIN_ACCOUNT' -w 'grn_...'"
+    exit 1
+  fi
+  while :; do
+    printf "    Granola API key: "
+    IFS= read -rs NEW_KEY
+    echo
+    NEW_KEY="${NEW_KEY#"${NEW_KEY%%[![:space:]]*}"}"  # ltrim
+    NEW_KEY="${NEW_KEY%"${NEW_KEY##*[![:space:]]}"}"  # rtrim
+    if [ -z "$NEW_KEY" ]; then
+      echo "    (empty — try again, or Ctrl-C to abort)"
+      continue
+    fi
+    if validate_key "$NEW_KEY"; then
+      security add-generic-password -U -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w "$NEW_KEY"
+      echo "    stored in keychain ✓"
+      break
+    else
+      echo "    key was rejected by https://public-api.granola.ai/v1/notes — try again, or Ctrl-C to abort"
+    fi
+  done
 fi
-echo "    Granola cache: present"
 
-# 4. Copy runtime files
+# 5. Copy runtime files
 mkdir -p "$INSTALL_DIR"
-for f in sync.ts types.ts filter.ts translator.ts mcp-client.ts; do
+for f in sync.ts types.ts filter.ts translator.ts mcp-client.ts granola-api.ts; do
   cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
 done
-echo "    copied 5 runtime files."
+echo "    copied 6 runtime files."
 
-# 5. Render and install plist
+# 6. Render and install plist
 PLIST_RENDERED="$(mktemp)"
 sed \
   -e "s|__BUN_PATH__|$BUN_PATH|g" \
@@ -126,7 +153,6 @@ sed \
 
 mkdir -p "$(dirname "$PLIST_PATH")"
 
-# Unload any existing version before replacing — launchctl is finicky.
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   echo "    unloading existing launch agent…"
   launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
@@ -136,19 +162,15 @@ cp "$PLIST_RENDERED" "$PLIST_PATH"
 rm "$PLIST_RENDERED"
 echo "    installed plist: $PLIST_PATH"
 
-# 6. Load + start
+# 7. Load + start
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 echo "    loaded launch agent ($LABEL)."
 
-# 7. macOS Background Items heads-up — the user will see a system notification
-#    naming "Jarred Sumner" (the developer ID of Bun, the runtime our script uses).
-#    Without this context it looks alarming. With this context it's mundane.
 echo
 echo "==> macOS may show a notification:"
 echo "    'Jarred Sumner may now run software in the background'"
 echo "    or similar. That's the developer ID of Bun (https://bun.sh), the"
-echo "    runtime our sync script uses. It's expected and safe — Bun is signed"
-echo "    by its creator the same way Docker is signed by Docker Inc, etc."
+echo "    runtime our sync script uses. Expected and safe."
 echo
 echo "    To verify or pause/resume the daemon later:"
 echo "      System Settings → General → Login Items & Extensions → Allow in Background"
