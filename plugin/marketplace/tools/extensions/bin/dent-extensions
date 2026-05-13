@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Wrapper for the Dent Brain extensions manager.
+# Symlink this into ~/bin or /usr/local/bin to make `dent-extensions` global:
+#   ln -s "$(pwd)/tools/extensions/bin/dent-extensions" /usr/local/bin/dent-extensions
+# Or run it directly from the repo:
+#   ./tools/extensions/bin/dent-extensions list
+set -euo pipefail
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)/cli.ts"
+exec bun "$SCRIPT" "$@"

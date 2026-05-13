@@ -2,6 +2,33 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.37.7] - 2026-05-12
+
+## **Fix: `/dent-update` and `/dent-extensions` now find the actual Claude Desktop plugin install. Also: bundled bash wrapper was gitignored — every shipped bundle since v0.37.2 was missing it.**
+
+Three connected bugs surfaced today, all caught by the user pushing back on my diagnoses. Worth tracing because they share a pattern.
+
+**Bug 1: Path discovery was looking in the wrong place.** I'd assumed Claude Desktop installed plugins to `~/.claude/plugins/...` (the Claude Code CLI path). It actually installs them to `~/Library/Application Support/Claude/local-agent-mode-sessions/<session>/<inner>/rpm/plugin_<opaque-hash>/`. The `<opaque-hash>` is keyed by plugin identity, not version, and isn't predictable per-install. The skills now glob `rpm/plugin_*/manifest.lock.json` and match on `plugin_name: "dent-brain"` — works regardless of hash, session, or inner-id changes.
+
+**Bug 2: The bundled `tools/extensions/bin/dent-extensions` bash wrapper has been gitignored since v0.37.2.** The `.gitignore` has `bin/` as a global rule with an exception for `tools/extensions/bin/` (the source). When `bun run build:plugin` renders the file into `plugin/marketplace/tools/extensions/bin/`, it lands on disk but isn't tracked — so it never gets committed, never reaches GitHub, never lands in Claude Desktop's downloaded bundle. Every prebuilt-artifact install since v0.37.2 has been missing the wrapper. Fixed two ways: gitignore now has an exception for the rendered path, AND the skills invoke `cli.ts` directly via `bun` instead of going through the wrapper.
+
+**Bug 3: Claude Code CLI install at `~/.claude/plugins/marketplaces/dent-brain/` was a stale artifact** confusing the diagnostic — when I queried that path I got data that disagreed with what Claude Desktop's sidebar showed. The user removed this install via `rm -rf` + a `known_marketplaces.json` edit so future sessions only see the Claude Desktop install.
+
+### To take advantage of v0.37.7
+
+1. After this merges to main and Railway redeploys, reinstall the dent-brain plugin in Claude Desktop's marketplace UI (or wait for the next refresh). Confirm `manifest.lock.json` reports `plugin_version: "0.37.7"`.
+2. Re-run `/dent-update` from Claude Code Desktop. It should now find the bundle correctly, report daemon drift (granola-sync still on v0.37.0 code, email-sync similar), and walk you through re-installing both.
+
+### Itemized changes
+
+#### Fixed
+- `skills/dent/update/SKILL.md` — Step 1 now uses robust manifest-based bundle discovery under `~/Library/Application Support/Claude/local-agent-mode-sessions/*/*/rpm/plugin_*/manifest.lock.json`. Removed all references to the (now-deleted) `~/.claude/plugins/marketplaces/...` CLI path.
+- `skills/dent/extensions/SKILL.md` — preferred-path one-liner uses the same discovery, then invokes `bun "$BUNDLE_DIR/tools/extensions/cli.ts"` directly. Sidesteps the missing bash wrapper.
+- `.gitignore` — added exception for `plugin/marketplace/tools/extensions/bin/` so the rendered wrapper actually ships in future bundles (defense in depth — skills no longer depend on it, but the wrapper is useful for direct shell users).
+
+#### Plugin marketplace
+- Bumped to 0.37.7 with corrected SKILLs + the previously-orphaned `bin/dent-extensions` wrapper finally tracked.
+
 ## [0.37.6] - 2026-05-12
 
 ## **Fix: `/dent-update` and `/dent-extensions` were looking in the wrong directory for installed plugin files. Drift detection now works.**

@@ -3,6 +3,11 @@ bin/
 # Exception: the extensions manager wrapper script is tracked source.
 !tools/extensions/bin/
 !tools/extensions/bin/**
+# Also track the rendered copy inside the plugin bundle — `bun run build:plugin`
+# copies it there, and Claude Desktop's marketplace downloader needs it on
+# GitHub to ship the bundle correctly.
+!plugin/marketplace/tools/extensions/bin/
+!plugin/marketplace/tools/extensions/bin/**
 .DS_Store
 *.log
 .env
