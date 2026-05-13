@@ -84,17 +84,19 @@ Walks the teammate through `tools/extensions/cli.ts` — a Bun script in the den
 
 ## Step 1. Locate the dent-extensions CLI
 
-As of v0.37.2 the installer scripts ship inside the Cowork plugin bundle itself — no git clone of the dent-brain repo required for typical teammates. Claude Code installs the plugin by cloning the dent-brain repo into `~/.claude/plugins/marketplaces/dent-brain/`, and the rendered bundle (including `tools/extensions/bin/dent-extensions`) lives at `<clone>/plugin/marketplace/tools/extensions/bin/dent-extensions`. As of v0.37.6 the skill points there directly.
+Claude Desktop installs the plugin marketplace bundle (just the `plugin/marketplace/` build output, not the source repo) at `~/Library/Application Support/Claude/local-agent-mode-sessions/<session>/<inner>/rpm/plugin_<opaque-hash>/`. The `<opaque-hash>` is not predictable, so the skill discovers the bundle by globbing `manifest.lock.json` files and matching on `plugin_name: dent-brain`. The CLI lives inside that bundle at `<bundle>/tools/extensions/bin/dent-extensions`. As of v0.37.7 the skill uses this robust discovery.
 
-### Preferred path: use the marketplace-clone copy
+### Preferred path: discover the installed bundle, run the bundled CLI
 
-Hand the teammate THIS one-liner. It invokes the CLI from the installed plugin clone:
+Hand the teammate THIS one-liner:
 
 ```bash
-BUNDLE_DIR=~/.claude/plugins/marketplaces/dent-brain/plugin/marketplace \
-  && [ -x "$BUNDLE_DIR/tools/extensions/bin/dent-extensions" ] && "$BUNDLE_DIR/tools/extensions/bin/dent-extensions" list \
+BUNDLE_DIR=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" -path '*/rpm/plugin_*/manifest.lock.json' -exec grep -l '"plugin_name": *"dent-brain"' {} + 2>/dev/null | head -1 | xargs -I {} dirname {}) \
+  && [ -f "$BUNDLE_DIR/tools/extensions/cli.ts" ] && bun "$BUNDLE_DIR/tools/extensions/cli.ts" list \
   || echo "FALLBACK_NEEDED"
 ```
+
+Note: invokes `cli.ts` directly via `bun` rather than the `bin/dent-extensions` bash wrapper. The wrapper is just `exec bun cli.ts`, and earlier bundle revisions (v0.37.2 through v0.37.6) had a gitignore bug that excluded the wrapper from the published bundle. Calling `cli.ts` directly sidesteps that and removes one dependency.
 
 If that prints an extensions list, you're done — the teammate is on a plugin version that bundles the installers and there's no clone or pull step required. Move to Step 2.
 
