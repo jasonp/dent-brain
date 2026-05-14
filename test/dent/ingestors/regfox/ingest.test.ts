@@ -19,6 +19,7 @@ import { ingestOne } from '../../../../src/dent/ingestors/regfox/ingest.ts';
 import type { RegfoxRegistrant } from '../../../../src/dent/ingestors/regfox/types.ts';
 import { setupMarkdownWriter, type MdWriterFixture } from '../../markdown-writer/_helpers.ts';
 import { runDentMigrations } from '../../../../src/dent/migrate.ts';
+import { DENT_SOURCE_ID } from '../../../../src/dent/markdown-writer/repo.ts';
 
 setDefaultTimeout(30_000);
 
@@ -75,7 +76,7 @@ describe('ingestOne — end-to-end against real fixtures', () => {
       title: 'Already Here',
       compiled_truth: '# Already Here\n\nExisting page.\n',
       frontmatter: { email: 'alice@example.com', type: 'person', title: 'Already Here' },
-    });
+    }, { sourceId: DENT_SOURCE_ID });
 
     const outcome = await ingestOne(fx.engine, baseRegistrant());
     expect(outcome).toBe('appended');
@@ -156,7 +157,7 @@ describe('ingestOne — end-to-end against real fixtures', () => {
         email: 'primary@example.com',
         emails: ['primary@example.com', 'secondary@example.com', 'tertiary@example.com'],
       },
-    });
+    }, { sourceId: DENT_SOURCE_ID });
 
     // Registrant uses one of the SECONDARY emails — should still email-match.
     const outcome = await ingestOne(fx.engine, baseRegistrant({ orderEmail: 'secondary@example.com' }));

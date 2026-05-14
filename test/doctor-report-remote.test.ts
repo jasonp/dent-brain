@@ -8,12 +8,25 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { doctorReportRemote, computeDoctorReport, type DoctorReport, type Check } from '../src/commands/doctor.ts';
 
 let engine: PGLiteEngine;
+let savedGbrainHome: string | undefined;
+let tmpGbrainHome: string;
 
 beforeAll(async () => {
+  // Isolate $HOME so v0.31.8+ checks (minions_migration, sync_failures) that
+  // read ~/.gbrain/migrations/completed.jsonl + sync-failures.jsonl don't
+  // pull state from the developer machine. Without this, a wedged migration
+  // on the host fails the test even though the brain itself is fresh.
+  savedGbrainHome = process.env.GBRAIN_HOME;
+  tmpGbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-doctor-test-'));
+  process.env.GBRAIN_HOME = tmpGbrainHome;
+
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
@@ -21,6 +34,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (savedGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+  else process.env.GBRAIN_HOME = savedGbrainHome;
+  try { rmSync(tmpGbrainHome, { recursive: true, force: true }); } catch { /* noop */ }
 });
 
 describe('doctorReportRemote', () => {

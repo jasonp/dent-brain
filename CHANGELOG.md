@@ -2,6 +2,58 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.38.0] - 2026-05-14
+
+## **Upstream sync: gbrain v0.30.1 → v0.33.2.1 folds into dent-brain. 29 commits. 14 schema migrations. Hot memory, multi-source tightening, doctor expansions, search-lite cache, eval-gated whoknows. First teammate-ready release.**
+
+This is the largest upstream pickup since dent-brain forked. Twenty-nine gbrain commits across v0.30.1 → v0.33.2.1 land in one merge. The fold-in is intentionally a single PR — the upstream commits already went through review on the gbrain side, and re-litigating each one would have added weeks without adding signal.
+
+What you get: hot memory + facts extraction during sync, takes v2 (lessons from 100K-take production extraction), the CJK fix wave, brain-consistency probe + doctor wire-up, OpenClaw context engine, facts joined to system-of-record with 3-layer privacy, search-lite token budgeting with semantic query cache, eval-gated whoknows routing, and the v0.33.2.1 fork-PR docs. Also: 5 new embedding recipes, search modes (`fast`/`balanced`/`conservative`), and `gbrain recall` morning pulse.
+
+The merge surface: 477 files changed, +65,636 / -1,922 lines. Nine conflicts resolved, all in version/identity files plus one phase-order test (renamed upstream, picked up the new `extract_facts` + `consolidate` phases). Two regressions fell out and got fixed: `regfox/ingest.test.ts` needed `{sourceId: 'dent'}` on putPage calls so the test page lives where the ingestor writes (upstream's multi-source tightening exposed the looseness), and `doctor-report-remote.test.ts` needed `$HOME` isolation so the new `minions_migration` and `sync_failures` checks don't read the developer's actual `~/.gbrain` state.
+
+Numbers: 6,428 unit tests pass, 565 e2e tests pass across 85 files, typecheck clean, 13/14 verify checks (one pre-existing privacy violation in `docs/reference/*.md` predates the merge).
+
+This release sets dent-brain on the latest gbrain substrate and is the first version intended for teammate distribution. Migration notes live at `skills/migrations/v0.38.md`.
+
+### To take advantage of v0.38.0
+
+1. After Railway redeploy, run `gbrain doctor` once. Twelve mechanical schema migrations land on first connect; doctor confirms they all ran. Several new informational checks (`multi_source_drift`, `sync_freshness`, `subagent_provider`, `search_mode`, `eval_drift`) surface state you might want to address. Each warning's message includes the paste-ready fix command.
+2. If you want to try the new commands: `gbrain recall` (morning pulse of recent facts), `gbrain search modes` (pick fast/balanced/conservative), `gbrain models` (provider visibility), `gbrain forget` and `gbrain cache` (fact lifecycle).
+3. Teammates installing dent-brain for the first time: nothing extra — the plugin marketplace bundle ships at v0.38.0 and pulls the full new feature set on first install.
+
+### Itemized changes
+
+#### Added
+- 14 schema migrations (44–57) covering hot memory, takes v2, eval/contradictions/takes-quality tables, CJK chunker version, query-cache search-lite, search telemetry rollup
+- `gbrain recall` — morning pulse of hot-memory facts (upstream v0.33.0)
+- `gbrain search modes` — `fast` / `balanced` / `conservative` (upstream v0.33.2)
+- `gbrain models`, `gbrain forget`, `gbrain cache` — new top-level commands
+- Hot-memory pipeline: facts extracted during `gbrain sync`, no scheduled job needed (upstream v0.31.6)
+- OpenClaw context engine (upstream v0.32.5)
+- Facts join system-of-record + 3-layer privacy + CI invariant gate (upstream v0.32.2)
+- Eval-gated whoknows — expertise + relationship-proximity routing (upstream v0.33.1)
+- Semantic query cache for search-lite (upstream v0.33.2)
+- 5 new embedding recipes (upstream v0.32.0)
+- `skills/migrations/v0.38.md` — operator migration notes
+
+#### Changed
+- Multi-source isolation now strict end-to-end (upstream v0.32.8 "multi-source bug class extermination")
+- `gbrain doctor` adds: `minions_migration`, `multi_source_drift`, `subagent_provider`, `sync_freshness`, `search_mode`, `eval_drift` checks
+- Dream cycle phase order: adds `extract_facts` (v0.32.2) and `consolidate` (v0.31) phases
+- `verify` chain merged: dent's `check:newlines` + `check:exports-count` + `check:admin-build` + `check:test-isolation` joined with upstream's `check:test-names` + `check:source-id-projection` + `check:system-of-record` + `check:eval-glossary`
+- CJK chunking corrected across 6 layers from one root cause (upstream v0.32.7)
+- Voyage embedding: `output_dimension` + flexible-dim guard + OOM-cap rethrow (upstream v0.33.1.1)
+- Plugin marketplace bundle rebuilt at v0.38.0
+
+#### Fixed
+- `test/dent/ingestors/regfox/ingest.test.ts`: pre-create existing entity with `{sourceId: 'dent'}` so the test page lives where the ingestor writes
+- `test/doctor-report-remote.test.ts`: isolate `$HOME` via `GBRAIN_HOME=mkdtemp()` so new doctor checks don't read developer-machine state
+- `sync`: raise maxBuffer to 100 MiB to prevent silent ENOBUFS crash (upstream cb8d6d8)
+- Voyage `output_dimension` + flexible-dim guard + OOM-cap rethrow (upstream v0.33.1.1)
+- Multi-source threading + doctor wedge hint + voyage cap (upstream v0.31.8)
+- Dream synthesize stops dropping fat transcripts (upstream v0.30.2)
+
 ## [0.37.7] - 2026-05-12
 
 ## **Fix: `/dent-update` and `/dent-extensions` now find the actual Claude Desktop plugin install. Also: bundled bash wrapper was gitignored — every shipped bundle since v0.37.2 was missing it.**
