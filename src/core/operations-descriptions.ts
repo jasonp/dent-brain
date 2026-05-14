@@ -34,6 +34,15 @@ export const FIND_ANOMALIES_DESCRIPTION =
   "patterns the user wouldn't have searched for. Cohort kinds: tag, type. " +
   "Year cohort is deferred to a later release.";
 
+export const FIND_EXPERTS_DESCRIPTION =
+  "Answers 'who in my brain knows about <topic>'. Returns ranked person/company " +
+  "pages by expertise depth (sub-linear match score), relationship recency " +
+  "(exp decay with 6-month half-life), and salience. Use this for questions " +
+  "like 'who should I talk to about X', 'who knows about Y', 'find me someone " +
+  "who's worked on Z', or any expertise-routing intent. Filters at SQL to " +
+  "person + company pages — does NOT return notes or articles. Pair with " +
+  "--explain (CLI) to surface the per-result factor breakdown.";
+
 export const GET_RECENT_TRANSCRIPTS_DESCRIPTION =
   "Returns one-line summaries of recent raw conversation transcripts (NOT polished " +
   "reflections). Use this FIRST for questions about 'what's going on with me', " +
@@ -63,3 +72,17 @@ export const SEARCH_DESCRIPTION =
   "Keyword search using full-text search. For personal/emotional questions, " +
   "prefer get_recent_salience or find_anomalies — they surface activity bursts " +
   "without needing a search term.";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// v0.32.6 — contradiction probe MCP surface (M3)
+// ──────────────────────────────────────────────────────────────────────────────
+
+export const FIND_CONTRADICTIONS_DESCRIPTION =
+  "v0.32.6 — return suspected-contradiction findings from the most recent " +
+  "`gbrain eval suspected-contradictions` probe run, optionally filtered by slug " +
+  "and/or severity. Use this when the user asks 'what's inconsistent in my " +
+  "brain', 'show me contradictions about Acme', 'high-severity issues only', or " +
+  "wants to act on the probe's findings without re-running it. Returns " +
+  "{contradictions: [{a, b, severity, axis, confidence, resolution_command}]}. " +
+  "Reads the cached run row — does NOT trigger a new probe; users run " +
+  "`gbrain eval suspected-contradictions` for that.";
