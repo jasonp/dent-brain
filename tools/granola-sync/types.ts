@@ -93,16 +93,28 @@ export interface SyncConfig {
   bearerToken: string;
   /** Path to the cursor JSON. Defaults to `~/.dent-brain/granola-sync/cursor.json`. */
   cursorPath: string;
-  /** Keywords identifying the org. Whole-word matched against title and body.
-   *  Defaults to `['dent']`. */
-  orgKeywords: string[];
-  /** Email domains for the org's team (e.g. `dentthefuture.com`). Defaults
-   *  to `['dentthefuture.com']`. Backwards-compat alias: `dentDomains`. */
-  orgDomains: string[];
-  /** Granola folder names (case-insensitive) treated as auto-include.
-   *  Defaults to `['Dent']`. */
-  orgFolders: string[];
-  /** If true, every Granola meeting is filed (folder/title/body/domain checks
-   *  are skipped). Default false. */
-  fileAll: boolean;
+}
+
+/**
+ * Contract for a user-owned filter at `~/.dent-brain/granola-sync/user/filter.ts`.
+ *
+ * The filter decides — per Granola note — whether it should reach the shared
+ * brain. It runs ONLY on the teammate's laptop, never sees other teammates'
+ * data, and is the entire surface that controls which meetings flow upstream.
+ *
+ * Iron rules:
+ * - Pure function. No network, no fs, no env reads. Deterministic on the input.
+ * - Returns `keep: false` by default for anything ambiguous (privacy bias).
+ * - Anything `keep: true` will be filed and visible to everyone who can read
+ *   the shared brain. Treat the return value as a publish gate.
+ */
+export type FilterResult =
+  | { keep: true; reason: string }
+  | { keep: false; reason: string };
+
+export interface UserFilterModule {
+  /** Bumped only when the runtime contract changes. Stamped by the install/setup skill. */
+  RECIPE_VERSION: number;
+  /** Required. Decides keep/skip per note. */
+  filter: (note: Note) => FilterResult;
 }

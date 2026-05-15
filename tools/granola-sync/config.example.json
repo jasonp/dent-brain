@@ -1,8 +1,4 @@
 {
-  "_comment": "config.json is OPTIONAL. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json and reads the Granola API key from the macOS keychain (service: dent-brain.granola-sync). Defaults below match the Dent install. Override any field to retarget the daemon at a different org.",
-  "orgKeywords": ["dent"],
-  "orgDomains": ["dentthefuture.com"],
-  "orgFolders": ["Dent"],
-  "fileAll": false,
+  "_comment": "config.json is OPTIONAL for granola-sync as of v0.39. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json and reads the Granola API key from the macOS keychain (service: dent-brain.granola-sync). All filter behavior lives in user/filter.ts (authored via /dent-extensions setup granola-sync) — there are no filter fields here anymore. Override the cursor path only if you have a reason to.",
   "cursorPath": "${HOME}/.dent-brain/granola-sync/cursor.json"
 }
