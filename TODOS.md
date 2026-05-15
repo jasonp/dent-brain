@@ -1,5 +1,9 @@
 # TODOS
 
+## CI workflow triggers on `master`, repo uses `main` (own tiny PR)
+
+- [ ] **Fix `.github/workflows/{test,e2e}.yml` triggers from `master` → `main`.** Both files have `on: push: branches: [master]` and `on: pull_request: branches: [master]`, but the dent-brain repo's default branch is `main`. Net effect: no CI runs on PRs targeting `main` (confirmed when /land-and-deploy ran on PR #23 — `gh pr checks 23` returned "no checks reported"). The release.yml workflow may have the same issue — check. Two-line fix per file (sed replace). Tiny standalone PR; don't bundle with anything else.
+
 ## Windows support for email-sync (v0.40 — own PR)
 
 - [ ] **v0.40.x: Cross-platform email-sync for the Windows teammate.** Scope = email-sync only; granola-sync stays Mac-only (Granola.app doesn't run on Windows). Refactor `install.sh` → cross-platform installer (PowerShell `install.ps1` OR a Bun installer that branches), launchd plist → Task Scheduler XML, `launchctl` calls in `tools/extensions/cli.ts` → `schtasks` / `Register-ScheduledTask`, macOS keychain (`security add-generic-password`) → Windows Credential Manager (`cmdkey /generic` or PowerShell `Get-Credential`). Mark `granola-sync` as `platform: 'darwin'` in the registry and have the CLI refuse to install it on win32. Recipe model (user/filter.ts contract) stays unchanged — that's the whole point of v0.39 paying off. Filed because Jason has a Windows teammate onboarding next after v0.39 ships. Test on the teammate's actual Windows machine before releasing — no Windows environment available to dogfood against.
