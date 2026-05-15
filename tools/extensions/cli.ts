@@ -47,7 +47,13 @@ function isLaunchdLoaded(label: string | undefined): boolean {
 }
 
 function checkConfigConfigured(configPath: string | undefined, markers: string[] | undefined): { exists: boolean; configured: boolean; markersFound: string[] } {
-  if (!configPath || !existsSync(configPath)) return { exists: false, configured: false, markersFound: [] };
+  if (!configPath || !existsSync(configPath)) {
+    // Config is REQUIRED only when the extension declares unconfiguredMarkers
+    // (the installer writes a config and the placeholders matter).
+    // Optional configs (e.g. granola-sync) are "configured" by default.
+    const required = !!markers && markers.length > 0;
+    return { exists: false, configured: !required, markersFound: [] };
+  }
   const body = readFileSync(configPath, 'utf-8');
   const markersFound = (markers ?? []).filter((m) => body.includes(m));
   return { exists: true, configured: markersFound.length === 0, markersFound };
@@ -65,6 +71,8 @@ function getStatus(ext: Extension): ExtensionStatus {
   const installed = !!installDir && existsSync(installDir);
   const configCheck = checkConfigConfigured(expand(ext.configPath), ext.unconfiguredMarkers);
   const running = ext.kind === 'launchd-daemon' ? isLaunchdLoaded(ext.launchdLabel) : false;
+  const userFilterPath = expand(ext.userFilterPath);
+  const hasUserFilter = !ext.userFilterPath ? true : (!!userFilterPath && existsSync(userFilterPath));
 
   let lastRunAt: string | null = null;
   let logBytes: number | null = null;
@@ -79,12 +87,21 @@ function getStatus(ext: Extension): ExtensionStatus {
 
   const notes: string[] = [];
   if (!installed) notes.push('Not installed. Run `dent-extensions install ' + ext.id + '` to set it up.');
-  else if (!configCheck.exists) notes.push('Installed but config.json is missing.');
+  // config.json is only treated as required when the extension declares
+  // `unconfiguredMarkers` — that's the signal that the installer writes a
+  // config and the placeholders matter. Granola-sync's config is optional
+  // (everything auto-discovered) so we skip this check there.
+  else if (!configCheck.exists && ext.unconfiguredMarkers && ext.unconfiguredMarkers.length > 0) {
+    notes.push('Installed but config.json is missing.');
+  }
   else if (!configCheck.configured) {
     notes.push(`Installed but config.json contains placeholder values: ${configCheck.markersFound.join(', ')}. Run \`dent-extensions configure ${ext.id}\`.`);
   }
-  if (installed && configCheck.configured && !running && ext.kind === 'launchd-daemon') {
-    notes.push(`launchd agent ${ext.launchdLabel} is not loaded. Run \`dent-extensions install ${ext.id}\` again to (re-)load it.`);
+  if (installed && ext.userFilterPath && !hasUserFilter) {
+    notes.push(`No user filter at ${userFilterPath}. Daemon is inert. Run \`dent-extensions setup ${ext.id}\` (or in Claude Code: "set up ${ext.id}").`);
+  }
+  if (installed && hasUserFilter && !running && ext.kind === 'launchd-daemon') {
+    notes.push(`Daemon is not armed. Preview first: \`dent-extensions preview ${ext.id}\`, then arm: \`dent-extensions arm ${ext.id}\`.`);
   }
   if (lastRunAt && logBytes != null && logBytes < 100) {
     notes.push('sync.log is nearly empty — first run may not have completed yet.');
@@ -94,6 +111,7 @@ function getStatus(ext: Extension): ExtensionStatus {
     id: ext.id,
     installed,
     configured: configCheck.configured,
+    hasUserFilter,
     running,
     lastRunAt,
     logBytes,
@@ -104,7 +122,8 @@ function getStatus(ext: Extension): ExtensionStatus {
 function statusBadge(s: ExtensionStatus): string {
   if (!s.installed) return '○ not-installed';
   if (!s.configured) return '⚠ unconfigured';
-  if (!s.running) return '⚠ not-running';
+  if (!s.hasUserFilter) return '⚠ no-filter';
+  if (!s.running) return '⚠ not-armed';
   return '● active';
 }
 
@@ -210,22 +229,131 @@ function cmdConfigure(id: string | undefined) {
 }
 
 function cmdTest(id: string | undefined) {
-  if (!id) { console.error('Usage: dent-extensions test <id>'); process.exit(1); }
+  // `test` is preserved as an alias for `preview` so existing muscle memory works.
+  cmdPreview(id);
+}
+
+function cmdPreview(id: string | undefined) {
+  if (!id) { console.error('Usage: dent-extensions preview <id>'); process.exit(1); }
   const ext = findExtension(id);
   if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
   const entry = expand(ext.entryScript);
   if (!entry) {
-    console.error(`Extension ${id} has no entry script. Test mode unavailable.`);
+    console.error(`Extension ${id} has no entry script. Preview unavailable.`);
     process.exit(1);
   }
   if (!existsSync(entry)) {
     console.error(`Entry script not found at ${entry}. Run \`dent-extensions install ${id}\` first.`);
     process.exit(1);
   }
+  const userFilter = expand(ext.userFilterPath);
+  if (ext.userFilterPath && (!userFilter || !existsSync(userFilter))) {
+    console.error(`No user filter at ${userFilter}.`);
+    console.error(`Preview is the verification gate AFTER you've authored user/filter.ts.`);
+    console.error(`Run \`dent-extensions setup ${id}\` first (or in Claude Code: "set up ${id}").`);
+    process.exit(1);
+  }
   const args = ext.testArgs ?? ['--dry-run', '--verbose'];
-  console.error(`==> bun ${entry} ${args.join(' ')}`);
+  console.error(`==> Preview: bun ${entry} ${args.join(' ')}`);
+  console.error(`    Reading user filter at ${userFilter}`);
+  console.error(`    No data will reach the brain — this is a dry run.`);
+  console.error();
   const r = spawnSync('bun', [entry, ...args], { stdio: 'inherit' });
   process.exit(r.status ?? 1);
+}
+
+function cmdSetup(id: string | undefined) {
+  if (!id) { console.error('Usage: dent-extensions setup <id>'); process.exit(1); }
+  const ext = findExtension(id);
+  if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
+  const installDir = expand(ext.installDir);
+  if (!installDir || !existsSync(installDir)) {
+    console.error(`Extension ${id} is not installed yet. Run \`dent-extensions install ${id}\` first.`);
+    process.exit(1);
+  }
+  const userFilter = expand(ext.userFilterPath);
+  const recipeDir = expand(ext.recipeDir);
+  console.log(`==> Setup: ${ext.name} (${ext.id})`);
+  console.log();
+  console.log('  The setup flow generates a teammate-specific filter that decides which');
+  console.log('  items reach the shared brain. Nothing will be filed until you (1) author');
+  console.log('  user/filter.ts, (2) preview what would be captured, (3) explicitly arm.');
+  console.log();
+  console.log('  Recommended: run this in Claude Code on your laptop. The /dent-extensions');
+  console.log('  skill will read your data, propose rules, write the filter for you, and');
+  console.log('  loop on preview + edit until you approve.');
+  console.log();
+  if (recipeDir && existsSync(recipeDir)) {
+    console.log(`  Recipe contract:  ${recipeDir}/RECIPE.md`);
+    console.log(`  Starting point:   ${recipeDir}/filter.example.ts`);
+  }
+  if (userFilter) {
+    const exists = existsSync(userFilter);
+    console.log(`  Your filter:      ${userFilter}${exists ? ' (exists)' : ' (not yet written)'}`);
+  }
+  console.log();
+  if (userFilter && !existsSync(userFilter)) {
+    console.log('  Quick manual path (if you prefer hand-authoring):');
+    console.log(`    cp ${recipeDir}/filter.example.ts ${userFilter}`);
+    console.log(`    $EDITOR ${userFilter}`);
+    console.log(`    dent-extensions preview ${ext.id}`);
+    console.log(`    dent-extensions arm ${ext.id}`);
+  } else if (userFilter) {
+    console.log('  Next steps:');
+    console.log(`    dent-extensions preview ${ext.id}   # dry-run, no writes`);
+    console.log(`    dent-extensions arm ${ext.id}       # start the daemon`);
+  }
+}
+
+function cmdArm(id: string | undefined) {
+  if (!id) { console.error('Usage: dent-extensions arm <id>'); process.exit(1); }
+  const ext = findExtension(id);
+  if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
+  if (ext.kind !== 'launchd-daemon' || !ext.launchdLabel || !ext.launchdPlistPath) {
+    console.error(`Extension ${id} is not a launchd daemon — nothing to arm.`);
+    process.exit(1);
+  }
+  const installDir = expand(ext.installDir);
+  if (!installDir || !existsSync(installDir)) {
+    console.error(`Extension ${id} is not installed. Run \`dent-extensions install ${id}\` first.`);
+    process.exit(1);
+  }
+  const userFilter = expand(ext.userFilterPath);
+  if (ext.userFilterPath && (!userFilter || !existsSync(userFilter))) {
+    console.error(`Cannot arm ${id}: no user filter at ${userFilter}.`);
+    console.error(`Run \`dent-extensions setup ${id}\` first (the filter decides what reaches the brain).`);
+    process.exit(1);
+  }
+  const plist = expand(ext.launchdPlistPath);
+  if (!plist || !existsSync(plist)) {
+    console.error(`Plist not found at ${plist}. Re-run \`dent-extensions install ${id}\`.`);
+    process.exit(1);
+  }
+  // Strongly recommend a preview has been run, but don't gate on it — preview
+  // writes no state to check against. The trust contract is: user authored
+  // the filter, user is now flipping the switch. Their preview habit is on them.
+  console.error(`==> Arming ${ext.name}…`);
+  console.error(`    filter:  ${userFilter}`);
+  console.error(`    plist:   ${plist}`);
+  const uid = process.getuid?.();
+  if (typeof uid !== 'number') {
+    console.error(`    cannot determine uid — launchctl needs gui/<uid>. Run \`bash ${ext.sourceDir}/install.sh\` directly instead.`);
+    process.exit(1);
+  }
+  // Tear down any prior bootstrap (idempotent arm).
+  if (isLaunchdLoaded(ext.launchdLabel)) {
+    console.error(`    bootout (refresh)…`);
+    spawnSync('launchctl', ['bootout', `gui/${uid}`, plist], { stdio: 'inherit' });
+  }
+  const r = spawnSync('launchctl', ['bootstrap', `gui/${uid}`, plist], { stdio: 'inherit' });
+  if (r.status !== 0) {
+    console.error(`    bootstrap failed (exit ${r.status}). Check Console.app for launchd errors.`);
+    process.exit(r.status ?? 1);
+  }
+  console.error(`    armed. Daemon is now live — first run will fire shortly.`);
+  console.error();
+  console.error(`    To watch: tail -f ${installDir}/sync.log`);
+  console.error(`    To stop:  dent-extensions uninstall ${ext.id}`);
 }
 
 function cmdUninstall(id: string | undefined) {
@@ -265,7 +393,7 @@ function cmdUninstall(id: string | undefined) {
 
 function cmdHelp() {
   console.log(
-    `Dent Brain extensions manager\n\nUsage:\n  dent-extensions list                          Show all extensions + status\n  dent-extensions status [<id>]                 Detailed status (all if no id)\n  dent-extensions install <id>                  Run the extension's installer\n  dent-extensions configure <id>                Open the config file in $EDITOR\n  dent-extensions test <id>                     Dry-run the extension to verify\n  dent-extensions uninstall <id> [--keep-config]\n                                                Stop + remove the extension\n  dent-extensions help                          Show this message\n\nGlobal flags:\n  --json                                        Machine-readable output (where applicable)\n\nKnown extensions:\n${EXTENSIONS.map((e) => '  - ' + e.id + (e.id.length < 16 ? ' '.repeat(16 - e.id.length) : '  ') + e.name).join('\n')}\n`,
+    `Dent Brain extensions manager\n\nLifecycle (in order):\n  dent-extensions install <id>                  Plumbing install (inert; no data flows yet)\n  dent-extensions setup <id>                    Print setup guidance; pairs with /dent-extensions skill\n  dent-extensions preview <id>                  Dry-run with your user filter; no writes\n  dent-extensions arm <id>                      Bootstrap launchd; daemon goes live\n\nInspect / manage:\n  dent-extensions list                          Show all extensions + status\n  dent-extensions status [<id>]                 Detailed status (all if no id)\n  dent-extensions configure <id>                Open config.json in $EDITOR\n  dent-extensions uninstall <id> [--keep-config]\n                                                Stop + remove the extension\n  dent-extensions help                          Show this message\n\nAliases:\n  dent-extensions test <id>                     Alias for \`preview\` (legacy)\n\nGlobal flags:\n  --json                                        Machine-readable output (where applicable)\n\nKnown extensions:\n${EXTENSIONS.map((e) => '  - ' + e.id + (e.id.length < 16 ? ' '.repeat(16 - e.id.length) : '  ') + e.name).join('\n')}\n`,
   );
 }
 
@@ -274,6 +402,9 @@ switch (COMMAND) {
   case 'status':     cmdStatus(POSITIONAL[1]); break;
   case 'install':    cmdInstall(POSITIONAL[1]); break;
   case 'configure':  cmdConfigure(POSITIONAL[1]); break;
+  case 'setup':      cmdSetup(POSITIONAL[1]); break;
+  case 'preview':    cmdPreview(POSITIONAL[1]); break;
+  case 'arm':        cmdArm(POSITIONAL[1]); break;
   case 'test':       cmdTest(POSITIONAL[1]); break;
   case 'uninstall':  cmdUninstall(POSITIONAL[1]); break;
   case 'help':

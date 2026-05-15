@@ -21,15 +21,20 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import type { Note, SyncConfig, SyncCursor } from './types.ts';
+import { fileURLToPath } from 'url';
+import type { Note, SyncConfig, SyncCursor, UserFilterModule } from './types.ts';
 import { McpClient } from './mcp-client.ts';
-import { isOrgRelated } from './filter.ts';
-import type { FilterContext } from './filter.ts';
 import { translateMeeting } from './translator.ts';
 import { GranolaApi, readKeyFromKeychain, KEYCHAIN_SERVICE, keychainAccount } from './granola-api.ts';
 
-const SYNC_VERSION = '0.2.0';
+const SYNC_VERSION = '0.3.0';
 const DEFAULT_CONFIG_PATH = join(homedir(), '.dent-brain', 'granola-sync', 'config.json');
+/** Recipe version the daemon understands. User filters declare their own
+ *  RECIPE_VERSION; a mismatch is a warning, not a fatal — the install/setup
+ *  skill handles migration. */
+const SUPPORTED_RECIPE_VERSION = 1;
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_USER_FILTER_PATH = join(SCRIPT_DIR, 'user', 'filter.ts');
 
 function parseFlags(argv: string[]) {
   const flags = {
@@ -38,6 +43,7 @@ function parseFlags(argv: string[]) {
     since: null as string | null,
     docId: null as string | null,
     configPath: DEFAULT_CONFIG_PATH,
+    filterPath: DEFAULT_USER_FILTER_PATH,
     verbose: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -48,6 +54,7 @@ function parseFlags(argv: string[]) {
     else if (a === '--since') flags.since = argv[++i];
     else if (a === '--doc-id') flags.docId = argv[++i];
     else if (a === '--config') flags.configPath = argv[++i];
+    else if (a === '--filter') flags.filterPath = argv[++i];
     else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
@@ -61,8 +68,40 @@ function parseFlags(argv: string[]) {
 
 function printHelp() {
   process.stderr.write(
-    `Granola → Dent Brain sync daemon\n\nUsage: bun sync.ts [flags]\n  --dry-run                Plan only, no writes.\n  --limit <n>              Cap meetings processed (default: no cap).\n  --since YYYY-MM-DD       Override cursor (re-sync from this date).\n  --doc-id <not_...>       Sync exactly one note (bypasses cursor + dedup).\n  --config <path>          Override config path (default: ~/.dent-brain/granola-sync/config.json).\n  --verbose | -v           Log every note decision.\n  --help | -h              Print this help.\n`,
+    `Granola → Dent Brain sync daemon\n\nUsage: bun sync.ts [flags]\n  --dry-run                Plan only, no writes.\n  --limit <n>              Cap meetings processed (default: no cap).\n  --since YYYY-MM-DD       Override cursor (re-sync from this date).\n  --doc-id <not_...>       Sync exactly one note (bypasses cursor + dedup).\n  --config <path>          Override config path (default: ~/.dent-brain/granola-sync/config.json).\n  --filter <path>          Override user filter path (default: <install-dir>/user/filter.ts).\n  --verbose | -v           Log every note decision.\n  --help | -h              Print this help.\n`,
   );
+}
+
+async function loadUserFilter(path: string): Promise<UserFilterModule> {
+  if (!existsSync(path)) {
+    console.error(`[granola-sync] FATAL: no user filter at ${path}.`);
+    console.error(`  Granola-sync is intentionally inert until you set up a filter that decides`);
+    console.error(`  which meetings reach the shared brain. Run /dent-extensions setup granola-sync`);
+    console.error(`  (in Claude Code) to generate one — or copy recipe/filter.example.ts to user/filter.ts`);
+    console.error(`  and edit it.`);
+    process.exit(1);
+  }
+  let mod: Partial<UserFilterModule>;
+  try {
+    mod = (await import(path)) as Partial<UserFilterModule>;
+  } catch (e) {
+    console.error(`[granola-sync] FATAL: failed to load ${path}: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+  if (typeof mod.filter !== 'function') {
+    console.error(`[granola-sync] FATAL: ${path} does not export a \`filter(note)\` function.`);
+    console.error(`  See recipe/RECIPE.md for the contract.`);
+    process.exit(1);
+  }
+  if (typeof mod.RECIPE_VERSION !== 'number') {
+    console.error(`[granola-sync] WARN: ${path} does not export RECIPE_VERSION. Treating as v0.`);
+  } else if (mod.RECIPE_VERSION !== SUPPORTED_RECIPE_VERSION) {
+    console.error(
+      `[granola-sync] WARN: filter declares RECIPE_VERSION=${mod.RECIPE_VERSION} but daemon expects ${SUPPORTED_RECIPE_VERSION}. ` +
+      `Run /dent-extensions setup granola-sync to migrate.`,
+    );
+  }
+  return mod as UserFilterModule;
 }
 
 /** Read the dent-brain MCP server URL + bearer token straight from
@@ -112,28 +151,19 @@ function loadConfig(path: string): SyncConfig {
     process.exit(1);
   }
 
-  const orgKeywords = Array.isArray(raw.orgKeywords) && raw.orgKeywords.length > 0
-    ? (raw.orgKeywords as unknown[]).map((k) => String(k).toLowerCase())
-    : ['dent'];
-  const rawDomains = Array.isArray(raw.orgDomains) && raw.orgDomains.length > 0
-    ? raw.orgDomains
-    : Array.isArray(raw.dentDomains) && raw.dentDomains.length > 0
-      ? raw.dentDomains
-      : ['dentthefuture.com'];
-  const orgDomains = (rawDomains as unknown[]).map((d) => String(d).toLowerCase());
-  const orgFolders = Array.isArray(raw.orgFolders) && raw.orgFolders.length > 0
-    ? (raw.orgFolders as unknown[]).map((f) => String(f))
-    : ['Dent'];
-  const fileAll = raw.fileAll === true;
+  // v0.39: filter fields moved to user/filter.ts. Warn if a legacy config
+  // still has the old keys so the teammate doesn't think their edits matter.
+  const legacyKeys = ['orgKeywords', 'orgDomains', 'orgFolders', 'fileAll', 'dentDomains'].filter((k) => k in raw);
+  if (legacyKeys.length > 0) {
+    console.error(
+      `[granola-sync] WARN: config.json contains legacy fields (${legacyKeys.join(', ')}) — these are ignored as of v0.39. All filter behavior lives in user/filter.ts. Run \`dent-extensions setup granola-sync\` to migrate.`,
+    );
+  }
 
   return {
     serverUrl,
     bearerToken,
     cursorPath: String(raw.cursorPath ?? join(homedir(), '.dent-brain', 'granola-sync', 'cursor.json')).replace('${HOME}', homedir()),
-    orgKeywords,
-    orgDomains,
-    orgFolders,
-    fileAll,
   };
 }
 
@@ -387,10 +417,12 @@ async function loadGranolaApi(): Promise<GranolaApi> {
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
   const config = loadConfig(flags.configPath);
+  const userFilter = await loadUserFilter(flags.filterPath);
   const cursor = loadCursor(config.cursorPath);
   const sinceCutoff = flags.since ? new Date(flags.since).toISOString() : cursor.lastSyncedCreatedAt;
 
   console.error(`[granola-sync] mode=${flags.dryRun ? 'DRY RUN' : 'APPLY'} cursor=${sinceCutoff}`);
+  console.error(`[granola-sync] user filter: ${flags.filterPath} (RECIPE_VERSION=${userFilter.RECIPE_VERSION ?? 0})`);
 
   const api = await loadGranolaApi();
   console.error(`[granola-sync] Granola API: authenticated`);
@@ -405,16 +437,6 @@ async function main() {
       process.exit(2);
     }
   }
-
-  const filterCtx: FilterContext = {
-    orgKeywords: config.orgKeywords,
-    orgDomains: config.orgDomains,
-    orgFolders: config.orgFolders,
-    fileAll: config.fileAll,
-  };
-  console.error(
-    `[granola-sync] filter: keywords=[${config.orgKeywords.join(', ')}] folders=[${config.orgFolders.join(', ')}] domains=[${config.orgDomains.join(', ')}] fileAll=${config.fileAll}`,
-  );
 
   // Build the candidate list of note IDs to fetch in full.
   //  --doc-id: one note, bypasses cursor + dedup.
@@ -440,6 +462,26 @@ async function main() {
   let createdMeetings = 0, existedMeetings = 0, updatedMeetings = 0, createdTranscripts = 0;
   let bulletsAppended = 0, stubsCreated = 0, bulletsFailed = 0;
   let mentionedMatches = 0;
+  let filterErrors = 0;
+
+  /** Run the user filter defensively. Catches throws and rejects malformed
+   *  verdicts. Default on error is `keep: false` — the privacy contract
+   *  is "don't file unless the filter clearly says yes." */
+  function safeFilter(note: Note): { keep: boolean; reason: string } {
+    let verdict: unknown;
+    try {
+      verdict = userFilter.filter(note);
+    } catch (e) {
+      filterErrors++;
+      return { keep: false, reason: `filter threw: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (!verdict || typeof verdict !== 'object' || typeof (verdict as { keep?: unknown }).keep !== 'boolean') {
+      filterErrors++;
+      return { keep: false, reason: 'filter returned malformed verdict (expected { keep: boolean, reason: string })' };
+    }
+    const v = verdict as { keep: boolean; reason?: unknown };
+    return { keep: v.keep, reason: typeof v.reason === 'string' ? v.reason : '(no reason)' };
+  }
   const newSyncedIds: string[] = [];
   let latestCreatedAt = sinceCutoff;
 
@@ -473,7 +515,7 @@ async function main() {
 
   for (const note of fullNotes) {
     if (processed >= flags.limit) break;
-    const verdict = isOrgRelated(note, filterCtx);
+    const verdict = safeFilter(note);
     if (!verdict.keep) {
       skipped++;
       if (flags.verbose) console.error(`  SKIP "${note.title ?? '(no title)'}" — ${verdict.reason}`);
@@ -540,7 +582,7 @@ async function main() {
   if (!flags.dryRun) saveCursor(config.cursorPath, newCursor);
 
   console.error(
-    `\n[granola-sync] done: kept=${kept} skipped=${skipped} processed=${processed}\n  meetings: ${createdMeetings} created, ${updatedMeetings} updated, ${existedMeetings} already-existed\n  transcripts: ${createdTranscripts} created\n  bullets: ${bulletsAppended} appended (${stubsCreated} new stubs), ${bulletsFailed} failed\n  mentioned: ${mentionedMatches} entities\n  cursor: ${newCursor.lastSyncedCreatedAt}${flags.dryRun ? ' (NOT saved — dry run)' : ''}`,
+    `\n[granola-sync] done: kept=${kept} skipped=${skipped} processed=${processed}\n  meetings: ${createdMeetings} created, ${updatedMeetings} updated, ${existedMeetings} already-existed\n  transcripts: ${createdTranscripts} created\n  bullets: ${bulletsAppended} appended (${stubsCreated} new stubs), ${bulletsFailed} failed\n  mentioned: ${mentionedMatches} entities${filterErrors > 0 ? `\n  filter errors: ${filterErrors} (notes treated as keep:false — check user/filter.ts)` : ''}\n  cursor: ${newCursor.lastSyncedCreatedAt}${flags.dryRun ? ' (NOT saved — dry run)' : ''}`,
   );
 }
 

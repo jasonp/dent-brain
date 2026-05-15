@@ -453,10 +453,21 @@ Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your G
    > extension install. Just type `/dent-extensions` in a new line, or
    > say 'install granola-sync' and I'll route you there."
 
-3. The `/dent-extensions` skill then:
-   - Verifies prereqs (Bun, Granola.app, Granola permissions, dent-brain clone)
-   - Runs `tools/granola-sync/install.sh` which sets up launchd
-   - Verifies first sync via `tail` on the log
+3. The `/dent-extensions` skill then walks the v0.39 recipe lifecycle:
+   - **install** — verifies prereqs (Bun, Granola.app, Granola
+     permissions, dent-brain clone) and runs `tools/granola-sync/install.sh`,
+     which stages plumbing into `~/.dent-brain/granola-sync/`. The daemon
+     is provably inert at this point (no `user/filter.ts`, no launchd
+     bootstrap).
+   - **setup** — interviews you about which meetings should reach the
+     brain and writes `~/.dent-brain/granola-sync/user/filter.ts`
+     accordingly (starting point: `recipe/filter.example.ts`).
+   - **preview** — `dent-extensions preview granola-sync` runs the
+     daemon once in dry-run mode against recent Granola notes so you
+     can verify the filter before going live. No writes to the brain.
+   - **arm** — `dent-extensions arm granola-sync` bootstraps launchd
+     and verifies first real sync via `tail` on the log. Refuses
+     without `user/filter.ts`.
 
 The skill walks through everything else. See `tools/granola-sync/README.md`
 in this repo for what gets written where, and `tools/extensions/README.md`

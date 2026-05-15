@@ -2,6 +2,61 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.39.0] - 2026-05-15
+
+## **Ingestors switch to a recipe model: bespoke per-teammate filters, inert-by-default installs. Steve's feedback shaped this — no pre-built filters can leak personal data into the shared brain, because there are no pre-built filters.**
+
+Setting up Steve revealed a real privacy gap. Granola-sync and email-sync shipped with hardcoded org-include filters (`dent` keyword, `dentthefuture.com` domain), and the installer auto-armed launchd. The defaults worked for the team, but Steve's concern was correct: a new teammate has no way to know what those filters will or won't catch on their actual data, and "trust us, it's filtered" isn't the right contract for personal meetings and personal emails on a work address.
+
+The fix: every teammate authors their own filter, locally, with their own Claude. The plugin ships canonical plumbing (Granola API client, Gmail OAuth, MCP write protocol, launchd template) plus a `recipe/` directory containing an example filter and a contract doc. The teammate's filter lives at `~/.dent-brain/<id>/user/filter.ts`, generated through `/dent-extensions setup <id>` — a conversation where the local Claude reads the teammate's actual data (Granola folders, recent senders), proposes include/exclude rules, writes the filter, runs a preview, and only after the teammate approves the preview does it arm the daemon. Plugin updates overwrite the canonical plumbing but never touch `user/filter.ts`. The recipe contract has a `RECIPE_VERSION` field for forward-compatibility; breaking changes will land as conversational migrations, not forced overwrites.
+
+The lifecycle changed from `install → done` to `install → setup → preview → arm`. Each ingestor is provably inert between install and arm: with no `user/filter.ts`, the daemon refuses to run with a clear error. There is no path that ships data without an explicit per-teammate filter and an explicit arm step.
+
+`dent-extensions` grew three new verbs: `setup` (prints guidance + opens the recipe), `preview` (dry-run with the user's filter; no writes), `arm` (bootstrap launchd; refuses unless `user/filter.ts` exists). The old `test` verb is now an alias for `preview`. Status badges added: `⚠ no-filter` and `⚠ not-armed` make the inert states obvious in `dent-extensions list`.
+
+The privacy contract is now stated upfront in both `/dent-onboard-teammate` (so a new teammate hears it on day one: brain access doesn't auto-ingest anything) and `/dent-extensions` (before every install: nothing flows until you've previewed and armed).
+
+Numbers: 6,438 unit tests pass (10 new for the example filters), typecheck clean.
+
+### To take advantage of v0.39.0
+
+1. **Existing teammates with armed installs** (Jason): you need to re-run setup once. The old hardcoded filter logic moved into `recipe/filter.example.ts`; copy it to `user/filter.ts` (or have `/dent-extensions setup <id>` do it conversationally and customize while it's at it). One-time, ~30 seconds. Detailed steps in `skills/migrations/v0.39.md`.
+2. **New teammates** (Steve, Robin, anyone after this release): the install flow now reads as one motion — `install → setup → preview → arm`. Privacy banner up front, filter authored to your actual data, preview before any data flows.
+3. **Filter customizations** can be edited at any time by editing `~/.dent-brain/<id>/user/filter.ts` and re-running `dent-extensions preview <id>`. No re-arm needed; the daemon picks up changes on next scheduled run.
+
+### Itemized changes
+
+#### Added
+- `tools/granola-sync/recipe/RECIPE.md` and `tools/email-sync/recipe/RECIPE.md` — contract docs the local Claude reads when generating a user filter. Both declare `RECIPE_VERSION = 1`.
+- `tools/granola-sync/recipe/filter.example.ts` — starting-point filter reproducing the v0.38 hardcoded defaults plus exclude knobs (`EXCLUDE_FOLDERS`, `EXCLUDE_KEYWORDS`, `EXCLUDE_DOMAINS`).
+- `tools/email-sync/recipe/filter.example.ts` — starting-point filter with both excludelist and allowlist postures and `DROP_NOISE` / `DROP_SIGNATURES` knobs.
+- `UserFilterModule`, `FilterResult` types in both ingestors' `types.ts` — the contract every user filter must implement.
+- `dent-extensions setup <id>` — prints recipe location + next steps, pairs with the `/dent-extensions` skill for conversational generation.
+- `dent-extensions preview <id>` — dry-run the daemon with the teammate's filter; surfaces every keep/skip decision; no MCP writes.
+- `dent-extensions arm <id>` — bootstraps launchd; refuses unless `user/filter.ts` exists.
+- `dent-extensions test` is preserved as a legacy alias for `preview`.
+- Status badges `⚠ no-filter` (installed but no `user/filter.ts`) and `⚠ not-armed` (filter present, launchd not loaded).
+- Privacy banner section in `skills/dent/onboard-teammate/SKILL.md` + privacy paragraph in the install message handed to new teammates.
+- `test/granola-sync-filter.test.ts` and `test/email-sync-filter.test.ts` — pin the example filters' behavior so changes to defaults are intentional.
+- `skills/migrations/v0.39.md` — re-setup steps for existing armed installs.
+
+#### Changed
+- Granola-sync `sync.ts`: dynamic-imports `user/filter.ts` at startup. Fatal-exits with a clear "run setup" message if missing. New `--filter <path>` flag for dev/preview. Per-item filter calls wrapped in defensive `safeFilter()` — a filter that throws or returns a malformed verdict is treated as `keep: false` and counted in a `filterErrors` summary, never as silently-keep. Privacy contract holds even on buggy filters.
+- Email-sync `collect.ts`: same dynamic-import + `safeFilter()` pattern; user filter runs AFTER canonical `isNoise()` / `isSignature()` classification, BEFORE digest grouping. Only `keep: true` emails reach the digest.
+- Granola-sync `loadConfig`: emits a clear WARN when a legacy config.json still has `orgKeywords`/`orgDomains`/`orgFolders`/`fileAll`/`dentDomains`, so upgrading teammates don't think their old edits still drive filtering.
+- `dent-extensions arm` hard-errors instead of silently producing a broken `gui/` spec when `process.getuid` is unavailable. Install scripts print a louder "DAEMON DISARMED, re-run arm" banner when a re-install boots out an existing agent.
+- Granola-sync `SyncConfig` no longer carries `orgKeywords` / `orgDomains` / `orgFolders` / `fileAll` — those decisions moved to `user/filter.ts`.
+- Email-sync `RunSummary` gains `userFiltered: number` — counts emails dropped by the user filter (separate from noise/signature counts).
+- Granola-sync `install.sh`: stages plist but does NOT call `launchctl bootstrap`. Tears down any prior bootstrap so re-installs leave the daemon provably inert until arm.
+- Email-sync `install.sh`: same split. Plumbing + recipe install, no auto-arm.
+- `skills/dent/extensions/SKILL.md`: full rewrite around `install → setup → preview → arm`. Privacy banner at the top.
+- `skills/dent/onboard-teammate/SKILL.md`: privacy banner up front and a privacy paragraph in the install message the teammate receives.
+- `tools/granola-sync/config.example.json`: removed dead `orgKeywords` / `orgDomains` / `orgFolders` / `fileAll` fields. Config is now optional; everything filter-shaped lives in `user/filter.ts`.
+
+#### Removed
+- `tools/granola-sync/filter.ts` (moved to `recipe/filter.example.ts`).
+- `FilterContext` type (no longer needed; filters parameterize themselves via module-level constants).
+
 ## [0.38.0] - 2026-05-14
 
 ## **Upstream sync: gbrain v0.30.1 → v0.33.2.1 folds into dent-brain. 29 commits. 14 schema migrations. Hot memory, multi-source tightening, doctor expansions, search-lite cache, eval-gated whoknows. First teammate-ready release.**

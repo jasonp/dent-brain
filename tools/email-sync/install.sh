@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# Email → Dent Brain sync installer.
+# Email → Dent Brain sync installer (plumbing only as of v0.39).
 #
 # What it does:
 #   1. Verifies bun + ~/.claude.json + dent-brain MCP registration.
-#   2. Bakes in the shared "Dent Brain" Google OAuth Client ID + Secret (you
-#      add a teammate's email as a Test User in the Google Cloud console; this
-#      install script gets shipped with the same ID + Secret for everyone).
+#   2. Bakes in the shared "Dent Brain" Google OAuth Client ID + Secret.
 #   3. Prompts only for workEmail (everything else is shared or auto-derived).
 #   4. Writes ~/.dent-brain/email-sync/config.json.
-#   5. Copies the runtime (collect.ts + helpers) to ~/.dent-brain/email-sync/.
-#   6. Runs the one-time Google OAuth dance — opens a browser tab, the user
-#      clicks through "this app isn't verified" → "allow", localhost callback
-#      captures the code, exchanges for refresh_token, saves to
-#      ~/.dent-brain/email-sync/google-tokens.json (chmod 0600).
-#   7. Probes Gmail with the freshly-issued token to confirm it works AND
-#      matches the configured workEmail.
-#   8. Renders + installs the launchd plist (StartInterval=21600 → every 6h).
-#   9. Loads the agent. RunAtLoad=true → first collection fires immediately.
-#  10. Tells the user to register `/dent-process-inbox` as a daily Sonnet
-#      routine via `/schedule` — that's Layer 2 of the pipeline.
+#   5. Copies runtime + recipe files to ~/.dent-brain/email-sync/.
+#   6. Runs the one-time Google OAuth dance.
+#   7. Probes Gmail to confirm tokens match workEmail.
+#   8. Stages the launchd plist to ~/Library/LaunchAgents/ but does NOT
+#      bootstrap it. The daemon stays inert until the teammate runs
+#      /dent-extensions setup email-sync to author user/filter.ts, then
+#      /dent-extensions arm email-sync to start it.
+#   9. Tells the user the next-step setup flow.
+#
+# Privacy contract: nothing reaches the shared brain until the teammate has
+# (a) generated a user filter via the setup flow, (b) previewed what would be
+# captured, (c) explicitly armed the daemon.
 #
 # Idempotent. Re-running refreshes runtime files + config + plist + tokens.
 #
@@ -115,11 +114,16 @@ echo "    workEmail:        $DENT_EMAIL_WORK_EMAIL"
 echo "    googleClientId:   ${DENT_GOOGLE_CLIENT_ID:0:24}..."
 echo "    authUser:         $DENT_EMAIL_AUTHUSER"
 
-# 4. Copy runtime files + stamp installed version (used by /dent-update for drift detection).
-mkdir -p "$INSTALL_DIR"
+# 4. Copy runtime files + recipe + stamp installed version. `user/` is left
+#    untouched — owned by the teammate, authored via /dent-extensions setup.
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/recipe" "$INSTALL_DIR/user"
 for f in collect.ts types.ts mcp-client.ts google-client.ts oauth-flow.ts noise-filter.ts link-gen.ts digest.ts; do
   cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
 done
+cp "$SCRIPT_DIR/recipe/filter.example.ts" "$INSTALL_DIR/recipe/filter.example.ts"
+if [ -f "$SCRIPT_DIR/recipe/RECIPE.md" ]; then
+  cp "$SCRIPT_DIR/recipe/RECIPE.md" "$INSTALL_DIR/recipe/RECIPE.md"
+fi
 # Resolve the bundle version. If SCRIPT_DIR is inside a plugin cache,
 # `<cache>/VERSION` will be present. If running from a git clone, fall
 # back to the repo's VERSION. Used by /dent-update to detect daemon drift.
@@ -233,52 +237,50 @@ if [ "$PROBE_RESULT" != "$DENT_EMAIL_WORK_EMAIL" ]; then
 fi
 echo "    Gmail: reachable as $PROBE_RESULT"
 
-# 8. Render + install plist
-PLIST_RENDERED="$(mktemp)"
+# 8. Stage the plist to ~/Library/LaunchAgents but DO NOT bootstrap it. The
+#    arm step (/dent-extensions arm email-sync) does that, only after the
+#    teammate has authored a user filter and reviewed a preview.
+mkdir -p "$(dirname "$PLIST_PATH")"
+DISARMED=no
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  echo "    unloading prior launch agent…"
+  launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+  DISARMED=yes
+fi
 sed \
   -e "s|__BUN_PATH__|$BUN_PATH|g" \
   -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
   -e "s|__HOME__|$HOME|g" \
-  "$SCRIPT_DIR/com.dent.email-sync.plist.template" > "$PLIST_RENDERED"
+  "$SCRIPT_DIR/com.dent.email-sync.plist.template" > "$PLIST_PATH"
+echo "    staged plist (not loaded): $PLIST_PATH"
 
-mkdir -p "$(dirname "$PLIST_PATH")"
-
-if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-  echo "    unloading existing launch agent…"
-  launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+echo
+if [ "$DISARMED" = "yes" ]; then
+  echo "==> ⚠  DAEMON DISARMED. The prior launch agent was torn down for this re-install."
+  echo "    Re-run \`dent-extensions arm email-sync\` to resume syncing."
+  echo
 fi
-
-cp "$PLIST_RENDERED" "$PLIST_PATH"
-rm "$PLIST_RENDERED"
-echo "    installed plist: $PLIST_PATH"
-
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-echo "    loaded launch agent ($LABEL)."
-
+echo "==> Plumbing installed. Daemon is INERT — nothing will reach the brain yet."
 echo
-echo "==> Installed. The collector will run every 6 hours (StartInterval=21600)."
-echo "    Logs:        $INSTALL_DIR/sync.log"
-echo "    Manual run:  bun $INSTALL_DIR/collect.ts"
-echo "    Dry run:     bun $INSTALL_DIR/collect.ts --dry-run --verbose"
-echo "    Backfill:    bun $INSTALL_DIR/collect.ts --since 2026-04-01"
-echo "    Status:      dent-extensions status email-sync"
-echo "    Stop:        dent-extensions uninstall email-sync"
+echo "    Next: tell Claude Code 'set up email-sync' (or run /dent-extensions"
+echo "    setup email-sync). The skill will:"
+echo "      1. Sample your recent senders + ask about your inbox posture."
+echo "      2. Walk you through include/exclude rules for your work email."
+echo "      3. Write $INSTALL_DIR/user/filter.ts."
+echo "      4. Run a preview over the last few days — you see exactly what"
+echo "         would be filed, before anything is filed."
+echo "      5. After your approval, arm the daemon."
 echo
-echo "==> Layer 2 (the part that actually updates entity timelines) runs as a"
-echo "    Claude Code Desktop scheduled task on YOUR machine — uses your"
-echo "    Claude subscription, inherits all your MCPs (dent-brain, FileMaker)."
+echo "    Manual paths (if you'd rather hand-author):"
+echo "      Copy example:   cp $INSTALL_DIR/recipe/filter.example.ts $INSTALL_DIR/user/filter.ts"
+echo "      Preview:        dent-extensions preview email-sync"
+echo "      Arm:            dent-extensions arm email-sync"
+echo "      Uninstall:      dent-extensions uninstall email-sync"
 echo
-echo "    To register it, in any Claude Code Desktop session say:"
-echo
+echo "==> Layer 2 (entity-timeline enrichment) is a separate Claude Code"
+echo "    Desktop scheduled task. Skill body: $SKILL_DST"
+echo "    To register, in Claude Code Desktop:"
 echo "        Create a daily scheduled task at 3am called dent-process-inbox"
 echo "        with these instructions:"
 echo "          \"Read ~/.dent-brain/skills/process-inbox.md and follow the"
 echo "          instructions exactly.\""
-echo
-echo "    (Or use the GUI: Routines → New routine → Local, schedule = Daily 3am.)"
-echo "    The canonical skill body lives at:"
-echo "        $SKILL_DST"
-echo "    Re-run this installer to update it."
-echo
-echo "==> First collection firing now (RunAtLoad=true). Tail logs:"
-echo "    tail -f $INSTALL_DIR/sync.log"

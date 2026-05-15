@@ -24,6 +24,14 @@ This skill guarantees:
 - The token name matches a real human handle (e.g. `steve`, `jeff`, `robin`) — never a generic name like `claude-desktop` or `team-shared`. Per-user audit depends on this.
 - Registration is verified end-to-end via `mcp_request_log` before onboarding is declared complete.
 
+## CRITICAL: privacy contract — say this every onboarding
+
+This onboarding sets up the teammate's **brain access** — read/write capability against the shared dent-brain. It does NOT auto-enroll them in any data ingestion. Make sure both the admin and (via the install message) the teammate understand that:
+
+> Onboarding gives you access to the shared brain. **No data flows FROM your laptop into the brain automatically.** If you later choose to install an ingestor (Granola → Brain, Email → Brain, etc.) via `/dent-extensions`, that's a separate, deliberate setup where YOU author the filter that decides what gets in, preview exactly what would be captured, and explicitly arm the daemon. The installer is intentionally inert until you've done all three. Personal meetings and personal emails stay local unless you choose otherwise — there are no pre-built filters that decide for you.
+
+This matters because new teammates reasonably worry "if I install this, will it slurp up my personal stuff?" The answer is no, by design — but only if we keep saying it.
+
 ## When to fire
 
 The admin (Jason today; future deployments: whoever holds `gbrain auth` admin rights) runs this when:
@@ -214,6 +222,18 @@ Heads up:
   If you also want the /dent-* slash commands in Cowork, repeat that
   one section from a Cowork session (same marketplace URL, separate
   store).
+
+Privacy — read before deciding what to do next:
+
+This onboarding sets up your read/write access to the shared brain. NO
+data flows from your laptop into the brain automatically. If you later
+want to install an ingestor (Granola → Brain, Email → Brain), it's a
+separate, deliberate setup via /dent-extensions where YOU author the
+filter that decides what gets in, preview exactly what would be
+captured, and explicitly arm the daemon. The installer is inert until
+you've done all three. Personal meetings and personal emails stay
+local unless you choose otherwise — we don't ship pre-built filters
+that decide for you.
 ```
 
 Substitute (all values come from `plugin/manifest.json` except `<TOKEN>` from Phase 3 and `<FullName>` / `<admin handle>` from Phase 1):

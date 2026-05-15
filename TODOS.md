@@ -1,5 +1,9 @@
 # TODOS
 
+## Windows support for email-sync (v0.40 — own PR)
+
+- [ ] **v0.40.x: Cross-platform email-sync for the Windows teammate.** Scope = email-sync only; granola-sync stays Mac-only (Granola.app doesn't run on Windows). Refactor `install.sh` → cross-platform installer (PowerShell `install.ps1` OR a Bun installer that branches), launchd plist → Task Scheduler XML, `launchctl` calls in `tools/extensions/cli.ts` → `schtasks` / `Register-ScheduledTask`, macOS keychain (`security add-generic-password`) → Windows Credential Manager (`cmdkey /generic` or PowerShell `Get-Credential`). Mark `granola-sync` as `platform: 'darwin'` in the registry and have the CLI refuse to install it on win32. Recipe model (user/filter.ts contract) stays unchanged — that's the whole point of v0.39 paying off. Filed because Jason has a Windows teammate onboarding next after v0.39 ships. Test on the teammate's actual Windows machine before releasing — no Windows environment available to dogfood against.
+
 ## functional-area-resolver follow-ups (v0.32.3.0)
 
 - [ ] **v0.33.x: Dogfood `functional-area-resolver` on gbrain's own `skills/RESOLVER.md`** when it crosses ~12KB (currently 8KB). Apply the pattern to the Operational section first (largest). Filed during v0.32.3.0 CEO review.

@@ -36,15 +36,20 @@ itself never holds raw inboxes.
 
 | Extension | Source | Schedule | What it does |
 |---|---|---|---|
-| `granola-sync` | Granola public API | Hourly (launchd) | Pulls Granola meeting notes + transcripts via the public API (key in macOS keychain); filters by org-domain attendees / folder / title-keyword; pushes Dent-related meetings into `meetings/`. |
-| `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only), filters noise, classifies signature requests, writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
+| `granola-sync` | Granola public API | Hourly (launchd) | Pulls Granola meeting notes + transcripts via the public API (key in macOS keychain); each teammate's `user/filter.ts` decides which meetings reach the brain; pushes kept meetings into `meetings/`. |
+| `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only). Canonical noise-filter drops bulk-promo first; each teammate's `user/filter.ts` then decides keep/drop with noise + signature hints. Writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
 | `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
 
 Manage these via the [`/dent-extensions`](skills/dent/dent-extensions/SKILL.md)
-skill — list, install, configure, test, or uninstall any of them in
-plain English from your Claude Code session. New extensions land by
-adding an entry to [`tools/extensions/registry.ts`](tools/extensions/registry.ts).
+skill — list, install, **setup** (author your `user/filter.ts`),
+**preview** (dry-run with that filter), **arm** (bootstrap launchd), or
+uninstall any of them in plain English from your Claude Code session.
+As of v0.39 both ingestors use the recipe model: install stages plumbing
+but the daemon refuses to run until you've written your own `user/filter.ts`
+and explicitly armed it. See `tools/<id>/recipe/RECIPE.md` for the contract.
+New extensions land by adding an entry to
+[`tools/extensions/registry.ts`](tools/extensions/registry.ts).
 
 ### 2. Cron-driven enrichers (Claude Code Desktop scheduled tasks)
 
@@ -73,7 +78,7 @@ Claude Code with `/<name>`:
 | Skill | What it does |
 |---|---|
 | `/dent-onboard-teammate` | Generates a bearer token for a new teammate, prints a one-paste `claude mcp add` command, verifies registration. |
-| `/dent-extensions` | Manage local ingestors — list, install, configure, test, uninstall. |
+| `/dent-extensions` | Manage local ingestors — list, install, setup (author `user/filter.ts`), preview (dry-run), arm, uninstall. |
 | `/dent-tell-me-about` | Token-efficient summary of any entity (people, companies, projects, events). Routes through hybrid search + chunked retrieval + timeline rather than dumping the full page. |
 | `/dent-append-evidence` | Capture an observation as a timeline bullet on the right entity. Detects which entities the observation is about, links new people to FileMaker, applies the A5 escalation rule. |
 | `/dent-enrich` | Re-synthesize an entity page from current markdown + linked FM record + related context. FM is authoritative for owned fields; human edits preserved verbatim. |
@@ -119,11 +124,16 @@ After this, the teammate can:
 - Run `/dent-tell-me-about <person>` and get a token-efficient summary
   that pulls from the shared brain plus FileMaker.
 
-For the per-teammate ingestors, the install scripts handle their own
-credentials:
+For the per-teammate ingestors, the lifecycle is **install → setup →
+preview → arm**. `install` stages plumbing only — the daemon is provably
+inert (refuses to run without `user/filter.ts`). `/dent-extensions`
+walks you through `setup` (a conversation that produces your own
+`~/.dent-brain/<id>/user/filter.ts`), then `preview` (dry-run, no
+writes), then `arm` (bootstraps launchd). Credentials are handled
+inside `setup`:
 
 - **Granola sync** auto-discovers the brain bearer token from
-  `~/.claude.json`; the installer prompts the teammate once for a
+  `~/.claude.json`; setup prompts the teammate once for a
   Granola API key (minted in Granola → Settings → Connectors → API
   keys) and stores it in the macOS keychain.
 - **Email sync** runs a one-time browser OAuth dance against the
