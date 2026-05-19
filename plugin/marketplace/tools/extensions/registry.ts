@@ -26,10 +26,10 @@ export const EXTENSIONS: Extension[] = [
     launchdPlistPath: '${HOME}/Library/LaunchAgents/com.dent.granola-sync.plist',
     entryScript: '${HOME}/.dent-brain/granola-sync/sync.ts',
     testArgs: ['--dry-run', '--verbose'],
-    // No unconfiguredMarkers: the daemon auto-discovers everything from
-    // ~/.claude.json + macOS conventions, so as soon as it's installed
-    // it's also configured. The skill detects setup problems via runtime
-    // errors in sync.log, not via config-file inspection.
+    userFilterPath: '${HOME}/.dent-brain/granola-sync/user/filter.ts',
+    recipeDir: '${HOME}/.dent-brain/granola-sync/recipe',
+    // No unconfiguredMarkers: config.json is optional; the filter (user/filter.ts)
+    // is the customization surface, tracked separately via userFilterPath.
   },
   {
     id: 'email-sync',
@@ -45,6 +45,8 @@ export const EXTENSIONS: Extension[] = [
     launchdPlistPath: '${HOME}/Library/LaunchAgents/com.dent.email-sync.plist',
     entryScript: '${HOME}/.dent-brain/email-sync/collect.ts',
     testArgs: ['--dry-run', '--verbose'],
+    userFilterPath: '${HOME}/.dent-brain/email-sync/user/filter.ts',
+    recipeDir: '${HOME}/.dent-brain/email-sync/recipe',
     // unconfiguredMarkers: the installer writes real values, but if the
     // user hand-edits config and leaves a placeholder, surface that.
     unconfiguredMarkers: ['REPLACE_WITH_'],

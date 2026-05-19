@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Granola → Dent Brain sync installer.
+# Granola → Dent Brain sync installer (plumbing only).
 #
 # What it does:
 #   1. Verifies bun is installed; bails with a hint if not.
@@ -8,10 +8,17 @@
 #   3. Verifies Granola itself is installed (the user mints the API key there).
 #   4. Verifies the Granola API key in the macOS keychain. If missing or
 #      invalid, prompts the user to paste a key and stores it via `security`.
-#   5. Copies sync.ts + types.ts + filter.ts + translator.ts + mcp-client.ts
-#      + granola-api.ts to ~/.dent-brain/granola-sync/.
-#   6. Renders the launchd plist template and loads it.
-#   7. Prints a heads-up about the macOS Background Items notification.
+#   5. Copies runtime + recipe files to ~/.dent-brain/granola-sync/.
+#   6. Renders the launchd plist template to ~/Library/LaunchAgents/ but does
+#      NOT bootstrap it. The daemon stays inert until the teammate runs
+#      /dent-extensions setup granola-sync to author user/filter.ts, then
+#      /dent-extensions arm granola-sync to start it.
+#   7. Prints next-step guidance.
+#
+# Privacy contract: nothing reaches the shared brain until the teammate has
+# (a) generated a user filter via the setup flow, (b) previewed what would be
+# captured, (c) explicitly armed the daemon. install.sh is intentionally
+# inert by design.
 #
 # Idempotent — safe to re-run after pulling repo updates. If a working API key
 # is already in the keychain, you won't be re-prompted.
@@ -136,11 +143,17 @@ else
   done
 fi
 
-# 5. Copy runtime files + stamp installed version (used by /dent-update for drift detection).
-mkdir -p "$INSTALL_DIR"
-for f in sync.ts types.ts filter.ts translator.ts mcp-client.ts granola-api.ts; do
+# 5. Copy runtime files + recipe + stamp installed version (used by /dent-update
+#    for drift detection). `user/` is left untouched — it's owned by the teammate
+#    and authored via /dent-extensions setup granola-sync.
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/recipe" "$INSTALL_DIR/user"
+for f in sync.ts types.ts translator.ts mcp-client.ts granola-api.ts; do
   cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
 done
+cp "$SCRIPT_DIR/recipe/filter.example.ts" "$INSTALL_DIR/recipe/filter.example.ts"
+if [ -f "$SCRIPT_DIR/recipe/RECIPE.md" ]; then
+  cp "$SCRIPT_DIR/recipe/RECIPE.md" "$INSTALL_DIR/recipe/RECIPE.md"
+fi
 # Resolve the bundle version. If SCRIPT_DIR is inside a plugin cache,
 # `<cache>/VERSION` will be present. If running from a git clone, fall
 # back to the repo's VERSION. Used by /dent-update to detect daemon drift.
@@ -152,46 +165,43 @@ else
 fi
 echo "    copied 6 runtime files (installed-version: $(cat "$INSTALL_DIR/.installed-version"))."
 
-# 6. Render and install plist
-PLIST_RENDERED="$(mktemp)"
+# 6. Render the plist to a staged path, but DO NOT load it. The arm step does
+#    that, only after the teammate has authored a user filter and reviewed a
+#    preview. Tear down any prior bootstrap so a re-install of this version
+#    leaves the daemon provably inert.
+mkdir -p "$(dirname "$PLIST_PATH")"
+DISARMED=no
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  echo "    unloading prior launch agent…"
+  launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+  DISARMED=yes
+fi
 sed \
   -e "s|__BUN_PATH__|$BUN_PATH|g" \
   -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
   -e "s|__HOME__|$HOME|g" \
-  "$SCRIPT_DIR/com.dent.granola-sync.plist.template" > "$PLIST_RENDERED"
+  "$SCRIPT_DIR/com.dent.granola-sync.plist.template" > "$PLIST_PATH"
+echo "    staged plist (not loaded): $PLIST_PATH"
 
-mkdir -p "$(dirname "$PLIST_PATH")"
-
-if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-  echo "    unloading existing launch agent…"
-  launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+echo
+if [ "$DISARMED" = "yes" ]; then
+  echo "==> ⚠  DAEMON DISARMED. The prior launch agent was torn down for this re-install."
+  echo "    Re-run \`dent-extensions arm granola-sync\` to resume syncing."
+  echo
 fi
-
-cp "$PLIST_RENDERED" "$PLIST_PATH"
-rm "$PLIST_RENDERED"
-echo "    installed plist: $PLIST_PATH"
-
-# 7. Load + start
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-echo "    loaded launch agent ($LABEL)."
-
+echo "==> Plumbing installed. Daemon is INERT — nothing will reach the brain yet."
 echo
-echo "==> macOS may show a notification:"
-echo "    'Jarred Sumner may now run software in the background'"
-echo "    or similar. That's the developer ID of Bun (https://bun.sh), the"
-echo "    runtime our sync script uses. Expected and safe."
+echo "    Next: tell Claude Code 'set up granola-sync' (or run /dent-extensions"
+echo "    setup granola-sync). The skill will:"
+echo "      1. Read your Granola folder list."
+echo "      2. Walk you through what to include / exclude."
+echo "      3. Write $INSTALL_DIR/user/filter.ts."
+echo "      4. Run a preview against the last 30 days — you see exactly what"
+echo "         would be filed, before anything is filed."
+echo "      5. After your approval, arm the daemon."
 echo
-echo "    To verify or pause/resume the daemon later:"
-echo "      System Settings → General → Login Items & Extensions → Allow in Background"
-echo "    Look for 'com.dent.granola-sync'."
-
-echo
-echo "==> Installed. The agent will run hourly (StartInterval=3600)."
-echo "    Logs:        $INSTALL_DIR/sync.log"
-echo "    Manual run:  bun $INSTALL_DIR/sync.ts"
-echo "    Dry run:     bun $INSTALL_DIR/sync.ts --dry-run"
-echo "    Status:      dent-extensions status granola-sync"
-echo "    Stop:        dent-extensions uninstall granola-sync"
-echo
-echo "==> First run firing now (RunAtLoad=true). Tail logs:"
-echo "    tail -f $INSTALL_DIR/sync.log"
+echo "    Manual paths (if you'd rather hand-author):"
+echo "      Copy example:   cp $INSTALL_DIR/recipe/filter.example.ts $INSTALL_DIR/user/filter.ts"
+echo "      Preview:        dent-extensions preview granola-sync"
+echo "      Arm:            dent-extensions arm granola-sync"
+echo "      Uninstall:      dent-extensions uninstall granola-sync"

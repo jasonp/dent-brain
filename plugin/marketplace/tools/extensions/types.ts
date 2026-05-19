@@ -43,12 +43,21 @@ export interface Extension {
    * unconfigured (placeholder values). The CLI uses these to flag
    * "installed but needs configuration". */
   unconfiguredMarkers?: string[];
+  /** Where the teammate-authored filter lives (absolute; `~` expanded).
+   * If unset, the extension has no per-user customization surface. */
+  userFilterPath?: string;
+  /** Where the recipe doc + example live in the install dir (absolute;
+   * `~` expanded). Surfaced in `setup` output. */
+  recipeDir?: string;
 }
 
 export interface ExtensionStatus {
   id: string;
   installed: boolean;
   configured: boolean;
+  /** True if `userFilterPath` exists. Extensions without user-filter customization
+   * report `true` to keep older display logic working. */
+  hasUserFilter: boolean;
   /** True if the launchd agent (or other scheduler) is loaded + active. */
   running: boolean;
   /** Most recent run timestamp from log mtime, or null. */

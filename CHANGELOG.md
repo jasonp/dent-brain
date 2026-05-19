@@ -2,6 +2,36 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.39.0.1] - 2026-05-18
+
+## **Close the silent marketplace-bundle drift that left teammates stuck on v0.38. New `check:plugin-version` gate, wired into `verify`, fails fast in both /ship pre-flight and CI when the bundle lags `VERSION`. Plus the immediate hole-plug — v0.39's recipe-model ingestor work that never made it into the bundle is now actually shipped to teammates.**
+
+v0.39 shipped to the server but not to teammates. The release pipeline has a quiet failure mode: bumping `VERSION` doesn't regenerate the Cowork plugin marketplace bundle — `bun run build:plugin` does. When v0.39 cut, `build:plugin` never ran, so `.claude-plugin/marketplace.json` stayed at `0.38.0.0`, `plugin/marketplace/.claude-plugin/plugin.json` stayed at `0.38.0.0`, and Claude Desktop's plugin UI told every teammate "you're current" while the server expected v0.39's recipe-model ingestor wiring. `/dent-update` reported no work. CLAUDE.md documented the requirement in prose, but nothing enforced it.
+
+The fix is a gate, not a process change. `scripts/check-plugin-version.ts` reads the root `VERSION` and verifies all four bundle artifacts match it: `.claude-plugin/marketplace.json` plugins[0].version, `plugin/marketplace/.claude-plugin/plugin.json` version, `plugin/marketplace/manifest.lock.json` plugin_version, and `plugin/marketplace/VERSION`. On drift it exits non-zero with the exact remediation command. Wired into the `verify` npm script, which `.github/workflows/test.yml` already runs as the pre-test CI gate and which /ship runs locally pre-push — one check, two enforcement points, no separate workflow plumbing.
+
+The hole-plug came along for the ride. Regenerating the bundle for v0.39.0.1 picked up everything v0.39 forgot to ship: granola-sync's recipe model (`recipe/` directory, `RECIPE.md` contract, example filter), email-sync's recipe with both excludelist and allowlist postures, `dent-extensions`' rewrite around `install → setup → preview → arm`, the updated `dent-onboard-teammate` privacy banner, the new status badges, and the install.sh changes that keep daemons provably inert until arm. Teammates on `/dent-update` will see the right version this time, and the recipe-model flow will actually work end-to-end.
+
+Two preexisting privacy/test-isolation drifts surfaced when `verify` ran and were fixed in scope: banned `wintermute` references in `docs/reference/key-files.md` and `docs/reference/testing.md` (from v0.37 + v0.38 upstream merges) replaced with `your-openclaw` / `@a-contributor` placeholders per CLAUDE.md's privacy rule, and `test/doctor-report-remote.test.ts` quarantined to `*.serial.test.ts` because it genuinely needs `GBRAIN_HOME` env isolation. Both were latent failures the new gate dragged into the light.
+
+Numbers: gate covers 4 artifacts, exits in ~50ms, fails both directions of drift (simulated negative case verified).
+
+### To take advantage of v0.39.0.1
+
+1. **Teammates stuck on v0.38**: run `/dent-update`. Claude Desktop will now see v0.39.0.1 in the marketplace and pull the v0.39 recipe-model ingestor work that's been waiting. After update, re-run `/dent-extensions setup <id>` for each ingestor — the new lifecycle is `install → setup → preview → arm`, and your filter lives at `~/.dent-brain/<id>/user/filter.ts`.
+2. **Maintainers shipping future versions**: nothing to do. `verify` now refuses to pass when `VERSION` and the marketplace bundle disagree, and CI's pre-test gate enforces the same. `/ship`'s pre-flight catches drift locally; CI catches drift on the PR. The class of bug is closed.
+
+### Itemized changes
+
+#### Added
+- `scripts/check-plugin-version.ts` — reads root `VERSION`, fails on drift in any of 4 bundle artifacts. Exits with the exact `bun run build:plugin && git add ... && git commit` remediation. Silent on success unless `--quiet` is dropped.
+- `package.json` `check:plugin-version` script + wires it into `verify`. Auto-runs in /ship pre-push gate and `.github/workflows/test.yml:40` pre-test CI gate — one source of truth, both enforcement points.
+
+#### Changed
+- Plugin marketplace bundle regenerated from v0.38.0.0 → v0.39.0.1: picks up everything v0.39 forgot to ship — granola-sync recipe model, email-sync recipe, `dent-extensions` rewrite, `dent-onboard-teammate` privacy banner, install.sh inert-by-default changes.
+- `docs/reference/key-files.md`, `docs/reference/testing.md`: replaced `wintermute` placeholder references with `your-openclaw` / `@a-contributor` per CLAUDE.md privacy rule.
+- `test/doctor-report-remote.test.ts` → `test/doctor-report-remote.serial.test.ts`: genuinely env-coupled via `GBRAIN_HOME` isolation; quarantined per allowlist policy ("rename rather than allowlist").
+
 ## [0.39.0] - 2026-05-15
 
 ## **Ingestors switch to a recipe model: bespoke per-teammate filters, inert-by-default installs. Steve's feedback shaped this — no pre-built filters can leak personal data into the shared brain, because there are no pre-built filters.**

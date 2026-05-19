@@ -1,94 +1,76 @@
 ---
 name: dent-extensions
-description: Manage local Dent Brain extensions — list, install, configure, test, or uninstall the per-teammate ingestors (Granola sync, future Gmail watch, etc.). Each teammate runs their own copy of each extension on their laptop with their own bearer token, so personal meetings/emails stay local. Use this skill to inspect what's available, see the status of what you've already set up, or add/remove an ingestor. **Runtime: Claude Code Desktop only** for install/uninstall (the bash installer needs shell, keychain, and launchd access — unavailable in Cowork's sandbox); status/list can be read anywhere. See `docs/reference/runtime-conventions.md`.
+description: Manage local Dent Brain extensions — install, set up, preview, arm, list, status, or uninstall the per-teammate ingestors (Granola sync, email sync). Each teammate runs their own copy on their laptop with their own bearer token AND their own bespoke filter, so personal meetings/emails stay local. Use this skill when the teammate wants to "set up granola", "set up email sync", "install dent extension", or asks about extension status. **Runtime: Claude Code Desktop only** for install/setup/preview/arm (these touch the local filesystem, macOS keychain, and launchd — none of which Cowork can reach); list/status are safe anywhere. See `docs/reference/runtime-conventions.md`.
 triggers:
+  - "set up granola"
+  - "set up granola sync"
+  - "set up email"
+  - "set up email sync"
+  - "install dent extension"
+  - "install granola sync"
+  - "install email sync"
   - "manage my extensions"
   - "what dent brain extensions are available"
   - "list my ingestors"
-  - "install granola sync"
-  - "install dent extension"
-  - "configure granola"
-  - "uninstall granola sync"
   - "what's my granola-sync status"
   - "is my dent brain sync running"
+  - "configure granola"
+  - "uninstall granola sync"
+  - "uninstall email sync"
 tools: []
 mutating: true
 ---
 
 # dent-extensions
 
-> **Per-teammate skill.** Each teammate has their own local extensions configured with their own bearer token. The shared brain is the destination, not the configuration store.
+> **Per-teammate skill.** Each teammate has their own local install configured with their own bearer token AND their own bespoke filter. The shared brain is the destination, never the configuration store.
 
-## CRITICAL: what `install` actually does (no prompts)
+## CRITICAL: privacy contract (say this every time)
 
-`dent-extensions install granola-sync` runs `bash tools/granola-sync/install.sh` which performs these 7 steps and exits in ~3 seconds (or pauses briefly on first install to prompt for the Granola API key):
+Before you touch anything, tell the teammate this — exactly once, at the top of the conversation, in your own voice:
 
-1. Verifies `bun` is on `$PATH` (errors with install hint if not).
-2. Verifies `~/.claude.json` has a `dent-brain` MCP entry with a `Bearer` token (errors with a "run /dent-onboard-teammate first" hint if not). It does NOT extract, copy, display, or ask about the token — only checks that the entry exists.
-3. Verifies `Granola.app` is installed (where the teammate mints the API key). Errors with download/setup steps if missing.
-4. Verifies a working Granola API key is in the macOS keychain (service `dent-brain.granola-sync`, account `$USER`). If missing or rejected by `https://public-api.granola.ai/v1/notes`, prompts the teammate to paste a key (Granola → Settings → Connectors → API keys → Create new key) and stores it via `security add-generic-password`.
-5. Copies 6 runtime files to `~/.dent-brain/granola-sync/`.
-6. Renders + installs `~/Library/LaunchAgents/com.dent.granola-sync.plist`.
-7. Calls `launchctl bootstrap` to load the agent. RunAtLoad=true fires the first sync immediately. Hourly thereafter.
+> Nothing reaches the shared Dent brain until you (1) author a filter that decides what gets in, (2) preview exactly what would be captured, and (3) explicitly arm the daemon. The installer is intentionally inert — it puts the plumbing in place but writes nothing upstream. You're in control at every step.
 
-What `install` does NOT do:
+Don't skip this. The whole point of the recipe model is that the teammate's filter is bespoke; if you don't make that explicit you've broken the trust contract.
 
-- Does NOT prompt for the dent-brain bearer token (auto-discovered from `~/.claude.json`).
-- Does NOT open `$EDITOR`.
-- Does NOT write a `config.json` (config.json is fully optional, only created if the teammate manually edits one to override defaults).
-- Does NOT ask the teammate for an email, name, or any other identity field.
+## Lifecycle, in order
 
-The ONE prompt: when no working Granola API key is in the keychain, Step 4 asks the teammate to paste a `grn_…` key (hidden input). Re-runs with a valid key in keychain skip the prompt — fully non-interactive.
+```
+install  →  setup  →  preview  ⇆  edit  →  arm
+            (skill drives 1–4)         (one command)
+```
 
-After the install completes, macOS will show a Background Items notification mentioning "Jarred Sumner". Tell the teammate up front so it doesn't surprise them — that's the developer ID of Bun (the JavaScript runtime the daemon uses). It's expected and safe. The installer's final output explains the same thing.
+1. **Install** — plumbing only. Daemon is provably inert (no user/filter.ts → daemon refuses to run).
+2. **Setup** — you (this skill) interview the teammate, write `user/filter.ts` for them.
+3. **Preview** — `dent-extensions preview <id>` dry-runs the daemon with their filter against recent data. Prints `[USER-KEEP]` / `[USER-DROP]` per item.
+4. **Edit** — iterate on `user/filter.ts` until the preview matches the teammate's expectations. Loop with step 3.
+5. **Arm** — `dent-extensions arm <id>` bootstraps launchd. Daemon goes live.
 
-## CRITICAL: never ask the teammate for their bearer token
-
-The teammate's dent-brain bearer token was already set up by `/dent-onboard-teammate` when they ran `claude mcp add dent-brain --header "Authorization: Bearer ..."`. It lives in `~/.claude.json` under `mcpServers["dent-brain"].headers.Authorization`. Every extension reads it from there at runtime — no copy, no second paste, no config edit.
-
-When walking the teammate through install, configure, or troubleshoot:
-
-- **Do NOT** say "find your bearer token", "paste your bearer token", "you'll need your bearer token", or any variant.
-- **Do NOT** ask them to `claude mcp list` to look up their token.
-- **Do NOT** open a config file for them to paste into.
-- **Do NOT** treat the bearer token as a thing the teammate manages. The teammate's mental model should be: "I onboarded once via `/dent-onboard-teammate`, the brain knows who I am, every extension just works."
-
-If `~/.claude.json` doesn't have a `dent-brain` MCP entry, the right response is "it looks like you haven't run `/dent-onboard-teammate` yet — let's do that first" — NOT "let's find your token."
-
-The granola-sync extension specifically needs ZERO config. The installer has no prompts. If you find yourself walking the teammate through any token-related step, you've drifted from the script.
+`uninstall` reverses everything in one shot.
 
 ## CRITICAL: where the CLI runs
 
-The `dent-extensions` CLI runs on the **teammate's laptop**, not in the agent's environment. Extensions touch:
+The `dent-extensions` CLI runs on the **teammate's laptop**, not in Cowork. It touches:
 
-- `https://public-api.granola.ai/v1/` (Granola public API, authenticated with the teammate's key)
-- macOS keychain (service `dent-brain.granola-sync`, where the Granola API key lives)
-- `~/.dent-brain/granola-sync/` (the teammate's per-extension install dir)
-- `~/Library/LaunchAgents/com.dent.granola-sync.plist` (macOS launchd)
-- `~/.claude.json` (read-only — for bearer-token discovery)
+- macOS keychain (Granola key)
+- `~/.dent-brain/<id>/` (install dir)
+- `~/Library/LaunchAgents/` (plist)
+- `~/.claude.json` (read-only, for bearer-token discovery)
 
-None of those are reachable from a Cowork sandbox or any cloud agent environment. The agent's role is to **tell the teammate what to type into their terminal**, not to run the CLI directly. Do NOT try to invoke `dent-extensions` via Bash from the agent — it won't find the CLI and even if it did it would be operating on the wrong filesystem.
+None of those are reachable from a Cowork sandbox or any cloud agent environment. The agent's role is to **walk the teammate through the steps in their terminal**, not to run the CLI directly. If running on the teammate's laptop (Code Mode on Claude Code Desktop), you CAN drive the CLI directly via Bash.
 
-If the agent has terminal access AND is running on the teammate's machine (Code Mode in Claude Code, not Cowork), then it CAN drive the CLI directly. Detect this by checking whether `~/.dent-brain/` is reachable; if yes, drive the CLI; if no, hand off via copy-paste.
+Detect this by checking whether `~/.dent-brain/` is writable. If yes, drive. If no, hand off via copy-paste.
 
-## What this skill does
+## CRITICAL: never ask for the teammate's bearer token
 
-Walks the teammate through `tools/extensions/cli.ts` — a Bun script in the dent-brain repo that gives them one place to:
+The bearer token was set up by `/dent-onboard-teammate`. It lives in `~/.claude.json`. Every extension reads it automatically. Do NOT ask the teammate to find, paste, or look up their token — that's a regression. If the token isn't there, route to `/dent-onboard-teammate` first.
 
-1. **See what extensions exist** in the dent-brain repo (today: granola-sync; later: gmail-watch, transcript-sync, etc.).
-2. **See which are installed** on their machine and whether each is configured + running.
-3. **Install** an extension — runs the extension's installer script.
-4. **Configure** it — opens the extension's `config.json` in `$EDITOR` (only needed if overriding defaults).
-5. **Test** it in dry-run mode to verify wiring before letting it run scheduled.
-6. **Uninstall** — stops the launchd agent, removes the plist, removes the install dir.
+## Locating the CLI
 
-## Step 1. Locate the dent-extensions CLI
+The CLI is in the dent-brain plugin bundle Claude Desktop installs at:
+`~/Library/Application Support/Claude/local-agent-mode-sessions/<session>/<inner>/rpm/plugin_<opaque-hash>/`
 
-Claude Desktop installs the plugin marketplace bundle (just the `plugin/marketplace/` build output, not the source repo) at `~/Library/Application Support/Claude/local-agent-mode-sessions/<session>/<inner>/rpm/plugin_<opaque-hash>/`. The `<opaque-hash>` is not predictable, so the skill discovers the bundle by globbing `manifest.lock.json` files and matching on `plugin_name: dent-brain`. The CLI lives inside that bundle at `<bundle>/tools/extensions/bin/dent-extensions`. As of v0.37.7 the skill uses this robust discovery.
-
-### Preferred path: discover the installed bundle, run the bundled CLI
-
-Hand the teammate THIS one-liner:
+The path is unpredictable. Discover the bundle by globbing `manifest.lock.json` files. One-liner:
 
 ```bash
 BUNDLE_DIR=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" -path '*/rpm/plugin_*/manifest.lock.json' -exec grep -l '"plugin_name": *"dent-brain"' {} + 2>/dev/null | head -1 | xargs -I {} dirname {}) \
@@ -96,157 +78,210 @@ BUNDLE_DIR=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-ses
   || echo "FALLBACK_NEEDED"
 ```
 
-Note: invokes `cli.ts` directly via `bun` rather than the `bin/dent-extensions` bash wrapper. The wrapper is just `exec bun cli.ts`, and earlier bundle revisions (v0.37.2 through v0.37.6) had a gitignore bug that excluded the wrapper from the published bundle. Calling `cli.ts` directly sidesteps that and removes one dependency.
-
-If that prints an extensions list, you're done — the teammate is on a plugin version that bundles the installers and there's no clone or pull step required. Move to Step 2.
-
-### Fallback path: developer with a git clone
-
-If the one-liner above prints `FALLBACK_NEEDED` (no plugin installed, or installed plugin predates v0.37.2 and lacks `tools/`), the teammate is either a developer working from a clone OR running a pre-v0.37.2 plugin. Use the legacy clone-based path:
+If `FALLBACK_NEEDED`, the teammate likely has a git clone. Try `~/gh/dent-brain` / `~/Code/dent-brain`:
 
 ```bash
 ( cd ~/gh/dent-brain 2>/dev/null && git pull --ff-only --quiet origin main && ./tools/extensions/bin/dent-extensions list ) \
   || ( cd ~/Code/dent-brain 2>/dev/null && git pull --ff-only --quiet origin main && ./tools/extensions/bin/dent-extensions list ) \
-  || echo "No dent-brain plugin (>=0.37.2) and no clone found. Either: (a) reinstall the Cowork plugin to pick up the bundled installers, or (b) git clone git@github.com:jasonp/dent-brain.git ~/gh/dent-brain"
+  || echo "No dent-brain plugin and no clone found. Reinstall the Cowork plugin."
 ```
 
-### Which path you'll actually hit
+Throughout this skill, **`dent-extensions <verb>` refers to that resolved binary path.** Substitute it everywhere.
 
-| Teammate type | Path used |
-|---|---|
-| Non-developer with current plugin installed | Preferred (plugin cache). Zero git involved. |
-| Developer hacking on this repo | Fallback (clone). They typically WANT the clone because they're editing `tools/granola-sync/` and want their edits to be what runs. |
-| Teammate on a pre-v0.37.2 plugin | Fallback, but the right fix is to reinstall the plugin — newer bundles include the installers. |
+## Step 1. List and orient
 
-For the developer case: if you're working in a clone and want `/dent-extensions` to use YOUR clone's installer instead of the bundled one, just run `./tools/extensions/bin/dent-extensions install <id>` directly from the clone. The skill's auto-detection is a convenience for non-developers; developers can bypass it.
-
-## Step 2. Pre-install: confirm Granola itself is set up
-
-Before running `install granola-sync`, walk the teammate through Granola's own setup so the install doesn't fail on its Step 3 (Granola pre-flight check). Granola is the meeting note-taker the daemon syncs from — it's a separate Mac app the teammate must install themselves.
-
-Ask the teammate (one quick conversational pass, not a checklist they have to read):
-
-> Quick Granola check before we install the sync — do you already have Granola.ai set up? If not, here's the one-time setup:
->
-> 1. Download Granola from https://granola.ai/download and install it.
-> 2. Sign in with your `@dentthefuture.com` Google account (the one your Dent calendar invites land on).
-> 3. In Granola Settings → Permissions, grant **Microphone** and **Screen Recording** access. Without these, Granola can't capture your meetings.
-> 4. Sit through one Dent meeting with Granola open — it learns your account preferences and creates its local cache. Without that cache, the sync has nothing to read.
->
-> Once that's done, I'll run the sync installer.
-
-If they confirm Granola is already running on their machine, skip the walkthrough and proceed straight to the install. If they're not sure ("I downloaded it once but never opened it"), have them open the app and complete one meeting before continuing.
-
-The installer (Step 3 below) hard-fails with the same setup steps if Granola isn't ready — so this conversation is defense in depth, not strict prerequisite.
-
-## Step 3. Run `list` first
-
-Always start with `list` — gives the teammate a complete picture before they make any decisions. The output:
-
-```
-Dent Brain extensions (1):
-
-  ○ not-installed    granola-sync     Granola → Dent Brain sync
-                     Hourly daemon that pulls meetings from the Granola public API (key in macOS keychain) and pushes Dent-related notes + transcripts into the brain. Filters by four orthogonal signals (Granola folder, title, body/transcript, attendee email domain) so personal/non-Dent meetings stay local.
-                     → Not installed. Run `dent-extensions install granola-sync` to set it up.
-```
+Always start with `dent-extensions list`. It tells you what's available and what state the teammate is in for each extension.
 
 Status badges:
-- `○ not-installed` — available in the registry but never installed on this machine
-- `⚠ unconfigured` — installed but `config.json` has placeholder values
-- `⚠ not-running` — installed and configured but launchd agent isn't loaded
-- `● active` — installed, configured, and the scheduled agent is running
+- `○ not-installed` — never installed
+- `⚠ unconfigured` — installed but config.json placeholders unresolved (email-sync only)
+- `⚠ no-filter` — installed but no `user/filter.ts` yet → daemon is inert. THIS is the state setup addresses.
+- `⚠ not-armed` — has a filter but launchd isn't loaded → preview, then arm.
+- `● active` — armed and running
 
-## Step 4. Per-extension actions
+## Step 2. Pre-install checks
 
-For each available extension, the action menu is:
+Before running the installer, confirm the upstream prerequisites:
 
-| Want to | Run |
-|---|---|
-| Install (first time) | `./tools/extensions/bin/dent-extensions install <id>` |
-| Edit config (only if overriding defaults — most users skip this entirely) | `./tools/extensions/bin/dent-extensions configure <id>` |
-| Verify wiring without writes | `./tools/extensions/bin/dent-extensions test <id>` |
-| See full status (last run, log size, notes) | `./tools/extensions/bin/dent-extensions status <id>` |
-| Stop + remove | `./tools/extensions/bin/dent-extensions uninstall <id>` |
-| Stop + remove but keep config + cursor | `./tools/extensions/bin/dent-extensions uninstall <id> --keep-config` |
+**For granola-sync:** Granola.app must be installed AND the teammate must have signed in, granted Mic + Screen Recording permissions, and completed at least one meeting (so the local cache exists). The installer will hard-fail if Granola.app is missing; this conversation is defense in depth. Ask:
 
-The CLI is idempotent — re-running `install` is safe (it tears down the old launchd agent before installing the new one).
+> Before I install: do you have Granola.ai set up on this Mac? Signed in, mic + screen recording allowed, and at least one meeting captured? If not, install from https://granola.ai/download and run through one meeting first — I'll wait.
 
-If the teammate has symlinked `dent-extensions` into their `PATH` (per the `tools/extensions/README.md` instructions), they can drop the `./tools/extensions/bin/` prefix.
+The installer will also prompt for a Granola API key (Granola → Settings → Connectors → API keys). Tell the teammate up front so they don't get caught off-guard.
 
-## Step 5. After install
+**For email-sync:** the teammate's email must be on the Dent Brain Google Cloud OAuth app's test-user list. Confirm with the admin if you're unsure.
 
-Two things happen right after `launchctl bootstrap`:
-
-1. **macOS Background Items notification.** The teammate will see a system notification saying "Jarred Sumner may now run software in the background" (or similar). That's the developer ID of Bun (the JavaScript runtime the daemon uses, signed by its creator the same way Docker is signed by Docker Inc). The installer's output also explains this. Tell the teammate up front so they don't panic — it's the standard macOS notification for any third-party launchd agent.
-
-2. **First sync fires immediately** (RunAtLoad=true). The agent then runs hourly. Tail the log to verify the first run worked:
+## Step 3. Install (plumbing only)
 
 ```bash
-tail -50 ~/.dent-brain/<extension-id>/sync.log
+dent-extensions install <id>
 ```
 
-You should see lines like `[granola-sync] Granola API: authenticated` followed by per-note decisions and a `done:` summary. If you see those, it worked.
+This copies runtime + recipe files, stages the launchd plist, but does **not** bootstrap it. The daemon is inert: try to run it manually and it will fatal-out on missing `user/filter.ts`.
 
-If the first run failed, common fixes:
+After this completes, run `dent-extensions status <id>` and confirm the badge is `⚠ no-filter`. That's the cue to move to setup.
 
-- **`MCP HTTP 401`** — dent-brain bearer token in `~/.claude.json` is wrong/expired. Re-run `/dent-onboard-teammate` to mint a new one. The daemon picks up the new value on the next run; no re-install needed.
-- **`Granola API key rejected`** / **`Granola API 401`** — the API key was revoked or never minted. Re-run install.sh; it'll re-prompt and update the keychain. Or rotate manually: `security add-generic-password -U -s dent-brain.granola-sync -a "$USER" -w 'grn_...'`.
-- **`No Granola API key in keychain`** — the keychain entry is missing. Re-run install.sh and paste the key when prompted.
-- **`No dent-brain MCP configured`** — the teammate hasn't run `claude mcp add dent-brain ...` yet. Route them to `/dent-onboard-teammate` first.
+The macOS Background Items notification ("Jarred Sumner may now run software in the background") fires when arm happens, not install. Mention it once when you arm, not here.
 
-## Step 6. Privacy contract — say this every time
+## Step 4. Setup interview — author `user/filter.ts`
 
-Tell the teammate up front, every install:
+This is the heart of the recipe model. You're going to interview the teammate, learn their actual data shape, and write a filter that decides what reaches the shared brain.
 
-> Each extension runs locally on your laptop. Your existing dent-brain auth (the one set up by `/dent-onboard-teammate`) is reused automatically — nothing for you to copy or paste. Personal data — non-Dent meetings, personal emails — stays local. The extension's filter only ships Dent-related items to the shared brain. You're always in control: `dent-extensions uninstall <id>` stops it instantly.
+**Start by reading the contract:** `cat $INSTALL_DIR/recipe/RECIPE.md` (or `~/.dent-brain/<id>/recipe/RECIPE.md`). It tells you what `filter()` must export and what shape its input takes.
 
-Don't skip this. Extensions touch personal data on the teammate's machine. Trust matters. But also — don't make auth sound scary or like more work. It's already done.
+### 4a. granola-sync setup interview
+
+Goal: write `~/.dent-brain/granola-sync/user/filter.ts` that captures Dent-relevant meetings and drops everything else.
+
+Discovery questions (one conversational pass, not a checklist):
+
+1. **What folders do you use in Granola?** Read them via the API:
+   ```bash
+   curl -sS -H "Authorization: Bearer $(security find-generic-password -s dent-brain.granola-sync -a $USER -w)" \
+     "https://public-api.granola.ai/v1/folders" | jq '.folders[] | .name'
+   ```
+   Show the list and ask which are work/Dent and which are personal.
+
+2. **Which email domains belong to the team?** Default is `dentthefuture.com`. Ask about subsidiaries, contractors, etc.
+
+3. **Any folders or attendee domains that should ALWAYS be excluded?** Therapy, family, personal coaching, a partner's domain, etc.
+
+4. **What about title keywords?** Include and exclude both — e.g. include "dent" but exclude any title containing "Therapy."
+
+Build a draft filter following the structure in `recipe/filter.example.ts` (constants up top, exclude checks first, then includes). Write it to `~/.dent-brain/granola-sync/user/filter.ts`. Use the Write tool.
+
+### 4b. email-sync setup interview
+
+Goal: write `~/.dent-brain/email-sync/user/filter.ts`. The email user filter has two postures — pick one with the teammate:
+
+- **Excludelist** (default-keep, drop specific things): suits teammates whose work inbox is mostly work, with a few personal senders to filter out. Most common.
+- **Allowlist** (default-drop, keep only matching senders/domains): suits teammates with substantial personal traffic on the work address.
+
+Discovery flow:
+
+1. Sample the recent senders on the work address:
+   ```bash
+   bun ~/.dent-brain/email-sync/collect.ts --dry-run --since $(date -v-14d +%Y-%m-%d) --verbose 2>&1 \
+     | grep -E '^  (TRIAGE|SIG|NOISE) ' | head -50
+   ```
+   (Run this BEFORE writing `user/filter.ts` — the daemon will refuse to run without a filter, so write a permissive placeholder first OR use `--filter $INSTALL_DIR/recipe/filter.example.ts` to use the example.)
+
+   Actually — easiest path: copy the example filter to user/filter.ts, then iterate:
+   ```bash
+   cp ~/.dent-brain/email-sync/recipe/filter.example.ts ~/.dent-brain/email-sync/user/filter.ts
+   ```
+
+2. Ask the teammate to look at the sample and tell you which senders/domains/subjects are personal. Build the exclude or allow lists from their answers.
+
+3. Update `~/.dent-brain/email-sync/user/filter.ts` to reflect their answers. Use the Write tool — overwrite the file.
+
+## Step 5. Preview
+
+```bash
+dent-extensions preview <id>
+```
+
+This dry-runs the daemon with the teammate's filter. For granola, it shows per-meeting `KEEP`/`SKIP` decisions over the cursor window. For email, it shows `USER-KEEP` / `USER-DROP` per email plus the canonical noise/signature flags.
+
+Walk through the output with the teammate. Look for:
+
+- **False positives** (KEEP that should be SKIP): personal meeting that got through, personal email that wasn't excluded. Update the filter, re-preview.
+- **False negatives** (SKIP that should be KEEP): work meeting that didn't match any include signal. Update the filter, re-preview.
+
+Loop on edit → preview until the teammate says "yes, this is what I want."
+
+## Step 6. Arm
+
+```bash
+dent-extensions arm <id>
+```
+
+This bootstraps launchd. Daemon is now live. First run fires immediately (`RunAtLoad=true` for granola; email runs every 6h).
+
+Tell the teammate about the macOS Background Items notification:
+
+> macOS will show a notification: "Jarred Sumner may now run software in the background" (or similar). That's the developer ID of Bun (the runtime our daemon uses). Expected and safe.
+
+Confirm the first run worked by tailing the log:
+
+```bash
+tail -50 ~/.dent-brain/<id>/sync.log
+```
+
+You should see filter decisions and a `done:` summary.
+
+## Updating an already-armed install
+
+If the teammate wants to change their filter after arming:
+
+1. Edit `~/.dent-brain/<id>/user/filter.ts` (you can do this directly — the daemon picks up the new logic on its next scheduled run).
+2. `dent-extensions preview <id>` to verify the change does what they expect.
+3. No re-arm needed unless launchd has somehow lost the plist.
+
+## Plugin updates and the user filter
+
+Plugin updates (`/dent-update` or reinstall) overwrite the runtime + recipe files in `~/.dent-brain/<id>/` but **never touch `user/filter.ts`.** That's the contract. If a future plugin release bumps the recipe version (`RECIPE_VERSION` in types.ts), the daemon will WARN on the version mismatch but keep running with the old filter. The migration is a conversation with this skill, not a forced overwrite.
+
+If you see a version mismatch warning in `sync.log`, walk the teammate through the migration: read `recipe/RECIPE.md` for the new contract, propose changes to their `user/filter.ts`, write the update, re-preview, done.
+
+## Troubleshooting
+
+**"No user filter at /…/user/filter.ts"** — install was successful but setup wasn't completed. Run the setup interview (Step 4).
+
+**`MCP HTTP 401`** — dent-brain bearer token in `~/.claude.json` is wrong/expired. Re-run `/dent-onboard-teammate`. Daemon picks up the new token next run.
+
+**`Granola API key rejected`** — re-run `install <id>`; the installer will re-prompt for a key and update the keychain.
+
+**`No dent-brain MCP configured`** — teammate hasn't run `/dent-onboard-teammate` yet. Route them there first.
+
+**Filter logs `WARN: filter declares RECIPE_VERSION=N but daemon expects M`** — recipe version mismatch (plugin update introduced a new contract). Walk through migration as above.
 
 ## Anti-patterns
 
-- **Don't try to run the CLI from a Cowork agent.** It can't reach the teammate's filesystem. Hand them the command to type instead.
-- **Don't ask the teammate to find or paste their bearer token. EVER.** Auto-discovery from `~/.claude.json` is the contract. If you find yourself saying "find your bearer token", "paste your token", "look up your token", or asking them to run `claude mcp list` to retrieve it — STOP. You've drifted. The token is already there from onboarding.
-- **Don't auto-install for the teammate from a sandboxed agent context.** `install <id>` runs a bash script that touches launchd; it has to run on the teammate's actual laptop. Hand the terminal to them. If you're running on the teammate's laptop (Code Mode), you can drive it directly.
-- **Don't manage the production server's ingestors here.** This skill is only for local teammate-side extensions. Server-side ingestors (regfox, mailchimp, etc.) are managed via the gbrain CLI and Railway, not this tool.
-- **Don't tell the teammate "the CLI couldn't be located" when their clone exists but is stale.** Always try `git pull` before giving up. The one-liner in Step 1 makes this automatic.
+- **Don't run the CLI from a Cowork agent.** Hand commands to the teammate to paste.
+- **Don't ask for the bearer token.** Ever. Auto-discovery from `~/.claude.json` is the contract.
+- **Don't auto-arm.** Arming is a deliberate act the teammate authorizes after seeing a preview. Don't `dent-extensions arm` without an immediately preceding `preview` they approved.
+- **Don't edit recipe/ files on the teammate's machine.** Those are owned by the plugin and overwritten on update. Edit `user/filter.ts`.
+- **Don't tell the teammate "the CLI couldn't be located" when their clone exists but is stale.** Always try `git pull` before giving up.
 
 ## Output format
 
-When the teammate asks `list`, prefer this shape:
+For `list`:
 
 ```
 Dent Brain extensions:
 
   ● active            granola-sync       Granola → Dent Brain sync
-                      Last run 12m ago. Logs at ~/.dent-brain/granola-sync/sync.log.
+                      Last run 12m ago. Filter: ~/.dent-brain/granola-sync/user/filter.ts
 
-  ○ not-installed     gmail-watch        Gmail → Dent Brain inbox watcher
-                      Run `dent-extensions install gmail-watch` to set it up.
+  ⚠ no-filter         email-sync         Email → Dent Brain sync
+                      Installed but no user filter yet. Run setup.
 
-Run `dent-extensions status <id>` for details, `install <id>` to add one.
+Run `dent-extensions status <id>` for details, `setup <id>` to author a filter.
 ```
 
-For status:
+For `status`:
 
 ```
 granola-sync — Granola → Dent Brain sync
   ● active. Last run 12m ago. 4.2 KB logged.
-  Config: ~/.dent-brain/granola-sync/config.json (optional — only present if overriding defaults)
-  launchd: com.dent.granola-sync (loaded)
+  user filter:   ~/.dent-brain/granola-sync/user/filter.ts (RECIPE_VERSION=1)
+  launchd:       com.dent.granola-sync (loaded)
 ```
 
 Keep it scannable. The teammate is probably running this between meetings.
 
 ## Tools used
 
-This skill instructs the teammate to run, in their own terminal:
+This skill instructs the teammate to run, in their own terminal (or drives them via Bash on the teammate's laptop):
 
 - `dent-extensions list [--json]`
 - `dent-extensions status <id> [--json]`
 - `dent-extensions install <id>`
+- `dent-extensions setup <id>`
+- `dent-extensions preview <id>`
+- `dent-extensions arm <id>`
 - `dent-extensions configure <id>`
-- `dent-extensions test <id>`
 - `dent-extensions uninstall <id> [--keep-config]`
 
-It does NOT call the dent-brain MCP server. Extensions are local-only configuration; the brain doesn't track who has which extensions installed.
+It uses the Write tool (when driving from the teammate's laptop) to author `~/.dent-brain/<id>/user/filter.ts`. It does NOT call the dent-brain MCP server.
