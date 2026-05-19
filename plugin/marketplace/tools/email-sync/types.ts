@@ -92,7 +92,35 @@ export interface RunSummary {
   fetched: number;
   noise: number;
   signatures: number;
+  /** Dropped by the teammate's user filter (after noise classification). */
+  userFiltered: number;
   written: number;
   digestSlug: string | null;
   cursorAdvancedTo: string;
+}
+
+/**
+ * Contract for a user-owned filter at `~/.dent-brain/email-sync/user/filter.ts`.
+ *
+ * Runs AFTER canonical `isNoise()` / `isSignature()` classification, BEFORE
+ * grouping into daily digests. Decides whether each email reaches the shared
+ * brain. The `email` argument carries `isNoise` and `isSignature` as hints —
+ * the filter can use them or not.
+ *
+ * Iron rules:
+ * - Pure function. No network, no fs, no env reads.
+ * - Privacy bias: when ambiguous, `keep: false`. Inbound personal mail on the
+ *   same address as work mail (rare but possible) is exactly what this filter
+ *   exists to drop.
+ * - Exclusion wins over inclusion if you compose both.
+ */
+export type FilterResult =
+  | { keep: true; reason: string }
+  | { keep: false; reason: string };
+
+export interface UserFilterModule {
+  /** Bumped only when the runtime contract changes. */
+  RECIPE_VERSION: number;
+  /** Required. Decides keep/skip per email. */
+  filter: (email: CollectedEmail) => FilterResult;
 }

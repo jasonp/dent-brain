@@ -27,15 +27,19 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import type { CollectedEmail, SyncConfig, SyncCursor, RunSummary } from './types.ts';
+import { fileURLToPath } from 'url';
+import type { CollectedEmail, SyncConfig, SyncCursor, RunSummary, UserFilterModule } from './types.ts';
 import { McpClient } from './mcp-client.ts';
 import { GoogleClient, header, parseAddress, parseAddressList } from './google-client.ts';
 import { isNoise, isSignature } from './noise-filter.ts';
 import { gmailLink } from './link-gen.ts';
 import { buildDigest, digestSlug } from './digest.ts';
 
-const SYNC_VERSION = '0.1.0';
+const SYNC_VERSION = '0.2.0';
+const SUPPORTED_RECIPE_VERSION = 1;
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(homedir(), '.dent-brain', 'email-sync', 'config.json');
+const DEFAULT_USER_FILTER_PATH = join(SCRIPT_DIR, 'user', 'filter.ts');
 const DEFAULT_BACKFILL_DAYS = 3;
 
 interface Flags {
@@ -43,16 +47,24 @@ interface Flags {
   verbose: boolean;
   since: string | null;
   configPath: string;
+  filterPath: string;
 }
 
 function parseFlags(argv: string[]): Flags {
-  const f: Flags = { dryRun: false, verbose: false, since: null, configPath: DEFAULT_CONFIG_PATH };
+  const f: Flags = {
+    dryRun: false,
+    verbose: false,
+    since: null,
+    configPath: DEFAULT_CONFIG_PATH,
+    filterPath: DEFAULT_USER_FILTER_PATH,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') f.dryRun = true;
     else if (a === '--verbose' || a === '-v') f.verbose = true;
     else if (a === '--since') f.since = argv[++i];
     else if (a === '--config') f.configPath = argv[++i];
+    else if (a === '--filter') f.filterPath = argv[++i];
     else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
@@ -66,8 +78,40 @@ function parseFlags(argv: string[]): Flags {
 
 function printHelp() {
   console.error(
-    `Email-sync collector — pulls Gmail via direct OAuth, writes daily digest to dent-brain.\n\nUsage: bun collect.ts [flags]\n  --dry-run                Plan only, no MCP writes.\n  --since YYYY-MM-DD       Backfill from this date (override cursor).\n  --verbose | -v           Log every classification decision.\n  --config <path>          Override config path (default: ${DEFAULT_CONFIG_PATH}).\n  --help | -h              Print this help.\n`,
+    `Email-sync collector — pulls Gmail via direct OAuth, writes daily digest to dent-brain.\n\nUsage: bun collect.ts [flags]\n  --dry-run                Plan only, no MCP writes.\n  --since YYYY-MM-DD       Backfill from this date (override cursor).\n  --verbose | -v           Log every classification decision.\n  --config <path>          Override config path (default: ${DEFAULT_CONFIG_PATH}).\n  --filter <path>          Override user filter path (default: <install-dir>/user/filter.ts).\n  --help | -h              Print this help.\n`,
   );
+}
+
+async function loadUserFilter(path: string): Promise<UserFilterModule> {
+  if (!existsSync(path)) {
+    console.error(`[email-sync] FATAL: no user filter at ${path}.`);
+    console.error(`  Email-sync is intentionally inert until you set up a filter that decides`);
+    console.error(`  which emails reach the shared brain. Run /dent-extensions setup email-sync`);
+    console.error(`  (in Claude Code) to generate one — or copy recipe/filter.example.ts to user/filter.ts`);
+    console.error(`  and edit it.`);
+    process.exit(1);
+  }
+  let mod: Partial<UserFilterModule>;
+  try {
+    mod = (await import(path)) as Partial<UserFilterModule>;
+  } catch (e) {
+    console.error(`[email-sync] FATAL: failed to load ${path}: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+  if (typeof mod.filter !== 'function') {
+    console.error(`[email-sync] FATAL: ${path} does not export a \`filter(email)\` function.`);
+    console.error(`  See recipe/RECIPE.md for the contract.`);
+    process.exit(1);
+  }
+  if (typeof mod.RECIPE_VERSION !== 'number') {
+    console.error(`[email-sync] WARN: ${path} does not export RECIPE_VERSION. Treating as v0.`);
+  } else if (mod.RECIPE_VERSION !== SUPPORTED_RECIPE_VERSION) {
+    console.error(
+      `[email-sync] WARN: filter declares RECIPE_VERSION=${mod.RECIPE_VERSION} but daemon expects ${SUPPORTED_RECIPE_VERSION}. ` +
+      `Run /dent-extensions setup email-sync to migrate.`,
+    );
+  }
+  return mod as UserFilterModule;
 }
 
 /** Auto-discover dent-brain MCP creds from ~/.claude.json (same shape granola-sync uses). */
@@ -223,6 +267,7 @@ function groupByDate(emails: CollectedEmail[]): Map<string, CollectedEmail[]> {
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
   const config = loadConfig(flags.configPath);
+  const userFilter = await loadUserFilter(flags.filterPath);
   const cursor = loadCursor(config.cursorPath);
 
   const sinceIso = flags.since
@@ -232,6 +277,7 @@ async function main() {
         : new Date(Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000).toISOString());
 
   console.error(`[email-sync] mode=${flags.dryRun ? 'DRY RUN' : 'APPLY'} workEmail=${config.workEmail} since=${sinceIso}`);
+  console.error(`[email-sync] user filter: ${flags.filterPath} (RECIPE_VERSION=${userFilter.RECIPE_VERSION ?? 0})`);
 
   const gc = new GoogleClient({
     tokensPath: config.googleTokensPath,
@@ -298,8 +344,48 @@ async function main() {
   collected.sort((a, b) => a.date.localeCompare(b.date));
   console.error(`[email-sync] collected ${collected.length} emails (after dedup + scope re-check)`);
 
+  // Apply the teammate's user filter. Runs AFTER canonical noise + signature
+  // classification, BEFORE digest grouping. Only `keep: true` emails reach
+  // the shared brain. Filter is called defensively: a throw or malformed
+  // verdict is treated as `keep: false` so the privacy contract never leaks
+  // on a buggy filter.
+  const kept: CollectedEmail[] = [];
+  let userFiltered = 0;
+  let filterErrors = 0;
+  function safeFilter(email: CollectedEmail): { keep: boolean; reason: string } {
+    let verdict: unknown;
+    try {
+      verdict = userFilter.filter(email);
+    } catch (err) {
+      filterErrors++;
+      return { keep: false, reason: `filter threw: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!verdict || typeof verdict !== 'object' || typeof (verdict as { keep?: unknown }).keep !== 'boolean') {
+      filterErrors++;
+      return { keep: false, reason: 'filter returned malformed verdict (expected { keep: boolean, reason: string })' };
+    }
+    const v = verdict as { keep: boolean; reason?: unknown };
+    return { keep: v.keep, reason: typeof v.reason === 'string' ? v.reason : '(no reason)' };
+  }
+
+  for (const e of collected) {
+    const verdict = safeFilter(e);
+    if (!verdict.keep) {
+      userFiltered++;
+      if (flags.verbose) {
+        console.error(`  USER-DROP ${e.date.slice(0, 10)} ${e.fromEmail} → ${e.subject.slice(0, 60)} — ${verdict.reason}`);
+      }
+      continue;
+    }
+    if (flags.verbose) {
+      console.error(`  USER-KEEP ${e.date.slice(0, 10)} ${e.fromEmail} → ${e.subject.slice(0, 60)} — ${verdict.reason}`);
+    }
+    kept.push(e);
+  }
+  console.error(`[email-sync] user filter: kept ${kept.length}, dropped ${userFiltered}${filterErrors > 0 ? ` (${filterErrors} filter errors — see WARN messages above and check user/filter.ts)` : ''}`);
+
   // Write one digest page per UTC day.
-  const grouped = groupByDate(collected);
+  const grouped = groupByDate(kept);
   const client = new McpClient({ serverUrl: config.serverUrl, bearerToken: config.bearerToken });
   if (!flags.dryRun) {
     try {
@@ -360,12 +446,13 @@ async function main() {
     fetched: collected.length,
     noise: collected.filter((e) => e.isNoise).length,
     signatures: collected.filter((e) => e.isSignature).length,
+    userFiltered,
     written,
     digestSlug: lastSlug,
     cursorAdvancedTo: newCursor.lastSyncedAt,
   };
   console.error(
-    `\n[email-sync] done: candidates=${summary.candidates} fetched=${summary.fetched} noise=${summary.noise} signatures=${summary.signatures} written=${summary.written}\n  cursor: ${summary.cursorAdvancedTo}${flags.dryRun ? ' (NOT saved — dry run)' : ''}`,
+    `\n[email-sync] done: candidates=${summary.candidates} fetched=${summary.fetched} noise=${summary.noise} signatures=${summary.signatures} user-dropped=${summary.userFiltered} written=${summary.written}\n  cursor: ${summary.cursorAdvancedTo}${flags.dryRun ? ' (NOT saved — dry run)' : ''}`,
   );
 }
 
