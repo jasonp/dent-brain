@@ -71,3 +71,6 @@ test/fixtures/pglite-snapshot.version
 # writes to plugin/marketplace/ (committed) and .claude-plugin/marketplace.json
 # (committed) so the repo doubles as a Cowork-installable marketplace.
 plugin/dist/
+
+# Private brain reports — never check these in (per CLAUDE.md privacy rule)
+reports/network-intelligence/

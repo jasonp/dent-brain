@@ -31,9 +31,17 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 
+// Mock must declare EVERY symbol src/core/embedding.ts exports — Bun's module
+// linker fails-fast if any consumer downstream imports a missing one. v0.36.1.0
+// added `embedMultimodal` and `embedQuery` to the module; the propose_takes
+// phase + other v0.36 phases pull both, so the mock has to keep parity.
 mock.module('../../src/core/embedding.ts', () => ({
   embed: async () => new Float32Array(1536),
+  embedQuery: async () => new Float32Array(1536),
   embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(1536)),
+  embedMultimodal: async () => [],
+  getEmbeddingModelName: () => 'text-embedding-3-large',
+  getEmbeddingDimensions: () => 1536,
   EMBEDDING_MODEL: 'text-embedding-3-large',
   EMBEDDING_DIMENSIONS: 1536,
   EMBEDDING_COST_PER_1K_TOKENS: 0.00013,
@@ -96,6 +104,7 @@ async function withoutAnthropicKey<T>(body: () => Promise<T>): Promise<T> {
 //   v0.26.5 — added `purge` (last)
 //   v0.29   — added `recompute_emotional_weight` between patterns and embed
 //   v0.31   — added `consolidate` between recompute_emotional_weight and embed
+//   v0.33   — added `resolve_symbol_edges` between extract and patterns
 type CyclePhase = (typeof ALL_PHASES)[number];
 const EXPECTED_PHASES: CyclePhase[] = [
   'lint',
@@ -104,9 +113,13 @@ const EXPECTED_PHASES: CyclePhase[] = [
   'synthesize',
   'extract',
   'extract_facts',               // v0.32.2 — reconcile fence → DB facts index
+  'resolve_symbol_edges',       // v0.33.3 — within-file symbol resolution
   'patterns',
   'recompute_emotional_weight', // v0.29
   'consolidate',                // v0.31
+  'propose_takes',              // v0.36.1.0 — hindsight calibration wave
+  'grade_takes',                // v0.36.1.0
+  'calibration_profile',        // v0.36.1.0
   'embed',
   'orphans',
   'purge',                       // v0.26.5

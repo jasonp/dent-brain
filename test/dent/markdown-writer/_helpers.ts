@@ -107,6 +107,7 @@ export function makeCtx(engine: BrainEngine, dryRun = false): OperationContext {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     dryRun,
     remote: true,
+    sourceId: 'default',
   };
 }
 

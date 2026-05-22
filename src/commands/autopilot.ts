@@ -19,11 +19,47 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { execSync, spawn, type ChildProcess } from 'child_process';
+import { execSync } from 'child_process';
 import type { BrainEngine } from '../core/engine.ts';
 import { loadPreferences } from '../core/preferences.ts';
-import { loadConfig } from '../core/config.ts';
-import { detectTini, buildSpawnInvocation } from '../core/minions/spawn-helpers.ts';
+import { loadConfig, gbrainPath as gbrainHomePath } from '../core/config.ts';
+import { ChildWorkerSupervisor } from '../core/minions/child-worker-supervisor.ts';
+
+/**
+ * v0.37.7.0 #1162 — classify autopilot reconnect-loop errors.
+ *
+ * `recoverable` (network blip, Supabase 503, pool saturated, connection
+ * refused on a port that may be coming up): retry with backoff up to
+ * `GBRAIN_AUTOPILOT_MAX_RECONNECT_FAILS` (default 30).
+ *
+ * `unrecoverable` (`database_url` unset/empty/malformed, auth failure,
+ * config file unreadable): exit immediately so launchd's 60s
+ * `ThrottleInterval` backs off the relaunch instead of thrashing.
+ *
+ * Exported (string-based signature) so tests drive it without needing
+ * a real reconnect error.
+ */
+export function classifyReconnectError(err: unknown): 'recoverable' | 'unrecoverable' {
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (msg.includes('database_url') && (msg.includes('undefined') || msg.includes('missing') || msg.includes('empty') || msg.includes('not set'))) {
+    return 'unrecoverable';
+  }
+  if (msg.includes('invalid url') || msg.includes('malformed') || msg.includes('parse url')) {
+    return 'unrecoverable';
+  }
+  // Auth failures: postgres prints `role "name" does not exist` (with the
+  // role name in quotes between role and does), so use a skeleton match.
+  if (msg.includes('password authentication failed') || msg.includes('authentication failed')) {
+    return 'unrecoverable';
+  }
+  if (msg.includes('role') && msg.includes('does not exist')) {
+    return 'unrecoverable';
+  }
+  if (msg.includes('no brain configured') || msg.includes('config not found')) {
+    return 'unrecoverable';
+  }
+  return 'recoverable';
+}
 
 function parseArg(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -118,10 +154,15 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     process.exit(1);
   }
 
-  // Lock file to prevent concurrent instances (#14)
-  const lockPath = join(process.env.HOME || '', '.gbrain', 'autopilot.lock');
+  // Lock file to prevent concurrent instances (#14).
+  // v0.37.7.0 #1226: route through gbrainPath() so the lockfile lives
+  // under GBRAIN_HOME when set, not the hardcoded ~/.gbrain. Pre-fix,
+  // two brains sharing GBRAIN_HOME=different-paths still wrote to the
+  // same global lockfile and one would silently respawn the other
+  // forever.
+  const lockPath = gbrainHomePath('autopilot.lock');
   try {
-    mkdirSync(join(process.env.HOME || '', '.gbrain'), { recursive: true });
+    mkdirSync(gbrainHomePath(), { recursive: true });
     if (existsSync(lockPath)) {
       const stat = require('fs').statSync(lockPath);
       const ageMinutes = (Date.now() - stat.mtimeMs) / 60000;
@@ -146,55 +187,64 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   const spawnManagedWorker = useMinionsDispatch && !noWorker;
 
   let stopping = false;
-  let workerProc: ChildProcess | null = null;
-  let crashCount = 0;
-  let lastWorkerStartTime = 0;
-
-  // Stable-run reset window (matches MinionSupervisor.ts:471-476 pattern). If the
-  // worker ran > 5min before exit, treat as a fresh cycle (crashCount=1) so the
-  // RSS watchdog firing hourly does NOT trip autopilot's give-up threshold after
-  // ~5 hours of healthy uptime.
-  const STABLE_RUN_RESET_MS = 5 * 60 * 1000;
+  let childSupervisor: ChildWorkerSupervisor | null = null;
 
   if (spawnManagedWorker) {
     const cliPath = resolveGbrainCliPath();
-    // Resolve tini once at startup — not per respawn — to avoid shelling out
-    // every time the worker restarts. Reaps zombie children from shell jobs
-    // and embed batches that outlive a watchdog-killed worker.
-    const tiniPath = detectTini();
-    const startWorker = () => {
-      // Inject the RSS watchdog default (2048 MB) for the autopilot-supervised
-      // worker. Bare `gbrain jobs work` has no default; the supervisor and
-      // autopilot are the production paths that opt in.
-      const args = ['jobs', 'work', '--max-rss', '2048'];
-
-      const { cmd: spawnCmd, args: spawnArgs } = buildSpawnInvocation(tiniPath, cliPath, args);
-
-      const child = spawn(spawnCmd, spawnArgs, { stdio: 'inherit', env: process.env });
-      workerProc = child;
-      lastWorkerStartTime = Date.now();
-      console.log(`[autopilot] Minions worker spawned (pid: ${child.pid}, watchdog: 2048MB${tiniPath ? ', tini: active' : ''})`);
-
-      child.on('exit', (code) => {
-        workerProc = null;
-        if (stopping) return;
-        const runDuration = Date.now() - lastWorkerStartTime;
-        if (runDuration > STABLE_RUN_RESET_MS) {
-          // Stable run — forgive prior crash history. A watchdog-driven hourly
-          // exit (the production path post-fix) lands here every time.
-          crashCount = 1;
-        } else {
-          crashCount++;
+    // Inject the RSS watchdog default (2048 MB) for the autopilot-supervised
+    // worker. Bare `gbrain jobs work` has no default; the supervisor and
+    // autopilot are the production paths that opt in.
+    childSupervisor = new ChildWorkerSupervisor({
+      cliPath,
+      args: ['jobs', 'work', '--max-rss', '2048'],
+      // process.env clone; autopilot doesn't gate shell jobs the way the
+      // standalone supervisor does (autopilot is the operator-trust path).
+      env: { ...process.env },
+      maxCrashes: 5,
+      isStopping: () => stopping,
+      onMaxCrashesExceeded: (count, max) => {
+        console.error(`[autopilot] ${count}/${max} consecutive worker crashes, giving up.`);
+        void shutdown('max_crashes');
+      },
+      onEvent: (event) => {
+        // Route ChildWorkerSupervisor events to autopilot's stderr log.
+        // Matches the prior console output shape so operators reading
+        // existing logs see the same lines.
+        if (event.kind === 'worker_spawned') {
+          console.log(
+            `[autopilot] Minions worker spawned (pid: ${event.pid}, watchdog: 2048MB${event.tini ? ', tini: active' : ''})`,
+          );
+        } else if (event.kind === 'worker_spawn_failed') {
+          console.error(
+            `[autopilot] worker spawn failed (${event.phase}): ${event.error}${event.errnoCode ? ` (code=${event.errnoCode})` : ''}`,
+          );
+        } else if (event.kind === 'worker_exited') {
+          console.error(
+            `[autopilot] worker exited code=${event.code} signal=${event.signal} after ${event.runDurationMs}ms, crashCount=${event.crashCount}, cause=${event.likelyCause}`,
+          );
+        } else if (event.kind === 'backoff') {
+          if (event.reason === 'budget_exceeded') {
+            console.error(
+              `[autopilot] clean-restart budget exceeded; backing off ${event.ms}ms before next spawn`,
+            );
+          } else if (event.reason === 'crash') {
+            console.error(
+              `[autopilot] crash backoff ${event.ms}ms (crashCount=${event.crashCount})`,
+            );
+          }
+          // reason='clean_exit' with ms:0 is the steady-state watchdog drain;
+          // logging every iteration would be noisy. Keep silent (the
+          // worker_exited line already covers the user-visible signal).
+        } else if (event.kind === 'health_warn') {
+          console.error(
+            `[autopilot] health_warn: ${event.reason} count=${event.count} window=${event.windowMs}ms`,
+          );
         }
-        if (crashCount >= 5) {
-          console.error(`[autopilot] 5 consecutive worker crashes (run ${runDuration}ms), giving up.`);
-          process.exit(1);
-        }
-        console.error(`[autopilot] worker exited code=${code} after ${runDuration}ms, restart #${crashCount} in 10s`);
-        setTimeout(startWorker, 10_000);
-      });
-    };
-    startWorker();
+      },
+    });
+    // Fire-and-forget; runs alongside the dispatch loop. shutdown() drives
+    // the child-supervisor's isStopping accessor + drain.
+    void childSupervisor.run();
   } else if (!useMinionsDispatch) {
     const why = mode === 'off'
       ? 'minion_mode=off'
@@ -215,14 +265,11 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     if (stopping) return;
     stopping = true;
     console.log(`Autopilot stopping (${sig}).`);
-    if (workerProc) {
-      try { workerProc.kill('SIGTERM'); } catch { /* already dead */ }
-      await Promise.race([
-        new Promise<void>(r => workerProc!.once('exit', () => r())),
-        new Promise<void>(r => setTimeout(() => r(), 35_000)),
-      ]);
-      if (workerProc && !workerProc.killed) {
-        try { workerProc.kill('SIGKILL'); } catch { /* already dead */ }
+    if (childSupervisor) {
+      childSupervisor.killChild('SIGTERM');
+      await childSupervisor.awaitChildExit(35_000);
+      if (childSupervisor.childAlive) {
+        childSupervisor.killChild('SIGKILL');
       }
     }
     try { unlinkSync(lockPath); } catch { /* already gone */ }
@@ -232,6 +279,14 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   process.on('SIGINT',  () => { void shutdown('SIGINT'); });
 
   let consecutiveErrors = 0;
+  // v0.37.7.0 #1162 — counter for consecutive reconnect failures.
+  // Reset on every successful health probe or reconnect. Threshold
+  // controlled by GBRAIN_AUTOPILOT_MAX_RECONNECT_FAILS env (default 30).
+  let autopilotReconnectFails = 0;
+  const AUTOPILOT_MAX_RECONNECT_FAILS = Math.max(
+    1,
+    Number(process.env.GBRAIN_AUTOPILOT_MAX_RECONNECT_FAILS) || 30,
+  );
   // Peer-worker liveness for --no-worker mode. The probe is a proxy, not
   // ground truth: SELECT count(*) of active jobs with a recent lock_until
   // refresh. A queue with only waiting jobs and a healthy idle worker
@@ -244,6 +299,11 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   // before the queue piles up.
   const NO_WORKER_WARN_TICKS = 3;
   let noWorkerConsecutiveIdle = 0;
+  // v0.36+ T8: track time since last full cycle for the 60-min floor.
+  // Initialized to "long ago" so the first tick on a healthy brain still
+  // runs the full cycle (phase-coupling exercise) before settling into
+  // targeted-submit mode.
+  let lastFullCycleAt = 0;
 
   while (!stopping) {
     const cycleStart = Date.now();
@@ -253,14 +313,52 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     // declare the instance stale after 10 minutes (Codex C).
     try { utimesSync(lockPath, new Date(), new Date()); } catch { /* best-effort */ }
 
-    // DB health check (reconnect if needed)
+    // DB health check (reconnect if needed).
+    //
+    // v0.37.7.0 #1162: classify reconnect failures. Pre-fix, the
+    // catch logged the error and looped forever — when `database_url`
+    // was unset/malformed the loop spammed `config.database_url
+    // undefined` until launchd was killed manually. Now:
+    //   - Recoverable transient (network blip, pool saturated, 503) →
+    //     log + retry next tick. Up to GBRAIN_AUTOPILOT_MAX_RECONNECT_FAILS
+    //     consecutive failures before exit (default 30 = ~5min at
+    //     10s ticks).
+    //   - Unrecoverable (database_url unset, malformed URL, auth
+    //     failure) → exit immediately with a clear stderr line.
+    //     ThrottleInterval=60 in the launchd plist (v0.37.7.0) ensures
+    //     launchd's KeepAlive backoff actually backs off instead of
+    //     thrashing.
     try {
       await engine.getConfig('version');
-    } catch {
+      autopilotReconnectFails = 0; // reset on success
+    } catch (probeErr) {
       try {
         await engine.disconnect();
         await (engine as any).connect?.();
-      } catch (e) { logError('reconnect', e); }
+        autopilotReconnectFails = 0;
+      } catch (e) {
+        logError('reconnect', e);
+        autopilotReconnectFails++;
+        const klass = classifyReconnectError(e);
+        if (klass === 'unrecoverable') {
+          console.error(
+            `[autopilot] FATAL: unrecoverable DB error (${(e as Error).message ?? 'unknown'}). ` +
+            `Exiting so launchd ThrottleInterval can apply backoff.`,
+          );
+          stopping = true;
+          process.exitCode = 1;
+          break;
+        }
+        if (autopilotReconnectFails >= AUTOPILOT_MAX_RECONNECT_FAILS) {
+          console.error(
+            `[autopilot] FATAL: ${autopilotReconnectFails} consecutive reconnect failures. ` +
+            `Last error: ${(e as Error).message ?? 'unknown'}. Exiting.`,
+          );
+          stopping = true;
+          process.exitCode = 1;
+          break;
+        }
+      }
     }
 
     // --no-worker peer-liveness probe (v0.19.1). Runs every cycle, cheap
@@ -301,35 +399,106 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     }
 
     if (useMinionsDispatch) {
-      // Submit ONE autopilot-cycle job per cycle slot. The idempotency key
-      // dedupes overrun submissions — if a cycle's job runs longer than
-      // the interval, the next submission is a no-op at the DB layer
-      // (ON CONFLICT DO NOTHING on the unique partial index).
+      // v0.36+ brain-health-100 wave (T8): targeted-submit loop.
+      //
+      // Pre-fix: every tick submitted ONE autopilot-cycle job, full phase
+      // set, regardless of brain state. On a healthy brain this was pure
+      // overhead. On a degraded brain it bundled fast wins (embed) with
+      // slow phases (synthesize) so the user waited for the slowest.
+      //
+      // New logic: compute the remediation plan (cheap; no full doctor
+      // walk), then route to the right level of intervention:
+      //   - Score >= 95 + empty plan: full cycle every 60min (phase-
+      //     coupling exercise), otherwise sleep.
+      //   - Small plan (<=3 steps, <5min): submit individual handlers.
+      //   - Large plan or low score: full autopilot-cycle (the hammer).
+      //
+      // D10 cycle-lock invariant ensures targeted-submit and
+      // autopilot-cycle can never run concurrently (both acquire
+      // gbrain-cycle), so the "60-min floor double-processes queued
+      // targeted jobs" failure mode is closed by the lock.
       try {
         const { MinionQueue } = await import('../core/minions/queue.ts');
+        const { computeRecommendations } = await import('../core/brain-score-recommendations.ts');
         const queue = new MinionQueue(engine);
         const slotMs = Math.floor(Date.now() / (baseInterval * 1000)) * baseInterval * 1000;
         const slot = new Date(slotMs).toISOString();
         const timeoutMs = Math.max(baseInterval * 2 * 1000, 300_000);
-        const job = await queue.add('autopilot-cycle',
-          { repoPath },
-          {
-            queue: 'default',
-            idempotency_key: `autopilot-cycle:${slot}`,
-            max_attempts: 2,
-            timeout_ms: timeoutMs,
-            // Submission backpressure: when the worker is dead or wedged,
-            // idempotency_key only dedupes within a slot; cross-slot pile-up
-            // is what produced the 28+ waiting-jobs production incident.
-            // maxWaiting: 1 caps at 1 active + 1 waiting; queue.add coalesces
-            // the 3rd+ submission and writes a backpressure-audit JSONL line.
-            maxWaiting: 1,
-          },
-        );
-        if (jsonMode) {
-          process.stderr.write(JSON.stringify({ event: 'dispatched', job_id: job.id, slot }) + '\n');
+
+        // Cheap path: engine.getHealth() is a single SQL count query.
+        const health = await engine.getHealth();
+        const score = health.brain_score;
+        const ctx = {
+          repoPath,
+          hasEmbeddingApiKey: !!(process.env.OPENAI_API_KEY || await engine.getConfig('openai_api_key')),
+          hasChatApiKey: !!(process.env.ANTHROPIC_API_KEY || await engine.getConfig('anthropic_api_key')),
+        };
+        const plan = computeRecommendations(health, ctx).filter((r) => r.status === 'remediable');
+        const estTotal = plan.reduce((s, r) => s + r.est_seconds, 0);
+
+        // Track time since last full cycle for the 60-min floor.
+        const FULL_CYCLE_FLOOR_MIN = 60;
+        const minutesSinceLastFull = (Date.now() - lastFullCycleAt) / 60000;
+
+        const shouldFullCycle =
+          (score >= 95 && plan.length === 0 && minutesSinceLastFull >= FULL_CYCLE_FLOOR_MIN) ||
+          plan.length > 3 ||
+          estTotal >= 300 ||
+          score < 70;
+
+        const shouldSleep = score >= 95 && plan.length === 0 && minutesSinceLastFull < FULL_CYCLE_FLOOR_MIN;
+
+        if (shouldSleep) {
+          if (jsonMode) {
+            process.stderr.write(JSON.stringify({ event: 'skip_healthy', score, plan_size: 0 }) + '\n');
+          }
+        } else if (shouldFullCycle) {
+          const job = await queue.add('autopilot-cycle',
+            { repoPath },
+            {
+              queue: 'default',
+              idempotency_key: `autopilot-cycle:${slot}`,
+              max_attempts: 2,
+              timeout_ms: timeoutMs,
+              maxWaiting: 1,
+            },
+          );
+          lastFullCycleAt = Date.now();
+          if (jsonMode) {
+            process.stderr.write(JSON.stringify({ event: 'dispatched', job_id: job.id, mode: 'full', slot, score, plan_size: plan.length }) + '\n');
+          } else {
+            console.log(`[dispatch] job #${job.id} autopilot-cycle (full; score=${score})`);
+          }
         } else {
-          console.log(`[dispatch] job #${job.id} autopilot-cycle slot=${slot}`);
+          // Small targeted plan — submit individual handlers per step.
+          // D9 content-hash idempotency keys (from computeRecommendations).
+          // maxWaiting:1 per submit per codex #17 (closes the backpressure
+          // gap the prior implementation had for targeted submits).
+          for (const step of plan) {
+            try {
+              const isProtected = !!step.protected;
+              const submitOpts = {
+                queue: 'default',
+                idempotency_key: step.idempotency_key,
+                max_attempts: 2,
+                timeout_ms: timeoutMs,
+                maxWaiting: 1,
+              };
+              const job = await queue.add(
+                step.job,
+                step.params,
+                submitOpts,
+                isProtected ? { allowProtectedSubmit: true } : undefined,
+              );
+              if (jsonMode) {
+                process.stderr.write(JSON.stringify({ event: 'dispatched', job_id: job.id, mode: 'targeted', step: step.id, score, plan_size: plan.length }) + '\n');
+              } else {
+                console.log(`[dispatch] job #${job.id} ${step.job} (targeted: ${step.id}; score=${score})`);
+              }
+            } catch (e) {
+              logError('dispatch.step', e);
+            }
+          }
         }
       } catch (e) { logError('dispatch', e); cycleOk = false; }
     } else {
@@ -349,7 +518,13 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
             await new Promise(r => setImmediate(r));
           },
         });
-        if (report.status === 'failed' || report.status === 'partial') {
+        // Only 'failed' (every attempted phase failed) trips the autopilot
+        // circuit breaker. 'partial' means at least one phase warned or
+        // failed while others ran — that's a soft signal, not a fatal
+        // condition. Treating 'partial' as failure here caused respawn
+        // storms under KeepAlive=true on brains where a single phase
+        // (typically `orphans`) emits a 'warn' every cycle in steady state.
+        if (report.status === 'failed') {
           cycleOk = false;
         }
         if (jsonMode) {
@@ -474,7 +649,12 @@ function writeWrapperScript(repoPath: string): string {
   const safeGbrainPath = gbrainPath.replace(/'/g, "'\\''");
   const wrapper = `#!/bin/bash
 # Auto-generated by gbrain autopilot --install
-# Sources shell profile for API keys, then runs autopilot
+# Sources shell profile for API keys, then runs autopilot.
+# zshenv is the canonical place for env vars in zsh on macOS (zshrc is for
+# interactive shells only — vars defined there don't reach this non-interactive
+# subprocess). Source it first so secrets like GBRAIN_DATABASE_URL or any
+# OPENAI/ANTHROPIC keys exported in zshenv reach autopilot.
+[ -f ~/.zshenv ] && source ~/.zshenv 2>/dev/null
 source ~/.zshrc 2>/dev/null || source ~/.bashrc 2>/dev/null || true
 exec '${safeGbrainPath}' autopilot --repo '${safeRepoPath}'
 `;
@@ -518,8 +698,10 @@ async function installDaemon(engine: BrainEngine, args: string[]) {
   }
 }
 
-function installLaunchd(wrapperPath: string, home: string, repoPath: string) {
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+// v0.37.7.0 #1162 — pure function for plist generation so tests can
+// assert ThrottleInterval/KeepAlive shape without an installed daemon.
+export function generateLaunchdPlist(wrapperPath: string, home: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -529,10 +711,24 @@ function installLaunchd(wrapperPath: string, home: string, repoPath: string) {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!--
+    v0.37.7.0 #1162: ThrottleInterval=60 forces launchd to wait at
+    least 60s between relaunches. Combined with the in-process
+    classifier (recoverable vs unrecoverable in the supervisor loop),
+    this prevents the spinning respawn pattern where an unrecoverable
+    error (missing database_url, malformed config) immediately
+    relaunched and re-hit the same error. ThrottleInterval is a hard
+    floor; launchd would have applied a default of 10s if unset.
+  -->
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>${escapeXml(home)}/.gbrain/autopilot.log</string>
   <key>StandardErrorPath</key><string>${escapeXml(home)}/.gbrain/autopilot.err</string>
 </dict>
 </plist>`;
+}
+
+function installLaunchd(wrapperPath: string, home: string, repoPath: string) {
+  const plist = generateLaunchdPlist(wrapperPath, home);
 
   try {
     const agentsDir = join(home, 'Library', 'LaunchAgents');

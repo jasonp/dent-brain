@@ -120,10 +120,19 @@ at the remote host. `gbrain doctor` runs a dedicated thin-client check set
 
 ```bash
 gbrain init --supabase                         # or --pglite, doesn't matter
-gbrain serve --http --port 3001                # exposes /mcp + OAuth
+gbrain serve --http --port 3001 --bind 0.0.0.0 # v0.34: bind explicitly for remote access
+                                                # (defaults to 127.0.0.1 since v0.34)
 gbrain auth register-client neuromancer \
   --grant-types client_credentials \
   --scopes read,write,admin                    # admin needed for ping/doctor
+
+# v0.34: source-scoped client (write to one source, federate reads across
+# multiple sources). Omit both flags for a v0.33-compatible super-client.
+gbrain auth register-client neuromancer-dept \
+  --grant-types client_credentials \
+  --scopes read,write \
+  --source dept-x \
+  --federated-read dept-x,shared,parent-canon
 ```
 
 The `register-client` command prints a `client_id` and `client_secret`.
@@ -256,6 +265,36 @@ The agent's MCP client config lists multiple servers, each with a unique
 alias. Tool names are namespaced as `mcp__<alias>__<tool>`, so the agent
 calls `mcp__gbrain_code__search` for code lookups and `mcp__gbrain_artifacts__search`
 for artifact lookups.
+
+### Recommended embedding model
+
+Per-worktree code brains index source files only — no meeting notes,
+no people pages, no transcripts. Configure each code brain to use
+Voyage's code-tuned model at init time so the config can't be lost to a
+later `init` overwrite:
+
+```bash
+export GBRAIN_HOME=/path/to/worktree-A/.conductor/gbrain
+gbrain init --pglite \
+  --embedding-model voyage:voyage-code-3 \
+  --embedding-dimensions 1024
+```
+
+`voyage-code-3` is Voyage's code-specialized embedding model with
+head-to-head numbers above their general flagships on code retrieval
+([voyageai.com/blog](https://voyageai.com/blog)). For already-initialized
+brains, switch later:
+
+```bash
+gbrain config set embedding_model voyage:voyage-code-3
+gbrain config set embedding_dimensions 1024
+gbrain reindex --code --yes
+```
+
+`gbrain reindex --code` prints a recommendation when the configured
+embedding model isn't code-tuned. Suppress with
+`GBRAIN_NO_CODE_MODEL_NUDGE=1` if you've intentionally chosen another
+provider (single-vendor procurement, compliance, no Voyage key).
 
 ### CRITICAL: alias-level routing is manual
 

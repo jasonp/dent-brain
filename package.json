@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.39.0.1",
+  "version": "0.40.0.0",
   "description": "Postgres-native organizational knowledge brain. Open-source distribution of the substrate that powers Dent Brain. Forked from gbrain (github.com/garrytan/gbrain); the npm package identity tracks upstream (`name: gbrain`) for upstream-test compatibility, while the CLI binary is `dbrain` (with a `gbrain` alias) so personal and organizational installs can coexist on the same machine.",
   "type": "module",
   "main": "src/core/index.ts",
@@ -29,6 +29,7 @@
     "./backoff": "./src/core/backoff.ts",
     "./search/hybrid": "./src/core/search/hybrid.ts",
     "./search/expansion": "./src/core/search/expansion.ts",
+    "./ai/gateway": "./src/core/ai/gateway.ts",
     "./extract": "./src/commands/extract.ts"
   },
   "scripts": {
@@ -57,6 +58,7 @@
     "test:dent": "bun test test/dent/ --timeout=60000",
     "test:e2e": "bash scripts/run-e2e.sh",
     "test:slow": "bash scripts/run-slow-tests.sh",
+    "test:heavy": "bash scripts/run-heavy.sh",
     "test:profile": "bash scripts/profile-tests.sh",
     "test:serial": "bash scripts/run-serial-tests.sh",
     "ci:local": "bash scripts/ci-local.sh",
@@ -106,6 +108,7 @@
     "express-rate-limit": "^7.5.0",
     "gray-matter": "^4.0.3",
     "heic-decode": "^2.1.0",
+    "js-yaml": "^3.14.2",
     "marked": "^18.0.0",
     "openai": "^4.0.0",
     "pgvector": "^0.2.0",
@@ -119,7 +122,9 @@
     "@types/cookie-parser": "^1.4.7",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/js-yaml": "^3.12.10",
     "bun-types": "^1.3.13",
+    "fast-check": "^4.8.0",
     "typescript": "^5.6.0"
   },
   "trustedDependencies": [

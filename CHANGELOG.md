@@ -2,6 +2,39 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.40.0.0] - 2026-05-21
+
+## **Catch up to upstream gbrain. Sixty-five upstream commits (v0.30.1 → v0.37.9.0) merged into the fork in one reviewed wave: ZeroEntropy reranking, code-intelligence MCP ops, hindsight calibration, cross-modal image search, and a source-isolation security seal. The fork keeps its own skin — `dbrain` binary, privacy scrubbing, recipe-model ingestors, v0.40 version line.**
+
+The fork had drifted four months behind upstream. The last sync (v0.33.2.1, folded in during a prior wave) left 65 upstream commits stranded, and our own 102 commits had moved the fork in parallel — a straight merge produced 106 conflicts across 575 files. This release resolves all of them and validates the result end to end: typecheck clean, 8,408 unit tests pass, 99 E2E files / 677 tests pass against real Postgres.
+
+Most conflicts were not real disagreements. Fifty were `add/add` files — entire subsystems (`eval-contradictions/`, `facts/`) that a prior squashed sync had severed from their upstream ancestry, so git saw two unrelated files where there was really one lineage. Those took upstream's newer version wholesale. The genuine three-way merges were the contract surface: `operations.ts`, the engines, `schema.sql`, `cli.ts`. There the rule was integrate-both — take upstream's new ops and the required-`sourceId` hardening, keep the fork's `dbrain` binary naming, the `ingest` command, the trust-boundary `remote` logic, and the privacy-scrubbed docs.
+
+What teammates get from upstream: ZeroEntropy `zembed-1` embeddings + `zerank-2` reranker (opt-in via `tokenmax` search mode; degrades gracefully without `ZEROENTROPY_API_KEY`), the skillpack registry, Cathedral III code intelligence exposed over MCP (`find_trajectory`, `code_callers`/`callees`/`def`/`refs`, `code_blast`/`code_flow`), hindsight calibration (the brain learns how you tend to be wrong), cross-modal `search_by_image`, hot-memory fact extraction during sync, and a P0 source-isolation leak seal (`sourceScopeOpts`) that stops an authenticated multi-source query from surfacing another source's people in the rankings.
+
+Numbers: 65 upstream commits, 106 conflicts resolved (50 add/add, 56 content), 575 files, ~76 new schema migrations, schema version 1 → 80. One upstream test removed (`readme-hero-anchors.test.ts` — it pins marketing strings to the README, incompatible with the fork's privacy-scrubbed copy).
+
+### To take advantage of v0.40.0.0
+
+1. **Teammates on `/dent-update`**: update as usual. Schema migrations apply automatically on the next `dbrain` run — no manual step. Your `~/.dent-brain/<id>/user/filter.ts` recipe files are untouched.
+2. **If you want the ZeroEntropy reranker**: set search mode to `tokenmax` and export `ZEROENTROPY_API_KEY`. Leave it unset and search keeps working on the `balanced` default exactly as before — the reranker is off there. See `skills/migrations/v0.40.md`.
+3. **Maintainers**: future upstream syncs run through `bun run sync:upstream`. The squashed-sync ancestry break that caused 50 add/add conflicts here is documented in the migration guide so the next sync is cleaner.
+
+### Itemized changes
+
+#### Added
+- Upstream features (v0.30.1 → v0.37.9.0): ZeroEntropy `zembed-1` + `zerank-2`, skillpack registry + harvest, Cathedral III code-intelligence MCP ops (`find_trajectory`, `code_callers`, `code_callees`, `code_def`, `code_refs`, `code_blast`, `code_flow`, `code_traversal_cache_clear`), hindsight calibration wave (`propose_takes`, `grade_takes`, `calibration_profile` cycle phases), cross-modal `search_by_image`, hot-memory facts extraction during sync, OpenRouter recipe + generic `default_headers`.
+- `js-yaml` runtime dependency (required by merged markdown/chunker/recency code).
+- `skills/migrations/v0.40.md` — upgrade guide covering auto-applied migrations + the ZeroEntropy opt-in.
+
+#### Changed
+- `OperationContext.sourceId` is now required at the type level (auto-filled `'default'` by every transport); read-side handlers route through `sourceScopeOpts` for source-scope enforcement.
+- Search default config carries `zeroentropyai:zerank-2` reranker (enabled only in `tokenmax` mode).
+- Plugin marketplace bundle regenerated to v0.40.0.0.
+
+#### Removed
+- `test/readme-hero-anchors.test.ts` — upstream README-marketing pin, incompatible with the fork's privacy rule. Its privacy-allowlist entries were folded into `check-test-real-names.sh`.
+
 ## [0.39.0.1] - 2026-05-18
 
 ## **Close the silent marketplace-bundle drift that left teammates stuck on v0.38. New `check:plugin-version` gate, wired into `verify`, fails fast in both /ship pre-flight and CI when the bundle lags `VERSION`. Plus the immediate hole-plug — v0.39's recipe-model ingestor work that never made it into the bundle is now actually shipped to teammates.**
