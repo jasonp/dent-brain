@@ -28,6 +28,7 @@ import { GBrainOAuthProvider } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST } from '../core/scope.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
+import { paramDefToSchema } from '../mcp/tool-defs.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
@@ -42,6 +43,44 @@ import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
  * 3s leaves 2s of headroom for TCP, response framing, and clock skew.
  */
 export const HEALTH_TIMEOUT_MS = 3000;
+
+/**
+ * v0.36.1.x #1024: bootstrap token resolution.
+ *
+ * Pure helper (no side effects, no process.exit) so the rule is unit-testable.
+ * Two outcomes:
+ *   - `ok`: caller proceeds with `{token, fromEnv}`. When the env value is
+ *     undefined, a fresh 32-byte hex token is generated.
+ *   - `error`: caller refuses to start. We require 32+ chars matching
+ *     `[A-Za-z0-9_-]+` for env-supplied tokens — fail-closed beats silently
+ *     accepting a weak admin secret.
+ *
+ * `randomBytesHex` is parameterized so tests can inject a deterministic
+ * fallback without monkey-patching `crypto.randomBytes`.
+ */
+export type BootstrapTokenResolution =
+  | { kind: 'ok'; token: string; fromEnv: boolean }
+  | { kind: 'error'; message: string };
+
+export function resolveBootstrapToken(
+  envValue: string | undefined,
+  randomBytesHex: () => string = () => randomBytes(32).toString('hex'),
+): BootstrapTokenResolution {
+  if (envValue === undefined) {
+    return { kind: 'ok', token: randomBytesHex(), fromEnv: false };
+  }
+  const trimmed = envValue.trim();
+  if (!/^[A-Za-z0-9_-]{32,}$/.test(trimmed)) {
+    return {
+      kind: 'error',
+      message:
+        'GBRAIN_ADMIN_BOOTSTRAP_TOKEN must be at least 32 chars and match [A-Za-z0-9_-]+.\n' +
+        '  Refusing to start with a weak admin bootstrap token. Generate one with:\n' +
+        '    head -c 32 /dev/urandom | base64 | tr -d "+/=" | head -c 48',
+    };
+  }
+  return { kind: 'ok', token: trimmed, fromEnv: true };
+}
 
 export type ProbeHealthResult =
   | { ok: true; status: 200; body: { status: 'ok'; version: string; engine: string; [k: string]: unknown } }
@@ -162,15 +201,51 @@ interface ServeHttpOptions {
    * at startup so the privacy posture change is visible.
    */
   logFullParams?: boolean;
+  /**
+   * Network interface(s) to bind. Defaults to `127.0.0.1` (loopback only) in
+   * v0.34.1+ — gbrain's primary use case is a personal-knowledge brain on a
+   * laptop, and the pre-v0.34 default of `0.0.0.0` made it one accidental
+   * `--http` invocation away from publishing the brain to a LAN.
+   *
+   * Server operators who DO want to accept remote connections pass
+   * `--bind 0.0.0.0` (or a specific interface IP). When `--public-url` is
+   * set but `--bind` is unset, a stderr WARN fires at startup recommending
+   * the explicit flag — defaulting to loopback while declaring a public URL
+   * is almost always a misconfiguration.
+   */
+  bind?: string;
+  /**
+   * v0.36.x #1024: suppress the printed admin bootstrap token line on
+   * startup. Combined with `GBRAIN_ADMIN_BOOTSTRAP_TOKEN`, lets long-lived
+   * production deployments avoid leaking the token into log aggregators on
+   * every supervisor-managed restart. When the env var is NOT set, this
+   * flag still suppresses the print — operators take responsibility for
+   * tracking the regenerated value through other means.
+   */
+  suppressBootstrapToken?: boolean;
 }
 
 export async function runServeHttp(engine: BrainEngine, options: ServeHttpOptions) {
   const { port, tokenTtl, enableDcr, publicUrl, logFullParams } = options;
+  // v0.34.1 (#864, D11): default bind flipped from 0.0.0.0 to 127.0.0.1.
+  // gbrain's primary use case is a personal-knowledge brain on a laptop;
+  // the pre-v0.34 default exposed brains on every interface. Server
+  // operators who need remote access pass `--bind 0.0.0.0` (or a specific
+  // interface). Declaring `--public-url` without `--bind` is almost always
+  // a misconfiguration; we WARN to stderr at startup in that case rather
+  // than silently binding loopback only.
+  const bind = options.bind ?? '127.0.0.1';
   const config = loadConfig() || { engine: 'pglite' as const };
 
   if (logFullParams) {
     console.error(
       '[serve-http] WARNING: --log-full-params writes raw request payloads to mcp_request_log + SSE feed. Disable for shared dashboards or production.',
+    );
+  }
+
+  if (publicUrl && options.bind === undefined) {
+    console.error(
+      '[serve-http] WARNING: --public-url is set but --bind is not. Default bind changed to 127.0.0.1 in v0.34.1; remote clients reaching the public URL will be refused. Pass --bind 0.0.0.0 to accept all interfaces.',
     );
   }
 
@@ -199,9 +274,23 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     console.error('Token sweep failed (non-blocking):', e instanceof Error ? e.message : e);
   }
 
-  // Generate bootstrap token for admin dashboard
-  const bootstrapToken = randomBytes(32).toString('hex');
+  // v0.36.x #1024: bootstrap token sourcing.
+  //
+  // Default: regenerate per process start, print to stderr so the operator
+  // can paste into /admin login. Stable across restarts only when env var
+  // is set. The env override must be a strong secret — `[A-Za-z0-9_-]{32+}`
+  // — otherwise refuse to start. Logging the bootstrap-token value every
+  // restart is the original gripe; with `GBRAIN_ADMIN_BOOTSTRAP_TOKEN` set
+  // and `--suppress-bootstrap-token`, no value reaches the log.
+  const resolved = resolveBootstrapToken(process.env.GBRAIN_ADMIN_BOOTSTRAP_TOKEN);
+  if (resolved.kind === 'error') {
+    console.error(resolved.message);
+    process.exit(1);
+  }
+  let bootstrapToken: string = resolved.token;
+  let bootstrapFromEnv: boolean = resolved.fromEnv;
   const bootstrapHash = createHash('sha256').update(bootstrapToken).digest('hex');
+  const suppressBootstrapPrint = options.suppressBootstrapToken === true;
   const adminSessions = new Map<string, number>(); // sessionId → expiresAt
 
   // SSE clients for live activity feed
@@ -260,7 +349,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   app.post('/token', ccRateLimiter, express.urlencoded({ extended: false }), async (req, res, next) => {
     if (req.body?.grant_type !== 'client_credentials') {
-      return next(); // Fall through to SDK's token handler
+      return next(); // Fall through to confidential-client handler or SDK
     }
 
     try {
@@ -275,6 +364,80 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
       res.status(400).json({ error: 'invalid_grant', error_description: msg });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // v0.37.7.0 #1166: Custom authorization_code + refresh_token handler for
+  // CONFIDENTIAL clients. The MCP SDK's clientAuth middleware does plaintext
+  // `client.client_secret !== presented_secret` compare; we store
+  // SHA-256 hashes, so the SDK's compare always fails for confidential
+  // clients. This middleware verifies the secret hash ourselves before
+  // calling the provider's exchange methods directly.
+  //
+  // Public clients (token_endpoint_auth_method='none') fall through to
+  // the SDK's handler — the v0.34.1.0 PKCE path stays canonical.
+  // ---------------------------------------------------------------------------
+  app.post('/token', ccRateLimiter, async (req, res, next) => {
+    const grantType = req.body?.grant_type;
+    if (grantType !== 'authorization_code' && grantType !== 'refresh_token') {
+      return next();
+    }
+
+    // Detect confidential auth: either client_secret in body
+    // (client_secret_post) OR Authorization: Basic header
+    // (client_secret_basic). Public PKCE clients omit both.
+    const bodySecret: string | undefined = req.body?.client_secret;
+    let clientId: string | undefined = req.body?.client_id;
+    let presentedSecret: string | undefined = bodySecret;
+    const authHeader = (req.headers.authorization ?? '').toString();
+    if (!presentedSecret && authHeader.startsWith('Basic ')) {
+      try {
+        const decoded = Buffer.from(authHeader.slice('Basic '.length), 'base64').toString('utf8');
+        const idx = decoded.indexOf(':');
+        if (idx > -1) {
+          clientId ||= decodeURIComponent(decoded.slice(0, idx));
+          presentedSecret = decodeURIComponent(decoded.slice(idx + 1));
+        }
+      } catch {
+        // Malformed Basic header → falls through; SDK will reject
+      }
+    }
+    if (!clientId || !presentedSecret) {
+      return next(); // Public client path; SDK handles.
+    }
+
+    try {
+      const client = await oauthProvider.verifyConfidentialClientSecret(clientId, presentedSecret);
+      let tokens;
+      if (grantType === 'authorization_code') {
+        const code = req.body.code;
+        const redirectUri = req.body.redirect_uri;
+        const codeVerifier = req.body.code_verifier;
+        if (!code) {
+          res.status(400).json({ error: 'invalid_request', error_description: 'code required' });
+          return;
+        }
+        tokens = await oauthProvider.exchangeAuthorizationCode(client, code, codeVerifier, redirectUri);
+      } else {
+        const refreshToken = req.body.refresh_token;
+        const scopeParam = typeof req.body.scope === 'string' ? req.body.scope.split(/\s+/) : undefined;
+        if (!refreshToken) {
+          res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token required' });
+          return;
+        }
+        tokens = await oauthProvider.exchangeRefreshToken(client, refreshToken, scopeParam);
+      }
+      res.json(tokens);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      // RFC 6749: invalid_client for auth failures, invalid_grant for
+      // code/token problems. "Invalid client" → 401; everything else 400.
+      if (msg === 'Invalid client' || msg === 'Client has been revoked') {
+        res.status(401).json({ error: 'invalid_client', error_description: msg });
+      } else {
+        res.status(400).json({ error: 'invalid_grant', error_description: msg });
+      }
     }
   });
 
@@ -592,6 +755,150 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     res.status(result.status).json(result.body);
   });
 
+  // v0.36.1.0 (T15 / E6 / D23) — Calibration tab data endpoints.
+  // Server-rendered SVG charts; admin SPA renders via TrustedSVG wrapper.
+  // v0.36.1.0 (TD3) — pattern drill-down. Returns the source takes that
+  // produced the pattern statement at index `id` of the active profile.
+  // v0.36.1.0 ship state: returns the top N takes in the holder's overall
+  // takes table, sorted by weight desc. v0.37+ will store per-pattern
+  // source_take_ids on calibration_profiles_patterns so the drill-down
+  // shows the EXACT takes that drove the pattern.
+  app.get('/admin/api/calibration/pattern/:id', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { getLatestProfile } = await import('./calibration.ts');
+      const holder = (req.query.holder as string) || 'garry';
+      const profile = await getLatestProfile(engine, { holder });
+      if (!profile) {
+        res.status(404).json({ error: 'no_profile' });
+        return;
+      }
+      const rawId = req.params.id;
+      const idStr = Array.isArray(rawId) ? rawId[0] : rawId;
+      const idx = Number.parseInt(idStr ?? '', 10) - 1;
+      if (!Number.isFinite(idx) || idx < 0 || idx >= profile.pattern_statements.length) {
+        res.status(400).json({ error: 'invalid_pattern_index', max: profile.pattern_statements.length });
+        return;
+      }
+      const statement = profile.pattern_statements[idx];
+      // v0.36.1.0 ship state: surface the top resolved takes for the
+      // holder as drill-down evidence. Per-pattern provenance is v0.37.
+      const takes = await engine.executeRaw<{
+        id: number;
+        page_slug: string;
+        row_num: number;
+        claim: string;
+        weight: number;
+        resolved_quality: string | null;
+        since_date: string | null;
+      }>(
+        `SELECT id, page_slug, row_num, claim, weight, resolved_quality, since_date
+           FROM takes
+           WHERE holder = $1 AND active = true AND resolved_at IS NOT NULL
+           ORDER BY weight DESC, since_date DESC
+           LIMIT 25`,
+        [holder],
+      );
+      res.json({
+        pattern_statement: statement,
+        pattern_index: idx + 1,
+        holder,
+        provenance_note: 'v0.36.1.0 ship state shows top-25 resolved takes for this holder; per-pattern source_take_ids land in v0.37.',
+        takes,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'unknown' });
+    }
+  });
+
+  app.get('/admin/api/calibration/profile', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { getLatestProfile } = await import('./calibration.ts');
+      const holder = (req.query.holder as string) || 'garry';
+      const profile = await getLatestProfile(engine, { holder });
+      res.json(profile);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'unknown' });
+    }
+  });
+
+  app.get('/admin/api/calibration/charts/:type', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { getLatestProfile } = await import('./calibration.ts');
+      const {
+        renderBrierTrend,
+        renderDomainBars,
+        renderAbandonedThreadsCard,
+        renderPatternStatementsCard,
+      } = await import('../core/calibration/svg-renderer.ts');
+      const holder = (req.query.holder as string) || 'garry';
+      const type = req.params.type;
+      const profile = await getLatestProfile(engine, { holder });
+
+      res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+      res.setHeader('Cache-Control', 'private, max-age=60');
+
+      if (type === 'brier-trend') {
+        // v0.36.1.0 ship state: 1-point series from the active profile. A
+        // proper 90-day time series will read from calibration_profiles
+        // generated_at history in v0.37 once we have multiple snapshots.
+        const series = profile?.brier !== null && profile?.brier !== undefined
+          ? [{ date: profile.generated_at.slice(0, 10), brier: profile.brier }]
+          : [];
+        return res.send(renderBrierTrend({ series }));
+      }
+      if (type === 'domain-bars') {
+        // v0.36.1.0 ship state: domain_scorecards JSONB is a placeholder
+        // (per-domain rendering comes when batchGetTakesScorecards lands in
+        // a follow-up). Render empty for now.
+        return res.send(renderDomainBars({ bars: [] }));
+      }
+      if (type === 'pattern-statements') {
+        return res.send(
+          renderPatternStatementsCard(
+            (profile?.pattern_statements ?? []).map((text: string) => ({ text })),
+          ),
+        );
+      }
+      if (type === 'abandoned-threads') {
+        // v0.36.1.0 ship state: pull abandoned threads inline via a small
+        // SQL query (the doctor check counts them; this surfaces details).
+        const rows = await engine.executeRaw<{
+          id: number;
+          page_slug: string;
+          claim: string;
+          weight: number;
+          since_date: string;
+        }>(
+          `SELECT id, page_slug, claim, weight, since_date
+             FROM takes
+             WHERE active = true AND resolved_at IS NULL AND superseded_by IS NULL
+               AND weight >= 0.7
+               AND since_date::date < (now() - INTERVAL '12 months')
+             ORDER BY since_date ASC
+             LIMIT 5`,
+        );
+        const now = new Date();
+        const threads = rows.map(r => {
+          const since = new Date((r.since_date.length === 7 ? r.since_date + '-15' : r.since_date));
+          const monthsSilent = Math.max(0, Math.floor((now.getTime() - since.getTime()) / (1000 * 60 * 60 * 24 * 30)));
+          return {
+            takeId: r.id,
+            pageSlug: r.page_slug,
+            claim: r.claim,
+            monthsSilent,
+            conviction: r.weight,
+          };
+        });
+        return res.send(renderAbandonedThreadsCard(threads));
+      }
+      res.status(400).json({ error: 'unknown_chart_type', supported: ['brier-trend', 'domain-bars', 'pattern-statements', 'abandoned-threads'] });
+      return;
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'unknown' });
+      return;
+    }
+  });
+
   app.get('/admin/api/requests', requireAdmin, async (req: Request, res: Response) => {
     try {
       const page = parseInt(req.query.page as string) || 1;
@@ -687,11 +994,22 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // Register client from admin dashboard
   app.post('/admin/api/register-client', requireAdmin, express.json(), async (req: Request, res: Response) => {
     try {
-      const { name, scopes, tokenTtl } = req.body;
+      const { name, scopes, tokenTtl, grantTypes, redirectUris, tokenEndpointAuthMethod } = req.body;
       if (!name) { res.status(400).json({ error: 'Name required' }); return; }
+      const grants = Array.isArray(grantTypes) && grantTypes.length > 0 ? grantTypes : ['client_credentials'];
+      const uris = Array.isArray(redirectUris) ? redirectUris : [];
       const result = await oauthProvider.registerClientManual(
-        name, ['client_credentials'], scopes || 'read', [],
+        name, grants, scopes || 'read', uris,
       );
+      // Public client (PKCE-only, no secret): NULL out client_secret_hash and
+      // set auth method so the SDK's clientAuth middleware skips the hash-vs-
+      // plaintext comparison that would otherwise reject the request. This is
+      // the supported pattern for browser-based OAuth (e.g. claude.ai's
+      // Custom Connector flow, which uses authorization_code + PKCE).
+      if (tokenEndpointAuthMethod === 'none') {
+        await sql`UPDATE oauth_clients SET client_secret_hash = NULL, token_endpoint_auth_method = 'none' WHERE client_id = ${result.clientId}`;
+        delete (result as any).clientSecret;
+      }
       // Set per-client TTL if specified
       if (tokenTtl && Number(tokenTtl) > 0) {
         await sql`UPDATE oauth_clients SET token_ttl = ${Number(tokenTtl)} WHERE client_id = ${result.clientId}`;
@@ -744,21 +1062,63 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   });
 
   // ---------------------------------------------------------------------------
-  // Admin SPA static files
+  // Admin SPA static files (v0.36.x #1090)
   // ---------------------------------------------------------------------------
-  // Serve from admin/dist if it exists (development), otherwise embedded assets
+  // Two-tier resolution:
+  //   1. Dev path — admin/dist next to cwd. Vite rebuilds land here first,
+  //      so devs hacking on the SPA see changes without re-running
+  //      build-admin-embedded.
+  //   2. Binary path — `src/admin-embedded.ts` exports `ADMIN_ASSETS`, a
+  //      manifest of request-path → resolved-path keyed by every file in
+  //      admin/dist at generation time. Bun's `with { type: 'file' }` ESM
+  //      imports resolve correctly inside the compiled binary, so a
+  //      globally-installed `gbrain serve --http` actually serves /admin
+  //      instead of 404. Pre-fix the cwd-relative path was the ONLY
+  //      resolution path, and every fresh install of the compiled binary
+  //      hit 404 on /admin (issue #1090).
   const path = await import('path');
   const fs = await import('fs');
   const adminDistPath = path.join(process.cwd(), 'admin', 'dist');
-  if (fs.existsSync(adminDistPath)) {
+  const useDevPath = fs.existsSync(adminDistPath);
+  if (useDevPath) {
     app.use('/admin', express.static(adminDistPath));
-    // SPA fallback: serve index.html for all unmatched /admin/* routes
     app.get('/admin/{*path}', (req: Request, res: Response, next: NextFunction) => {
-      // Skip API and events routes
       if (req.path.startsWith('/admin/api/') || req.path === '/admin/events' || req.path === '/admin/login') {
         return next();
       }
       res.sendFile(path.join(adminDistPath, 'index.html'));
+    });
+  } else {
+    // Embedded path. Read assets from the generated manifest. Cache the
+    // bytes per asset on first request — these never change for a given
+    // binary, so subsequent requests skip the fs read.
+    const { ADMIN_ASSETS, ADMIN_INDEX_HTML } = await import('../admin-embedded.ts');
+    const cache = new Map<string, Buffer>();
+    function loadAsset(asset: { path: string }): Buffer {
+      const hit = cache.get(asset.path);
+      if (hit) return hit;
+      const buf = fs.readFileSync(asset.path);
+      cache.set(asset.path, buf);
+      return buf;
+    }
+    app.get('/admin/{*path}', (req: Request, res: Response, next: NextFunction) => {
+      if (req.path.startsWith('/admin/api/') || req.path === '/admin/events' || req.path === '/admin/login') {
+        return next();
+      }
+      const hit = ADMIN_ASSETS[req.path];
+      if (hit) {
+        res.setHeader('Content-Type', hit.mime);
+        res.send(loadAsset(hit));
+        return;
+      }
+      // SPA fallback — every unmatched /admin/* route resolves to index.html
+      // so client-side routing takes over (login, dashboard, agents, ...).
+      if (ADMIN_INDEX_HTML) {
+        res.setHeader('Content-Type', ADMIN_INDEX_HTML.mime);
+        res.send(loadAsset(ADMIN_INDEX_HTML));
+        return;
+      }
+      res.status(404).send('admin SPA not available');
     });
   }
 
@@ -766,6 +1126,17 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // MCP tool calls (bearer auth + scope enforcement)
   // ---------------------------------------------------------------------------
   const mcpOperations = operations.filter(op => !op.localOnly);
+
+  // v0.36.x #1076: MCP Streamable HTTP spec — GET /mcp opens an optional SSE
+  // backchannel for server-initiated messages. gbrain's transport is stateless
+  // and doesn't push server-initiated messages, so per spec we MUST return 405
+  // (not 404) so probing clients (claude.ai, etc.) recognize this as an MCP
+  // endpoint, not a missing route. Without this, clients display "endpoint not
+  // found" instead of "endpoint exists but no SSE channel."
+  app.get('/mcp', (_req: Request, res: Response) => {
+    res.set('Allow', 'POST, DELETE');
+    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed' }, id: null });
+  });
 
   app.post('/mcp', requireBearerAuth({ verifier: oauthProvider }), async (req: Request, res: Response) => {
     const startTime = Date.now();
@@ -813,12 +1184,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           inputSchema: {
             type: 'object' as const,
             properties: Object.fromEntries(
-              Object.entries(op.params).map(([k, v]) => [k, {
-                type: v.type,
-                description: v.description,
-                ...(v.enum ? { enum: v.enum } : {}),
-                ...(v.default !== undefined ? { default: v.default } : {}),
-              }]),
+              Object.entries(op.params).map(([k, v]) => [k, paramDefToSchema(v)]),
             ),
             required: Object.entries(op.params).filter(([, v]) => v.required).map(([k]) => k),
           },
@@ -926,9 +1292,14 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // ToolResult and we read isError + _meta to pick the right branch.
       const tokenAllowList = (authInfo as AuthInfo & { takesHoldersAllowList?: string[] }).takesHoldersAllowList
         ?? ['world'];
-      const tokenSourceId = (authInfo as AuthInfo & { sourceId?: string }).sourceId
-        ?? process.env.GBRAIN_SOURCE
-        ?? 'default';
+      // v0.34.1 (#861, D13): AuthInfo.sourceId is now a real typed field
+      // populated from oauth_clients.source_id (migration v60 backfilled
+      // NULL → 'default'). Pre-fix this site cast through AuthInfo and
+      // fell back to GBRAIN_SOURCE env / 'default' — the silent-fallback
+      // path codex flagged in plan review. Post-v60, every OAuth client
+      // has source_id set; legacy bearer tokens default to 'default' in
+      // verifyAccessToken. The env-fallback is gone.
+      const tokenSourceId = authInfo.sourceId ?? 'default';
 
       let toolResult: Awaited<ReturnType<typeof dispatchToolCall>>;
       try {
@@ -1058,12 +1429,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // ---------------------------------------------------------------------------
   const clientCount = await sql`SELECT count(*)::int as count FROM oauth_clients`;
 
-  app.listen(port, () => {
+  app.listen(port, bind, () => {
     console.error(`
 ╔══════════════════════════════════════════════════════╗
 ║  GBrain MCP Server v${VERSION.padEnd(37)}║
 ╠══════════════════════════════════════════════════════╣
 ║  Port:      ${String(port).padEnd(40)}║
+║  Bind:      ${bind.padEnd(40)}║
 ║  Engine:    ${(config.engine || 'pglite').padEnd(40)}║
 ║  Issuer:    ${issuerUrl.origin.padEnd(40)}║
 ║  Clients:   ${String((clientCount[0] as any).count).padEnd(40)}║
@@ -1074,10 +1446,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 ║  MCP:       http://localhost:${port}/mcp${' '.repeat(Math.max(0, 21 - String(port).length))}║
 ║  Health:    http://localhost:${port}/health${' '.repeat(Math.max(0, 18 - String(port).length))}║
 ╠══════════════════════════════════════════════════════╣
-║  Admin Token (paste into /admin login):              ║
-║  ${bootstrapToken.substring(0, 50)}  ║
-║  ${bootstrapToken.substring(50).padEnd(50)}  ║
-╚══════════════════════════════════════════════════════╝
+${suppressBootstrapPrint
+  ? '║  Admin Token: suppressed (--suppress-bootstrap-token) ║\n╚══════════════════════════════════════════════════════╝'
+  : bootstrapFromEnv
+    ? '║  Admin Token: from $GBRAIN_ADMIN_BOOTSTRAP_TOKEN     ║\n╚══════════════════════════════════════════════════════╝'
+    : `║  Admin Token (paste into /admin login):              ║\n║  ${bootstrapToken.substring(0, 50)}  ║\n║  ${bootstrapToken.substring(50).padEnd(50)}  ║\n╚══════════════════════════════════════════════════════╝`}
 `);
   });
 }

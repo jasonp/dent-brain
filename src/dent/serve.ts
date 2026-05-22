@@ -361,6 +361,9 @@ function buildContext(): OperationContext {
     },
     dryRun: false,
     remote: true,
+    // v0.34 D4: sourceId is required at the type level; auto-fill 'default'
+    // to match dispatch.ts / cli.ts for this single-source dent context.
+    sourceId: 'default',
   };
 }
 

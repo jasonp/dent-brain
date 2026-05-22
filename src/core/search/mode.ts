@@ -66,6 +66,102 @@ export interface ModeBundle {
    * EXPANSION from the implicit current default (limit 20).
    */
   searchLimit: number;
+  /**
+   * v0.35.0.0+ — cross-encoder reranker. Off for conservative/balanced,
+   * on for tokenmax. ZeroEntropy zerank-2 by default; can be overridden
+   * via `search.reranker.model`. Slots between dedup and token-budget
+   * enforcement in hybrid.ts; fail-open on any RerankError (audit-logged).
+   * Cost anchor: ~$0.0003/query at tokenmax topNIn=30 × ~400 tokens/chunk
+   * (rounding error vs Opus, meaningful vs Haiku).
+   */
+  reranker_enabled: boolean;
+  /**
+   * Provider:model for the reranker. Default `'zeroentropyai:zerank-2'`.
+   * Other ZE rerankers (`zerank-1`, `zerank-1-small`) work via the same
+   * recipe; future Cohere/Voyage rerankers drop in as new recipes
+   * declaring `touchpoints.reranker`.
+   */
+  reranker_model: string;
+  /** Candidates to send upstream (default 30). The full result list always
+   *  reaches the user — topNIn just caps API spend on the rerank call. */
+  reranker_top_n_in: number;
+  /**
+   * Truncate the reranked output to this many. `null` = no truncate; the
+   * caller's `limit` is what trims final output. Distinct from undefined
+   * (which would fall through to mode bundle) — `null` is the explicit
+   * "don't truncate" signal, see CDX2-F15+F16.
+   */
+  reranker_top_n_out: number | null;
+  /** HTTP timeout in ms (default 5000). Threaded into gateway.rerank. */
+  reranker_timeout_ms: number;
+
+  /**
+   * v0.35.6.0 — floor-ratio gate for metadata-axis boost stages (backlink,
+   * salience, recency). `undefined` = no gate (default for all three modes;
+   * preserves prior behavior bit-for-bit). When set to a number in [0, 1],
+   * each gated stage skips results whose score is below
+   * `floorRatio * topScore`, where topScore is computed ONCE at
+   * runPostFusionStages entry from the post-cosine-rescore snapshot.
+   *
+   * Sensible operator override values for dense-embedder corpora: 0.85-0.95.
+   * Default stays undefined until per-corpus ablation evidence supports a
+   * mode-level default. See `TODOS.md` floor-ratio ablation entry.
+   *
+   * Scoped to the three metadata boost stages — exact-match boost
+   * (intent-weights.applyExactMatchBoost) runs independently as a lexical
+   * relevance signal and is NOT gated.
+   */
+  floor_ratio: number | undefined;
+
+  // v0.36 cross-modal wave knobs (D2 + D3 + D6 + D8 + D13 + LLM-intent).
+  // All three mode bundles default these to the same values — cross-modal
+  // is opt-in per-call (D6 weighting), opt-in per-brain (D8 unified flags),
+  // and opt-in per-feature-flag (LLM intent). The mode bundle just gives
+  // resolveSearchMode a default to return.
+
+  /**
+   * D6 'both'-mode RRF weight for text-vector results when merging
+   * text + image searches in parallel. Defaults to 0.6 — biases toward
+   * text recall because most queries with ambiguous modality are still
+   * text-leaning. Pair with cross_modal_both_image_weight.
+   */
+  cross_modal_both_text_weight: number;
+  /**
+   * D6 'both'-mode RRF weight for image-vector results. Defaults to 0.4.
+   * Sum with text weight does NOT need to be 1.0 — RRF is rank-based, so
+   * weights normalize internally; the ratio is what matters.
+   */
+  cross_modal_both_image_weight: number;
+  /**
+   * D13 image-query text-refinement RRF weight for the TEXT branch of
+   * searchByImage when the caller provides an optional `query` refinement.
+   * Defaults to 0.4 (image-dominant since the caller chose image-first).
+   */
+  image_query_text_refinement_weight: number;
+  /**
+   * D13 image-query refinement RRF weight for the IMAGE branch. Defaults to 0.6.
+   */
+  image_query_image_refinement_weight: number;
+  /**
+   * D8 Phase 3 flag: route ALL queries through the multimodal query embed
+   * + `embedding_multimodal` column. Default false. Operator opt-in after
+   * `gbrain reindex --multimodal` populates the unified column.
+   */
+  unified_multimodal: boolean;
+  /**
+   * D8 Phase 3 strict mode: when true, the dual-column fallback path is
+   * bypassed entirely. Used by operators who finished re-embedding and
+   * want to commit to the unified space. Doctor surface errors when this
+   * is on and coverage < 99%.
+   */
+  unified_multimodal_only: boolean;
+  /**
+   * Commit 4: opt-in LLM tie-break for ambiguous modality classification.
+   * Default false. When true, queries where regex returns 'text' but the
+   * ambiguity heuristic fires get a Haiku call to refine the classification.
+   * Fires for <1% of queries when on; ~$0.0001 per escalation.
+   */
+  cross_modal_llm_intent: boolean;
 }
 
 /**
@@ -84,6 +180,24 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     tokenBudget: 4000,
     expansion: false,
     searchLimit: 10,
+    // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
+    // spend doesn't fit the tier's value prop.
+    reranker_enabled: false,
+    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_top_n_in: 30,
+    reranker_top_n_out: null,
+    reranker_timeout_ms: 5000,
+    // v0.35.6.0 — undefined for all three bundles; the per-corpus ablation
+    // (TODOS.md) gates any default flip.
+    floor_ratio: undefined,
+    // v0.36 cross-modal defaults (same across all modes — opt-in)
+    cross_modal_both_text_weight: 0.6,
+    cross_modal_both_image_weight: 0.4,
+    image_query_text_refinement_weight: 0.4,
+    image_query_image_refinement_weight: 0.6,
+    unified_multimodal: false,
+    unified_multimodal_only: false,
+    cross_modal_llm_intent: false,
   }),
   balanced: Object.freeze({
     cache_enabled: true,
@@ -93,6 +207,30 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     tokenBudget: 12000,
     expansion: false,
     searchLimit: 25,
+    // v0.36.0.0 (D6): reranker flipped ON for `balanced` mode bundle. The
+    // real-corpus benchmark shows zerank-2 reshuffles 60% of top-1 results
+    // — the headline ZE quality story reaches the 80% of installs that
+    // stay on `balanced`. Per-query rerank cost ~$0.025/M tokens, ~150ms
+    // p50 added latency. Missing ZEROENTROPY_API_KEY is handled via
+    // src/core/search/rerank.ts fail-open contract: log to audit JSONL,
+    // return input order unchanged. Opt out with
+    // `gbrain config set search.reranker.enabled false`.
+    reranker_enabled: true,
+    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_top_n_in: 30,
+    reranker_top_n_out: null,
+    reranker_timeout_ms: 5000,
+    // v0.35.6.0 — undefined for all three bundles; the per-corpus ablation
+    // (TODOS.md) gates any default flip.
+    floor_ratio: undefined,
+    // v0.36 cross-modal defaults (same across all modes — opt-in)
+    cross_modal_both_text_weight: 0.6,
+    cross_modal_both_image_weight: 0.4,
+    image_query_text_refinement_weight: 0.4,
+    image_query_image_refinement_weight: 0.6,
+    unified_multimodal: false,
+    unified_multimodal_only: false,
+    cross_modal_llm_intent: false,
   }),
   tokenmax: Object.freeze({
     cache_enabled: true,
@@ -102,6 +240,27 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     tokenBudget: undefined,
     expansion: true,
     searchLimit: 50,
+    // tokenmax is the high-cost-tolerant tier that already pays for LLM
+    // expansion + 50-result payloads. Reranker is the natural capstone:
+    // better ordering of a large candidate set is where rerankers earn
+    // their fee. ~$0.0003/query at this shape; rounding error vs the
+    // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
+    reranker_enabled: true,
+    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_top_n_in: 30,
+    reranker_top_n_out: null,
+    reranker_timeout_ms: 5000,
+    // v0.35.6.0 — undefined for all three bundles; the per-corpus ablation
+    // (TODOS.md) gates any default flip.
+    floor_ratio: undefined,
+    // v0.36 cross-modal defaults (same across all modes — opt-in)
+    cross_modal_both_text_weight: 0.6,
+    cross_modal_both_image_weight: 0.4,
+    image_query_text_refinement_weight: 0.4,
+    image_query_image_refinement_weight: 0.6,
+    unified_multimodal: false,
+    unified_multimodal_only: false,
+    cross_modal_llm_intent: false,
   }),
 });
 
@@ -124,6 +283,25 @@ export interface SearchKeyOverrides {
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
+  // v0.35.0.0+ reranker overrides
+  reranker_enabled?: boolean;
+  reranker_model?: string;
+  reranker_top_n_in?: number;
+  // CDX2-F16: null is the explicit "don't truncate" signal; undefined
+  // means "fall through to mode bundle". Use number | null, not
+  // number | undefined.
+  reranker_top_n_out?: number | null;
+  reranker_timeout_ms?: number;
+  // v0.35.6.0 — floor-ratio gate override.
+  floor_ratio?: number;
+  // v0.36 cross-modal overrides
+  cross_modal_both_text_weight?: number;
+  cross_modal_both_image_weight?: number;
+  image_query_text_refinement_weight?: number;
+  image_query_image_refinement_weight?: number;
+  unified_multimodal?: boolean;
+  unified_multimodal_only?: boolean;
+  cross_modal_llm_intent?: boolean;
 }
 
 /**
@@ -141,6 +319,22 @@ export interface SearchPerCallOpts {
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
+  // v0.35.0.0+ reranker per-call overrides (same shape as SearchKeyOverrides).
+  reranker_enabled?: boolean;
+  reranker_model?: string;
+  reranker_top_n_in?: number;
+  reranker_top_n_out?: number | null;
+  reranker_timeout_ms?: number;
+  // v0.35.6.0 — floor-ratio per-call override.
+  floor_ratio?: number;
+  // v0.36 cross-modal per-call overrides
+  cross_modal_both_text_weight?: number;
+  cross_modal_both_image_weight?: number;
+  image_query_text_refinement_weight?: number;
+  image_query_image_refinement_weight?: number;
+  unified_multimodal?: boolean;
+  unified_multimodal_only?: boolean;
+  cross_modal_llm_intent?: boolean;
 }
 
 /**
@@ -194,6 +388,21 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     tokenBudget: pick('tokenBudget'),
     expansion: pick('expansion'),
     searchLimit: pick('searchLimit'),
+    reranker_enabled: pick('reranker_enabled'),
+    reranker_model: pick('reranker_model'),
+    reranker_top_n_in: pick('reranker_top_n_in'),
+    reranker_top_n_out: pick('reranker_top_n_out'),
+    reranker_timeout_ms: pick('reranker_timeout_ms'),
+    // v0.35.6.0 — floor-ratio resolved via the same pick chain.
+    floor_ratio: pick('floor_ratio'),
+    // v0.36 cross-modal knobs
+    cross_modal_both_text_weight: pick('cross_modal_both_text_weight'),
+    cross_modal_both_image_weight: pick('cross_modal_both_image_weight'),
+    image_query_text_refinement_weight: pick('image_query_text_refinement_weight'),
+    image_query_image_refinement_weight: pick('image_query_image_refinement_weight'),
+    unified_multimodal: pick('unified_multimodal'),
+    unified_multimodal_only: pick('unified_multimodal_only'),
+    cross_modal_llm_intent: pick('cross_modal_llm_intent'),
     resolved_mode,
     mode_valid: valid,
   };
@@ -242,9 +451,50 @@ export function attributeKnob<K extends keyof ModeBundle>(
  * reorder or add a knob without bumping a constant — a hash collision would
  * mean stale cache rows silently reading the wrong shape.
  */
-export const KNOBS_HASH_VERSION = 1;
+// v0.35.0.0+ bump 1→2: reranker fields participate in the cache key so a
+// tokenmax-with-reranker write can't be served to a reranker-off lookup.
+// v0.35.6.0   bump 2→3: floor_ratio participates so a floor-on write can't
+// be served to a floor-off lookup (cross-floor contamination, codex T1).
+// CDX2-F13 convention: under a version bump, additions are APPEND-ONLY at
+// the end of `parts[]` — reordering existing fields would silently rebuild
+// the hash for every existing row.
+//
+// CDX2-F12 mid-deploy duplicate-row note: because `cacheRowId()` (in
+// src/core/search/query-cache.ts) includes knobsHash, a v=2 process and a
+// v=3 process writing the same `(source_id, query_text)` produce DISTINCT
+// row IDs. Expect a temporary hit-rate dip + cache-row doubling for hot
+// queries during a rolling deploy. Clears naturally within
+// `cache.ttl_seconds` (default 3600s). The CHANGELOG note covers this.
+//
+// v0.36 wave: cross-modal knobs ALSO participate in v=3 hash (D2 cache
+// contamination fix — a text-mode cache hit cannot silently serve an
+// image-mode caller). v0.35.6.0's floor_ratio bump and v0.36's cross-modal
+// extensions both land under v=3, with cross-modal fields appended after
+// the floor_ratio entry (CDX2-F13 append-only convention).
+export const KNOBS_HASH_VERSION = 3;
 
-export function knobsHash(knobs: ResolvedSearchKnobs): string {
+/**
+ * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
+ * embedding column + provider live OUTSIDE ResolvedSearchKnobs because
+ * they're orthogonal to search mode (mode bundles don't pick columns).
+ * Passing them as a second argument keeps ModeBundle pure and lets the
+ * hash invalidate correctly across column/provider switches.
+ *
+ * When undefined, the hash falls back to the legacy 'embedding' /
+ * 'default' values so unrelated callers (eval-replay, telemetry) that
+ * don't know the column produce a stable hash for the default case.
+ */
+export interface KnobsHashContext {
+  /** Resolved column name, e.g. 'embedding', 'embedding_voyage'. */
+  embeddingColumn?: string;
+  /** Resolved provider:model, e.g. 'voyage:voyage-3-large'. */
+  embeddingModel?: string;
+}
+
+export function knobsHash(
+  knobs: ResolvedSearchKnobs,
+  ctx?: KnobsHashContext,
+): string {
   // Fixed-order key list. Adding a knob here REQUIRES bumping
   // KNOBS_HASH_VERSION and is a breaking change for any persisted cache.
   const parts = [
@@ -257,6 +507,37 @@ export function knobsHash(knobs: ResolvedSearchKnobs): string {
     `tb=${knobs.tokenBudget ?? 'none'}`,
     `exp=${knobs.expansion ? 1 : 0}`,
     `lim=${knobs.searchLimit}`,
+    // v=2 additions (append-only).
+    `rr=${knobs.reranker_enabled ? 1 : 0}`,
+    `rrm=${knobs.reranker_model}`,
+    `rri=${knobs.reranker_top_n_in}`,
+    `rro=${knobs.reranker_top_n_out ?? 'none'}`,
+    `rrt=${knobs.reranker_timeout_ms}`,
+    // v=3 additions (append-only). Both contributions landed under v=3:
+    //
+    //   floor_ratio (v0.35.6.0 / codex T1): a floor-on write must not be
+    //     served to a floor-off lookup. 4-decimal precision so 0.85 and
+    //     0.851 produce different hashes; undefined uses literal 'none'.
+    //
+    //   col + prov (v0.36 / D8 / CDX-2): cross-column + cross-provider
+    //     cache contamination. A query against `embedding_voyage` must
+    //     NEVER be served from a cache row that ran against `embedding`
+    //     — they sit in different vector spaces. ctx is optional so
+    //     unrelated callers fall back to the default-column hash.
+    `fr=${knobs.floor_ratio === undefined ? 'none' : knobs.floor_ratio.toFixed(4)}`,
+    // v=3 cross-modal additions (append-only).
+    `cmbt=${knobs.cross_modal_both_text_weight.toFixed(2)}`,
+    `cmbi=${knobs.cross_modal_both_image_weight.toFixed(2)}`,
+    `iqt=${knobs.image_query_text_refinement_weight.toFixed(2)}`,
+    `iqi=${knobs.image_query_image_refinement_weight.toFixed(2)}`,
+    `um=${knobs.unified_multimodal ? 1 : 0}`,
+    `umo=${knobs.unified_multimodal_only ? 1 : 0}`,
+    `lli=${knobs.cross_modal_llm_intent ? 1 : 0}`,
+    // v=3 column + provider additions (D8 / CDX-2): cross-column +
+    // cross-provider cache isolation. A query against `embedding_voyage`
+    // must never be served from a row that ran against `embedding`.
+    `col=${ctx?.embeddingColumn ?? 'embedding'}`,
+    `prov=${ctx?.embeddingModel ?? 'default'}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));
@@ -310,6 +591,84 @@ export function loadOverridesFromConfig(
     if (Number.isFinite(n) && n > 0) out.searchLimit = n;
   }
 
+  // v0.35.0.0+ reranker overrides
+  const re = get('search.reranker.enabled');
+  if (re !== undefined) {
+    out.reranker_enabled = re === '1' || re.toLowerCase() === 'true';
+  }
+  const rm = get('search.reranker.model');
+  if (rm !== undefined && rm.trim().length > 0) {
+    out.reranker_model = rm.trim();
+  }
+  const ri = get('search.reranker.top_n_in');
+  if (ri !== undefined) {
+    const n = parseInt(ri, 10);
+    if (Number.isFinite(n) && n > 0) out.reranker_top_n_in = n;
+  }
+  // CDX2-F15 null parsing: top_n_out distinguishes three input shapes:
+  //   key absent → undefined → fall through to mode bundle
+  //   'null' / 'none' / '' → explicit null (no truncate)
+  //   positive integer → that number
+  const ro = get('search.reranker.top_n_out');
+  if (ro !== undefined) {
+    const trimmed = ro.trim().toLowerCase();
+    if (trimmed === '' || trimmed === 'null' || trimmed === 'none') {
+      out.reranker_top_n_out = null;
+    } else {
+      const n = parseInt(trimmed, 10);
+      if (Number.isFinite(n) && n > 0) out.reranker_top_n_out = n;
+    }
+  }
+  const rt = get('search.reranker.timeout_ms');
+  if (rt !== undefined) {
+    const n = parseInt(rt, 10);
+    if (Number.isFinite(n) && n > 0) out.reranker_timeout_ms = n;
+  }
+
+  // v0.35.6.0 — floor-ratio config key. Accepts a number in [0, 1]; values
+  // outside that range silently fall through (no override applied). The
+  // runtime computeFloorThreshold also guards against out-of-range so a
+  // malformed value never gates anything — defense in depth.
+  const fr = get('search.floor_ratio');
+  if (fr !== undefined) {
+    const n = parseFloat(fr);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out.floor_ratio = n;
+  }
+
+  // v0.36 cross-modal overrides (D3 registry)
+  const cmbt = get('search.cross_modal.both_mode_text_weight');
+  if (cmbt !== undefined) {
+    const n = parseFloat(cmbt);
+    if (Number.isFinite(n) && n >= 0) out.cross_modal_both_text_weight = n;
+  }
+  const cmbi = get('search.cross_modal.both_mode_image_weight');
+  if (cmbi !== undefined) {
+    const n = parseFloat(cmbi);
+    if (Number.isFinite(n) && n >= 0) out.cross_modal_both_image_weight = n;
+  }
+  const iqt = get('search.image_query.text_refinement_weight');
+  if (iqt !== undefined) {
+    const n = parseFloat(iqt);
+    if (Number.isFinite(n) && n >= 0) out.image_query_text_refinement_weight = n;
+  }
+  const iqi = get('search.image_query.image_refinement_weight');
+  if (iqi !== undefined) {
+    const n = parseFloat(iqi);
+    if (Number.isFinite(n) && n >= 0) out.image_query_image_refinement_weight = n;
+  }
+  const um = get('search.unified_multimodal');
+  if (um !== undefined) {
+    out.unified_multimodal = um === '1' || um.toLowerCase() === 'true';
+  }
+  const umo = get('search.unified_multimodal_only');
+  if (umo !== undefined) {
+    out.unified_multimodal_only = umo === '1' || umo.toLowerCase() === 'true';
+  }
+  const lli = get('search.cross_modal.llm_intent');
+  if (lli !== undefined) {
+    out.cross_modal_llm_intent = lli === '1' || lli.toLowerCase() === 'true';
+  }
+
   return out;
 }
 
@@ -322,6 +681,22 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.tokenBudget',
   'search.expansion',
   'search.searchLimit',
+  // v0.35.0.0+ reranker keys
+  'search.reranker.enabled',
+  'search.reranker.model',
+  'search.reranker.top_n_in',
+  'search.reranker.top_n_out',
+  'search.reranker.timeout_ms',
+  // v0.35.6.0 — floor-ratio gate
+  'search.floor_ratio',
+  // v0.36 cross-modal keys (D3)
+  'search.cross_modal.both_mode_text_weight',
+  'search.cross_modal.both_mode_image_weight',
+  'search.image_query.text_refinement_weight',
+  'search.image_query.image_refinement_weight',
+  'search.unified_multimodal',
+  'search.unified_multimodal_only',
+  'search.cross_modal.llm_intent',
 ]);
 
 /**

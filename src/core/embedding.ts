@@ -8,6 +8,7 @@
 import {
   embed as gatewayEmbed,
   embedOne as gatewayEmbedOne,
+  embedQuery as gatewayEmbedQuery,
   getEmbeddingModel as gatewayGetModel,
   getEmbeddingDimensions as gatewayGetDims,
 } from './ai/gateway.ts';
@@ -15,12 +16,45 @@ import {
 // v0.27.1: re-export multimodal embedding so callers can pull both text and
 // image embedding APIs from `src/core/embedding`. import-image-file consumes
 // embedMultimodal directly.
-export { embedMultimodal } from './ai/gateway.ts';
-export type { MultimodalInput } from './ai/types.ts';
+//
+// v0.36 cross-modal wave: query-side multimodal embedding (text and image
+// variants) for hybridSearch routing image-intent queries to the multimodal
+// column. embedMultimodalSafe is the partial-failure variant Phase 3 reindex
+// uses to make forward progress on transient batch failures.
+export {
+  embedMultimodal,
+  embedMultimodalSafe,
+  embedQueryMultimodal,
+  embedQueryMultimodalImage,
+} from './ai/gateway.ts';
+export type {
+  MultimodalInput,
+  EmbedMultimodalOpts,
+  MultimodalBatchResult,
+} from './ai/types.ts';
 
-/** Embed one text. */
+/** Embed one text (document-side for asymmetric providers). */
 export async function embed(text: string): Promise<Float32Array> {
   return gatewayEmbedOne(text);
+}
+
+/**
+ * v0.35.0.0+: embed a single text on the QUERY side. For asymmetric providers
+ * (ZE zembed-1, Voyage v3+) this routes `input_type: 'query'` through the
+ * embed seam so the provider returns query-side vectors. For symmetric
+ * providers (OpenAI text-3, DashScope, Zhipu) the field is dropped — no
+ * behavior change. Used by hybrid.ts on the search hot path.
+ *
+ * v0.36 (D10): optional `embeddingModel` + `dimensions` overrides so the
+ * dynamic-embedding-column path can embed via the column's provider rather
+ * than the globally-configured default. Bare `embedQuery(text)` preserves
+ * pre-v0.36 behavior.
+ */
+export async function embedQuery(
+  text: string,
+  opts?: { embeddingModel?: string; dimensions?: number },
+): Promise<Float32Array> {
+  return gatewayEmbedQuery(text, opts);
 }
 
 export interface EmbedBatchOptions {
@@ -29,6 +63,21 @@ export interface EmbedBatchOptions {
    * tick a reporter; Minion handlers can call job.updateProgress here.
    */
   onBatchComplete?: (done: number, total: number) => void;
+  /**
+   * v0.33.4 (D8): propagate the caller's `AbortSignal` into Vercel AI SDK's
+   * `embedMany({abortSignal})` so a wall-clock budget can cancel mid-fetch.
+   * Without this, a worker stuck mid-HTTP on a ~30s OpenAI timeout ignores
+   * the budget until the fetch resolves.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * v0.33.4 (D4a): cap on AI SDK's per-call retries. Default in `embedMany`
+   * is 2 (so up to 3 attempts). Pass `0` from higher-level wrappers that
+   * own their own retry policy, otherwise wrapper × SDK retries stack
+   * (e.g. 3 SDK attempts × 5 wrapper attempts = 15 cycles per embedBatch)
+   * and amplify rate-limit pressure.
+   */
+  maxRetries?: number;
 }
 
 /**
@@ -43,14 +92,20 @@ export async function embedBatch(
   options: EmbedBatchOptions = {},
 ): Promise<Float32Array[]> {
   if (!texts || texts.length === 0) return [];
+  // Build the gateway-call passthrough once; undefined fields stay undefined
+  // so non-opt-in callers see unchanged pre-v0.33.4 behavior.
+  const gwOpts = {
+    ...(options.abortSignal !== undefined && { abortSignal: options.abortSignal }),
+    ...(options.maxRetries !== undefined && { maxRetries: options.maxRetries }),
+  };
   // Fast path: small batch, no progress callback — single gateway call.
   if (texts.length <= BATCH_SIZE && !options.onBatchComplete) {
-    return gatewayEmbed(texts);
+    return gatewayEmbed(texts, gwOpts);
   }
   const results: Float32Array[] = [];
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const slice = texts.slice(i, i + BATCH_SIZE);
-    const out = await gatewayEmbed(slice);
+    const out = await gatewayEmbed(slice, gwOpts);
     results.push(...out);
     options.onBatchComplete?.(results.length, texts.length);
   }

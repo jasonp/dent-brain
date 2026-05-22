@@ -9,15 +9,19 @@
  * validation stack.
  *
  * Path-guard contract: writeBrainPage refuses to write outside the source
- * path. .bak backups are the safety contract (works for both git and non-git
- * brain repos; the existing src/core/dry-fix.ts:getWorkingTreeStatus rejects
- * non-git repos as unsafe, which is the wrong shape for brain rewrites).
+ * path. Pre-write backups are the safety contract (works for both git and
+ * non-git brain repos; the existing src/core/dry-fix.ts:getWorkingTreeStatus
+ * rejects non-git repos as unsafe, which is the wrong shape for brain
+ * rewrites). Backups live under ~/.gbrain/backups/frontmatter/... instead of
+ * beside source files so bulk repair never litters the user's workspace.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, copyFileSync, writeFileSync, mkdirSync, lstatSync } from 'fs';
-import { join, relative, resolve, dirname } from 'path';
+import { createHash } from 'crypto';
+import { existsSync, readFileSync, readdirSync, copyFileSync, writeFileSync, mkdirSync, lstatSync } from 'fs';
+import { join, relative, resolve, dirname, basename, isAbsolute } from 'path';
 import type { BrainEngine } from './engine.ts';
 import type { ProgressReporter } from './progress.ts';
+import { gbrainPath } from './config.ts';
 import {
   parseMarkdown,
   type ParseValidationCode,
@@ -38,6 +42,7 @@ export interface PerSourceReport {
   total: number;
   errors_by_code: Partial<Record<ParseValidationCode, number>>;
   sample: { path: string; codes: ParseValidationCode[] }[];
+  ignoredMissingOpen: number;
 }
 
 export interface AuditReport {
@@ -46,9 +51,44 @@ export interface AuditReport {
   errors_by_code: Partial<Record<ParseValidationCode, number>>;
   per_source: PerSourceReport[];
   scanned_at: string;
+  ignored_missing_open?: number;
 }
 
 const SAMPLE_PER_SOURCE = 20;
+
+// ---------------------------------------------------------------------------
+// Frontmatter backups
+// ---------------------------------------------------------------------------
+
+export function makeFrontmatterBackupRunId(date = new Date()): string {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+export interface FrontmatterBackupOpts {
+  sourcePath?: string;
+  backupRoot?: string;
+  runId?: string;
+}
+
+function sourceKey(sourcePath: string): string {
+  return createHash('sha256').update(resolve(sourcePath)).digest('hex').slice(0, 12);
+}
+
+export function defaultFrontmatterBackupRoot(runId = makeFrontmatterBackupRunId()): string {
+  return gbrainPath('backups', 'frontmatter', runId);
+}
+
+export function createFrontmatterBackup(filePath: string, opts: FrontmatterBackupOpts = {}): string {
+  const resolvedFile = resolve(filePath);
+  const resolvedSource = resolve(opts.sourcePath ?? dirname(resolvedFile));
+  const rel = relative(resolvedSource, resolvedFile);
+  const safeRel = rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : basename(resolvedFile);
+  const root = opts.backupRoot ?? defaultFrontmatterBackupRoot(opts.runId);
+  const backupPath = join(root, sourceKey(resolvedSource), safeRel + '.bak');
+  mkdirSync(dirname(backupPath), { recursive: true });
+  copyFileSync(resolvedFile, backupPath);
+  return backupPath;
+}
 
 // ---------------------------------------------------------------------------
 // autoFixFrontmatter
@@ -112,6 +152,75 @@ export function autoFixFrontmatter(
     }
   }
 
+  // Both step 3a and step 3 produce NESTED_QUOTES fix records on different
+  // patterns. When both fire on the same file, push ONE merged record rather
+  // than two — keeps the audit count honest about distinct files affected.
+  let nestedQuotesFixed = false;
+
+  // 3a. Canonical-style normalization for `tags:` / `aliases:` flow arrays.
+  //     Post-v0.37.5.0 validator (PR #1229), `tags: ["yc", "w2025"]` is already
+  //     valid YAML and no longer flagged. This pass rewrites it to the
+  //     canonical single-quoted form (`tags: ['yc', 'w2025']`) so disk-side
+  //     `frontmatter validate --fix` produces output consistent with the
+  //     v0.37.9.0 serializer. Allow-list keys deliberately scoped to
+  //     `tags` / `aliases` — extending to arbitrary keys would rewrite typed
+  //     arrays (e.g. `scores: ["1", "2"]` would lose numeric intent).
+  {
+    const lines = working.split('\n');
+    let firstNonEmpty = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().length > 0) { firstNonEmpty = i; break; }
+    }
+    if (firstNonEmpty >= 0 && lines[firstNonEmpty].trim() === '---') {
+      let closeIdx = lines.length;
+      for (let i = firstNonEmpty + 1; i < lines.length; i++) {
+        if (lines[i].trim() === '---') { closeIdx = i; break; }
+      }
+      let fixedAny = false;
+      for (let i = firstNonEmpty + 1; i < closeIdx; i++) {
+        // Allow-list: only `tags` and `aliases` (the keys this wave targets).
+        const arrMatch = lines[i].match(/^(\s*(?:tags|aliases)\s*:\s*)\[(.*)\]\s*$/);
+        if (!arrMatch || !arrMatch[2].includes('"')) continue;
+        const [, prefix, inner] = arrMatch;
+        // Quote-aware comma split — items may contain commas inside quotes.
+        const items: string[] = [];
+        let current = '';
+        let inQuote = false;
+        for (let j = 0; j < inner.length; j++) {
+          const ch = inner[j];
+          if (ch === '"' && (j === 0 || inner[j - 1] !== '\\')) {
+            inQuote = !inQuote;
+          } else if (ch === ',' && !inQuote) {
+            items.push(current.trim());
+            current = '';
+          } else {
+            current += ch;
+          }
+        }
+        if (current.trim()) items.push(current.trim());
+
+        // Re-quote: single quotes by default, double-quote fallback when the
+        // item contains an apostrophe (YAML's single-quoted form would need
+        // `''` escaping which the validator accepts but reads poorly).
+        const reQuoted = items.map(v => {
+          const clean = v.replace(/^"|"$/g, '').trim();
+          if (!clean) return "''";
+          return clean.includes("'") ? `"${clean}"` : `'${clean}'`;
+        });
+        lines[i] = `${prefix}[${reQuoted.join(', ')}]`;
+        fixedAny = true;
+      }
+      if (fixedAny) {
+        working = lines.join('\n');
+        fixes.push({
+          code: 'NESTED_QUOTES',
+          description: 'Normalized JSON-style double-quoted tag/alias arrays to single-quoted YAML',
+        });
+        nestedQuotesFixed = true;
+      }
+    }
+  }
+
   // 3. NESTED_QUOTES — rewrite `key: "...inner..."` lines that have 3+ unescaped
   //    double-quotes by switching the outer wrapper to single quotes and
   //    leaving inner quotes alone.
@@ -148,10 +257,13 @@ export function autoFixFrontmatter(
       }
       if (fixedAny) {
         working = lines.join('\n');
-        fixes.push({
-          code: 'NESTED_QUOTES',
-          description: 'Rewrote nested double-quoted YAML values to single-quoted',
-        });
+        if (!nestedQuotesFixed) {
+          fixes.push({
+            code: 'NESTED_QUOTES',
+            description: 'Rewrote nested double-quoted YAML values to single-quoted',
+          });
+          nestedQuotesFixed = true;
+        }
       }
     }
   }
@@ -178,7 +290,7 @@ export function autoFixFrontmatter(
 }
 
 // ---------------------------------------------------------------------------
-// writeBrainPage — path-guarded write with .bak backup
+// writeBrainPage — path-guarded write with centralized backup
 // ---------------------------------------------------------------------------
 
 export class BrainWriterError extends Error {
@@ -193,15 +305,16 @@ export class BrainWriterError extends Error {
 }
 
 /**
- * Path-guarded brain page writer. Always writes `<filePath>.bak` before any
- * in-place mutation (the contract that replaces git-tree-clean for non-git
- * brain repos). Throws BrainWriterError if filePath is not under sourcePath.
+ * Path-guarded brain page writer. Always writes a backup under
+ * ~/.gbrain/backups/frontmatter/... before any in-place mutation (the contract
+ * that replaces git-tree-clean for non-git brain repos). Throws
+ * BrainWriterError if filePath is not under sourcePath.
  */
 export function writeBrainPage(
   filePath: string,
   content: string,
-  opts: { sourcePath: string; autoFix?: boolean },
-): { fixes: AuditFix[] } {
+  opts: { sourcePath: string; autoFix?: boolean; backupRoot?: string; backupRunId?: string },
+): { fixes: AuditFix[]; backupPath?: string } {
   const resolvedSource = resolve(opts.sourcePath);
   const resolvedTarget = resolve(filePath);
   if (resolvedTarget !== resolvedSource && !resolvedTarget.startsWith(resolvedSource + '/')) {
@@ -220,13 +333,18 @@ export function writeBrainPage(
     fixes = result.fixes;
   }
 
+  let backupPath: string | undefined;
   if (existsSync(filePath)) {
-    copyFileSync(filePath, filePath + '.bak');
+    backupPath = createFrontmatterBackup(filePath, {
+      sourcePath: opts.sourcePath,
+      backupRoot: opts.backupRoot,
+      runId: opts.backupRunId,
+    });
   } else {
     mkdirSync(dirname(filePath), { recursive: true });
   }
   writeFileSync(filePath, toWrite, 'utf8');
-  return { fixes };
+  return { fixes, backupPath };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +360,10 @@ export interface ScanOpts {
   /** Limit scan to one source. When omitted, all registered sources with a
    *  local_path are scanned. */
   sourceId?: string;
+  /** Missing frontmatter is optional metadata coverage for broad document
+   * sources. Set true for curated page repos that require every file to carry
+   * YAML frontmatter. */
+  strictMissingOpen?: boolean;
   onProgress?: ProgressReporter;
   signal?: AbortSignal;
 }
@@ -254,6 +376,7 @@ export async function scanBrainSources(
   const totals: Partial<Record<ParseValidationCode, number>> = {};
   const perSource: PerSourceReport[] = [];
   let grandTotal = 0;
+  let ignoredMissingOpen = 0;
 
   for (const src of sources) {
     if (opts.signal?.aborted) break;
@@ -267,12 +390,14 @@ export async function scanBrainSources(
         total: 0,
         errors_by_code: {},
         sample: [],
+        ignoredMissingOpen: 0,
       });
       continue;
     }
     const report = scanOneSource(src.id, src.local_path, opts);
     perSource.push(report);
     grandTotal += report.total;
+    ignoredMissingOpen += report.ignoredMissingOpen;
     for (const [code, n] of Object.entries(report.errors_by_code)) {
       const k = code as ParseValidationCode;
       totals[k] = (totals[k] ?? 0) + (n as number);
@@ -285,6 +410,7 @@ export async function scanBrainSources(
     errors_by_code: totals,
     per_source: perSource,
     scanned_at: new Date().toISOString(),
+    ignored_missing_open: ignoredMissingOpen || undefined,
   };
 }
 
@@ -298,6 +424,7 @@ function scanOneSource(
   const rootResolved = resolve(sourcePath);
   let scanned = 0;
   let total = 0;
+  let ignoredMissingOpen = 0;
 
   walkDir(rootResolved, (absPath) => {
     if (opts.signal?.aborted) return false;
@@ -312,7 +439,12 @@ function scanOneSource(
     }
     const expectedSlug = slugifyPath(relPath);
     const parsed = parseMarkdown(content, relPath, { validate: true, expectedSlug });
-    const errs = parsed.errors ?? [];
+    const errs = (parsed.errors ?? []).filter((e) => {
+      if (e.code !== 'MISSING_OPEN') return true;
+      if (opts.strictMissingOpen) return true;
+      ignoredMissingOpen++;
+      return false;
+    });
     if (errs.length > 0) {
       total += errs.length;
       const codes: ParseValidationCode[] = [];
@@ -340,6 +472,7 @@ function scanOneSource(
     total,
     errors_by_code: errorsByCode,
     sample,
+    ignoredMissingOpen,
   };
 }
 

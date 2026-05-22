@@ -20,6 +20,7 @@ function makeCtx(): OperationContext {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     dryRun: false,
     remote: true,
+    sourceId: 'default',
   };
 }
 
