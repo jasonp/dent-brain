@@ -1,7 +1,7 @@
 {
   "deploy_id": "dent-brain-prod",
   "org_prefix": "dent",
-  "plugin_version": "0.39.0.1",
+  "plugin_version": "0.40.0.0",
   "plugin_name": "dent-brain",
   "marketplace_name": "dent-brain",
   "server_url": "https://dent-brain.dentthefuture.com/mcp",
@@ -9,7 +9,7 @@
   "code_repo": "jasonp/dent-brain",
   "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:jasonp/dent-brain and install dent-brain\"",
   "code_install_command": "bash plugin/marketplace/install-local.sh",
-  "built_at": "2026-05-19T00:15:39.506Z",
+  "built_at": "2026-05-22T05:07:39.011Z",
   "skills": [
     {
       "template": "setup",
