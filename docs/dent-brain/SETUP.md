@@ -39,9 +39,9 @@ and gives you a one-paste install command. See `TEAMMATE_GUIDE.md`.
 ## 2. Fork the repo + run setup
 
 ```bash
-# Fork via GitHub UI: github.com/jasonp/dent-brain → Fork → into your org.
+# Fork via GitHub UI: github.com/your-org/dent-brain → Fork → into your org.
 # Or via gh CLI:
-gh repo fork jasonp/dent-brain --clone --remote --org acme \
+gh repo fork your-org/dent-brain --clone --remote --org acme \
   -- --remote-name origin
 cd dent-brain   # whatever the local clone is named
 
@@ -372,7 +372,7 @@ Subsequent ships add Gmail (Phase 5.2), Granola (5.3), Dropbox (5.4).
 
 ```bash
 # 1. Fork + setup
-gh repo fork jasonp/dent-brain --clone --remote --org acme
+gh repo fork your-org/dent-brain --clone --remote --org acme
 cd dent-brain
 bun install && bun run setup
 git add -A && git commit -m "fork: customize for Acme" && git push

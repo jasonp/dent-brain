@@ -1,12 +1,12 @@
-# Dent Brain extensions manager
+# Distributed Brain extensions manager
 
 A teammate-local CLI for managing the per-laptop ingestors that push signal
 into the shared brain. As of today: `granola-sync`. Future: `gmail-watch`,
 `transcript-sync`, etc.
 
 > **Privacy contract.** Each extension runs locally on your machine with your
-> personal bearer token. Personal data (non-Dent meetings, personal emails)
-> stays local — every extension has a filter that only ships Dent-related
+> personal bearer token. Personal data (non-your meetings, personal emails)
+> stays local — every extension has a filter that only ships org-related
 > items to the shared brain. `dent-extensions uninstall <id>` stops any
 > extension instantly.
 
@@ -80,7 +80,7 @@ Each extension is described by an `Extension` object in the registry:
 ```ts
 {
   id: 'granola-sync',
-  name: 'Granola → Dent Brain sync',
+  name: 'Granola → Distributed Brain sync',
   description: '...',
   kind: 'launchd-daemon',
   sourceDir: 'tools/granola-sync',

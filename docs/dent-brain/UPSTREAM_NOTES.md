@@ -21,7 +21,7 @@ Known quirks and caveats in the gbrain substrate (`garrytan/gbrain`) that affect
   "mcpServers": {
     "dent-brain": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://dent-brain.dentthefuture.com/mcp", "--header", "Authorization: Bearer <token>"]
+      "args": ["-y", "mcp-remote", "https://dent-brain.example.com/mcp", "--header", "Authorization: Bearer <token>"]
     }
   }
 }
@@ -77,7 +77,7 @@ Both registrations use the same bearer token; the token is URL-agnostic and the 
 - Under the full 2154-test suite (116 files, ~78s total), these 3 tests' setup hooks contend for resources and hit Bun test runner's default timeout (appears to be ~5-7s).
 - Classic pattern for PGLite-heavy test suites. Not a correctness issue; a concurrency/resource issue.
 
-**Impact on Dent Brain:**
+**Impact on Distributed Brain:**
 - Zero. We haven't added any code yet, so this is purely an upstream gbrain quirk.
 - Pass rate is 99.86% (1972/1975 active tests, excluding skips).
 

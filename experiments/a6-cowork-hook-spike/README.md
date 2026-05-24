@@ -2,7 +2,7 @@
 
 **Purpose:** determine whether Claude reliably invokes a "passive observer" MCP tool at the start of every turn in a Cowork (or Claude Desktop) session. If yes → Phase 6 signal-detector ships as designed. If no → reshape Phase 6 to session-start digest or user-explicit patterns.
 
-**Why this matters:** Phase 6 assumes a skill can "read every message and suggest `/dent-append-evidence` when Dent-related work is happening." That pattern doesn't exist as a skill primitive in Cowork. The closest feasible mechanism is an MCP tool with an instruction-rich description that makes Claude call it at the start of every turn. This spike tests whether that works reliably enough to ship.
+**Why this matters:** Phase 6 assumes a skill can "read every message and suggest `/dent-append-evidence` when org-related work is happening." That pattern doesn't exist as a skill primitive in Cowork. The closest feasible mechanism is an MCP tool with an instruction-rich description that makes Claude call it at the start of every turn. This spike tests whether that works reliably enough to ship.
 
 ## How to run
 
@@ -20,7 +20,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`. Add this
 ```json
 "a6-spike": {
   "command": "node",
-  "args": ["/Users/jasonpreston/gh/dent-brain/experiments/a6-cowork-hook-spike/server.js"]
+  "args": ["/path/to/dent-brain/experiments/a6-cowork-hook-spike/server.js"]
 }
 ```
 
@@ -41,7 +41,7 @@ Have a conversation of 8-10 exchanges with varied topics, e.g.:
 1. "What's the weather like typically in Seattle in April?"
 2. "Can you summarize the key tradeoffs between REST and GraphQL?"
 3. "Who are some good resources on agile software development?"
-4. "I've been thinking about the Dent Conference lineup."
+4. "I've been thinking about the Acme Conf lineup."
 5. (continue freely)
 
 Do NOT explicitly ask Claude to call any tool. Just have a normal conversation.
@@ -64,7 +64,7 @@ cat /tmp/a6-spike-log.jsonl
 **Edge cases to note in findings:**
 - Did Cowork announce "Claude is using the passive_observer tool"? That would break the silent-observation pattern. If yes, Phase 6 must accept the visibility tradeoff or pivot.
 - Did Claude use the tool MORE than once per turn (double-invocation)? Would affect rate-limiting logic.
-- Did the tool get called when Steve (or any second participant) sent messages in Cowork? That's the actual multi-writer signal we care about.
+- Did the tool get called when a teammate (or any second participant) sent messages in Cowork? That's the actual multi-writer signal we care about.
 
 ## Findings (2026-04-22)
 
@@ -102,13 +102,13 @@ The original design (passive observer MCP tool that Claude reflexively calls eve
 
 Phase 6 in PLAN.md v1.3 replaces the per-message passive observer with:
 
-1. **Amplification inside `/dent-append-evidence`** — when the user explicitly invokes the skill, it scans recent session context for OTHER Dent entities mentioned and offers multi-append suggestions. Every explicit invocation becomes a multi-append opportunity.
+1. **Amplification inside `/dent-append-evidence`** — when the user explicitly invokes the skill, it scans recent session context for OTHER your entities mentioned and offers multi-append suggestions. Every explicit invocation becomes a multi-append opportunity.
 
-2. **Session-start digest** (`/dent-check`, v1) — one-time info on each new Cowork session about recent Dent activity across the team.
+2. **Session-start digest** (`/dent-check`, v1) — one-time info on each new Cowork session about recent team activity across the team.
 
 3. **True proactive detection moves to v1 server-side ingest** — Gmail, Granola, Dropbox drop folder. Cowork becomes the query + in-moment capture surface, not the always-on observation surface.
 
-This is both simpler architecturally and more aligned with the v0.9 hybrid architecture (Dent Brain server owns shared state and proactive ingest; Cowork owns user-initiated queries and captures).
+This is both simpler architecturally and more aligned with the v0.9 hybrid architecture (Distributed Brain server owns shared state and proactive ingest; Cowork owns user-initiated queries and captures).
 
 ### Experiment status: COMPLETE
 

@@ -22,7 +22,7 @@ As of v0.39, both ingestors use the **recipe model**: the plugin ships canonical
 - **Where:** `tools/email-sync/`, installed to `~/.dent-brain/email-sync/`
 - **Schedule:** every 6 hours (launchd `StartInterval=21600`)
 - **Pulls from:** Gmail API for the teammate's `workEmail` only (scoped — never personal inboxes)
-- **Auth:** one-time browser OAuth dance at install (shared "Dent Brain" Google Cloud OAuth app, test mode); refresh tokens stored locally
+- **Auth:** one-time browser OAuth dance at install (shared "Distributed Brain" Google Cloud OAuth app, test mode); refresh tokens stored locally
 - **Filter pipeline:** canonical `noise-filter.ts` (drops bulk-promo senders) → `user/filter.ts` (teammate-authored, runs after noise classification, receives `isNoise` + `isSignature` flags as hints, decides keep/drop) → digest. Daemon fatal-exits without a `user/filter.ts`. Contract: `tools/email-sync/recipe/RECIPE.md`.
 - **Writes to brain:** `inbox/<email-slug>/<YYYY-MM-DD>.md` via `put_page` (db-only, no git commit — pages age out as Layer 2 stamps them `processed: true`)
 

@@ -1,6 +1,6 @@
 ---
 name: {{prefix}}-extensions
-description: Manage local Dent Brain extensions — install, set up, preview, arm, list, status, or uninstall the per-teammate ingestors (Granola sync, email sync). Each teammate runs their own copy on their laptop with their own bearer token AND their own bespoke filter, so personal meetings/emails stay local. Use this skill when the teammate wants to "set up granola", "set up email sync", "install dent extension", or asks about extension status. **Runtime: Claude Code Desktop only** for install/setup/preview/arm (these touch the local filesystem, macOS keychain, and launchd — none of which Cowork can reach); list/status are safe anywhere. See `docs/reference/runtime-conventions.md`.
+description: Manage local Distributed Brain extensions — install, set up, preview, arm, list, status, or uninstall the per-teammate ingestors (Granola sync, email sync). Each teammate runs their own copy on their laptop with their own bearer token AND their own bespoke filter, so personal meetings/emails stay local. Use this skill when the teammate wants to "set up granola", "set up email sync", "install dent extension", or asks about extension status. **Runtime: Claude Code Desktop only** for install/setup/preview/arm (these touch the local filesystem, macOS keychain, and launchd — none of which Cowork can reach); list/status are safe anywhere. See `docs/reference/runtime-conventions.md`.
 triggers:
   - "set up granola"
   - "set up granola sync"
@@ -29,7 +29,7 @@ mutating: true
 
 Before you touch anything, tell the teammate this — exactly once, at the top of the conversation, in your own voice:
 
-> Nothing reaches the shared Dent brain until you (1) author a filter that decides what gets in, (2) preview exactly what would be captured, and (3) explicitly arm the daemon. The installer is intentionally inert — it puts the plumbing in place but writes nothing upstream. You're in control at every step.
+> Nothing reaches the shared Distributed Brain until you (1) author a filter that decides what gets in, (2) preview exactly what would be captured, and (3) explicitly arm the daemon. The installer is intentionally inert — it puts the plumbing in place but writes nothing upstream. You're in control at every step.
 
 Don't skip this. The whole point of the recipe model is that the teammate's filter is bespoke; if you don't make that explicit you've broken the trust contract.
 
@@ -109,7 +109,7 @@ Before running the installer, confirm the upstream prerequisites:
 
 The installer will also prompt for a Granola API key (Granola → Settings → Connectors → API keys). Tell the teammate up front so they don't get caught off-guard.
 
-**For email-sync:** the teammate's email must be on the Dent Brain Google Cloud OAuth app's test-user list. Confirm with the admin if you're unsure.
+**For email-sync:** the teammate's email must be on the Distributed Brain Google Cloud OAuth app's test-user list. Confirm with the admin if you're unsure.
 
 ## Step 3. Install (plumbing only)
 
@@ -131,7 +131,7 @@ This is the heart of the recipe model. You're going to interview the teammate, l
 
 ### 4a. granola-sync setup interview
 
-Goal: write `~/.dent-brain/granola-sync/user/filter.ts` that captures Dent-relevant meetings and drops everything else.
+Goal: write `~/.dent-brain/granola-sync/user/filter.ts` that captures org-relevant meetings and drops everything else.
 
 Discovery questions (one conversational pass, not a checklist):
 
@@ -140,9 +140,9 @@ Discovery questions (one conversational pass, not a checklist):
    curl -sS -H "Authorization: Bearer $(security find-generic-password -s dent-brain.granola-sync -a $USER -w)" \
      "https://public-api.granola.ai/v1/folders" | jq '.folders[] | .name'
    ```
-   Show the list and ask which are work/Dent and which are personal.
+   Show the list and ask which are work and which are personal.
 
-2. **Which email domains belong to the team?** Default is `dentthefuture.com`. Ask about subsidiaries, contractors, etc.
+2. **Which email domains belong to the team?** Default is `example.com`. Ask about subsidiaries, contractors, etc.
 
 3. **Any folders or attendee domains that should ALWAYS be excluded?** Therapy, family, personal coaching, a partner's domain, etc.
 
@@ -249,12 +249,12 @@ If you see a version mismatch warning in `sync.log`, walk the teammate through t
 For `list`:
 
 ```
-Dent Brain extensions:
+Distributed Brain extensions:
 
-  ● active            granola-sync       Granola → Dent Brain sync
+  ● active            granola-sync       Granola → Distributed Brain sync
                       Last run 12m ago. Filter: ~/.dent-brain/granola-sync/user/filter.ts
 
-  ⚠ no-filter         email-sync         Email → Dent Brain sync
+  ⚠ no-filter         email-sync         Email → Distributed Brain sync
                       Installed but no user filter yet. Run setup.
 
 Run `dent-extensions status <id>` for details, `setup <id>` to author a filter.
@@ -263,7 +263,7 @@ Run `dent-extensions status <id>` for details, `setup <id>` to author a filter.
 For `status`:
 
 ```
-granola-sync — Granola → Dent Brain sync
+granola-sync — Granola → Distributed Brain sync
   ● active. Last run 12m ago. 4.2 KB logged.
   user filter:   ~/.dent-brain/granola-sync/user/filter.ts (RECIPE_VERSION=1)
   launchd:       com.dent.granola-sync (loaded)

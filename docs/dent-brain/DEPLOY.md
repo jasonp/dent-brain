@@ -1,6 +1,6 @@
-# Deploying Dent Brain to Railway + Supabase
+# Deploying Distributed Brain to Railway + Supabase
 
-Step-by-step for the initial (first-ever) Dent Brain deployment. Subsequent deploys are automatic from `git push origin master`.
+Step-by-step for the initial (first-ever) Distributed Brain deployment. Subsequent deploys are automatic from `git push origin master`.
 
 **Time estimate:** ~30 minutes, mostly waiting for services to provision.
 
@@ -9,7 +9,7 @@ Step-by-step for the initial (first-ever) Dent Brain deployment. Subsequent depl
 ## 1. Supabase setup
 
 You should already have:
-- A Supabase account (created via the `dentthefuture` GitHub user)
+- A Supabase account (created via the `your-org` GitHub user)
 - A project named `dent-brain` with a secure password
 - Automatic RLS enabled (harmless for our single-writer architecture; defense-in-depth for later)
 
@@ -75,12 +75,12 @@ Save the token. This goes into Railway env vars AND into Cowork's connector conf
 
 - Sign up at https://railway.com (or railway.app — same thing)
 - Link your GitHub account: Settings → Account → Connected Accounts → GitHub
-- Grant Railway access to `jasonp/dent-brain` (repo-scoped, not org-wide)
+- Grant Railway access to `your-org/dent-brain` (repo-scoped, not org-wide)
 
 ### 2.2 Create the project
 
 - Dashboard → **+ New** → **Deploy from GitHub repo**
-- Select `jasonp/dent-brain`
+- Select `your-org/dent-brain`
 - Branch: `master`
 - Railway auto-detects our `Dockerfile` (no Nixpacks guessing)
 
@@ -93,11 +93,11 @@ In the project's **Variables** tab, add:
 | `DATABASE_URL` | `postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres` |
 | `NODE_ENV` | `production` |
 | `PORT` | Railway sets this automatically — **do not set manually** |
-| `DENT_BRAIN_DATA_DEPLOY_KEY` | PEM-formatted SSH private key with write access to `dentthefuture/dent-brain-data` (PLAN v2.0 Phase 1). See §2.3.1 below. |
-| `DENT_BRAIN_DATA_REPO_URL` | (optional) Override clone URL. Default: `git@github.com:dentthefuture/dent-brain-data.git`. |
+| `DENT_BRAIN_DATA_DEPLOY_KEY` | PEM-formatted SSH private key with write access to `your-org/dent-brain-data` (PLAN v2.0 Phase 1). See §2.3.1 below. |
+| `DENT_BRAIN_DATA_REPO_URL` | (optional) Override clone URL. Default: `git@github.com:your-org/dent-brain-data.git`. |
 | `DENT_BRAIN_DATA_PATH` | (optional) Override clone path. Default: `/app/dent-brain-data`. Set to `/tmp/dent-brain-data` for ephemeral storage. |
 | `DENT_BRAIN_GIT_NAME` | (optional) git commit author name. Default: `dent-brain-server`. |
-| `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@dentthefuture.com`. |
+| `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@example.com`. |
 | `DENT_BRAIN_PULL_INTERVAL_SECONDS` | (optional, PLAN v2.0 Phase 4) Interval for the scheduled `git pull --ff-only` + `performSync` against `dent-brain-data`. Default: `300` (5 minutes). Set to `0` to disable (e.g., for staging or single-writer debug runs). |
 | `DENT_BRAIN_REGFOX_API_KEY` | (optional, Phase 5.1) Webconnex API key for the RegFox polling ingestor. When set, the server polls `/search/registrants` every `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` and translates each new registration into a markdown bullet on the right entity page. See `docs/dent-brain/ingestors/regfox.md` for the full guide. |
 | `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` | (optional, default `300`) Tick interval for the RegFox cron. Set `0` to disable. |
@@ -115,7 +115,7 @@ called. All other ops (read, query, evidence, entity-detection) work normally.
 ### 2.3.1 GitHub deploy key for the dent-brain-data clone
 
 PLAN v2.0 (markdown-canonical) writes through the markdown repo, so the Railway
-server needs an SSH key with **write** access to `dentthefuture/dent-brain-data`.
+server needs an SSH key with **write** access to `your-org/dent-brain-data`.
 Use a per-deployment ed25519 key, scoped to that single repo — smaller blast
 radius than a personal access token.
 
@@ -126,7 +126,7 @@ radius than a personal access token.
    ```bash
    ssh-keygen -t ed25519 -f /tmp/dent-brain-data-key -N '' -C 'dent-brain-server@railway'
    ```
-2. **GitHub side.** In `dentthefuture/dent-brain-data` → **Settings** →
+2. **GitHub side.** In `your-org/dent-brain-data` → **Settings** →
    **Deploy keys** → **Add deploy key**:
    - Title: `dent-brain-server (railway)`
    - Key: contents of `/tmp/dent-brain-data-key.pub`
@@ -152,7 +152,7 @@ radius than a personal access token.
 
 Look for these lines in the Railway deploy logs to confirm:
 ```
-[dent-brain] cloning git@github.com:dentthefuture/dent-brain-data.git → /app/dent-brain-data
+[dent-brain] cloning git@github.com:your-org/dent-brain-data.git → /app/dent-brain-data
 [dent-brain] data repo ready: /app/dent-brain-data @ <sha> (source=dent)
 ```
 

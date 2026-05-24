@@ -38,7 +38,7 @@ writes_to:
 Capture a free-form observation, link it to the right entities, append
 it to those entities' markdown pages in `dent-brain-data`. The
 user-facing handle for the `markdown_append_to_page` MCP primitive.
-Most volume in Dent Brain comes from ingest pipelines and `/dent-enrich`
+Most volume in Distributed Brain comes from ingest pipelines and `/dent-enrich`
 re-syntheses; this skill is for the conversational in-the-moment
 "remember this" capture.
 

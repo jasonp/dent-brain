@@ -174,7 +174,7 @@ Optional. Run `/{{prefix}}-add-ingestor` to add a signal source (RegFox, Gmail, 
 
 - **Do not skip Phase 5.** The server boots fine without `DENT_BRAIN_DATA_DEPLOY_KEY` but `markdown_*` writes fail with "context not initialized." The admin will think the brain is broken; really it's just the deploy key.
 - **Do not commit secrets to the repo.** Tokens and DATABASE_URL go to Railway env vars, NOT plugin/manifest.json or any committed file. The admin's bearer token goes in their own `~/.claude.json` and Cowork config.
-- **Do not push before running setup.** A pre-setup repo still has Dent's defaults (org_prefix=dent, server_url=dent-brain.dentthefuture.com) baked into `plugin/manifest.json` AND `plugin/marketplace/`. Pushing without running `bun run setup` means Cowork installs would route to Dent's server with the wrong token.
+- **Do not push before running setup.** A pre-setup repo still has Dent's defaults (org_prefix=dent, server_url=dent-brain.example.com) baked into `plugin/manifest.json` AND `plugin/marketplace/`. Pushing without running `bun run setup` means Cowork installs would route to Dent's server with the wrong token.
 
 ---
 

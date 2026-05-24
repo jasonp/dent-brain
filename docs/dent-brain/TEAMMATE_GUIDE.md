@@ -1,6 +1,6 @@
-# Dent Brain — Teammate Guide
+# Distributed Brain — Teammate Guide
 
-How to work with Dent Brain as a teammate (not the deploy admin).
+How to work with Distributed Brain as a teammate (not the deploy admin).
 Two modes — pick whichever fits the moment.
 
 > **Not installed yet?** This doc is the post-install reference. For the
@@ -10,7 +10,7 @@ Two modes — pick whichever fits the moment.
 
 ## Mode 1: Cowork-only (the default)
 
-If you just want to talk to Dent Brain through Cowork — search the brain,
+If you just want to talk to Distributed Brain through Cowork — search the brain,
 ask questions, log observations — you don't need to install anything beyond
 the connector your admin set up for you. The admin onboards you with the
 `/dent-onboard-teammate` skill, which gives you a one-paste install command
@@ -35,16 +35,16 @@ for teammates who'd rather work in a code editor than dictate to an agent.
 You need:
 
 - A GitHub account that has been added as a collaborator to
-  `dentthefuture/dent-brain-data` (the markdown repo). Ask your admin if
+  `your-org/dent-brain-data` (the markdown repo). Ask your admin if
   you don't have that yet.
 - `git` installed.
 
 Clone the repo somewhere convenient on your Mac:
 
 ```bash
-mkdir -p ~/gh/dentthefuture
-cd ~/gh/dentthefuture
-git clone git@github.com:dentthefuture/dent-brain-data.git
+mkdir -p ~/gh/your-org
+cd ~/gh/your-org
+git clone git@github.com:your-org/dent-brain-data.git
 cd dent-brain-data
 ```
 
@@ -52,8 +52,8 @@ Verify your remote is set up correctly:
 
 ```bash
 git remote -v
-# origin  git@github.com:dentthefuture/dent-brain-data.git (fetch)
-# origin  git@github.com:dentthefuture/dent-brain-data.git (push)
+# origin  git@github.com:your-org/dent-brain-data.git (fetch)
+# origin  git@github.com:your-org/dent-brain-data.git (push)
 ```
 
 Configure your local git identity for this repo so commits are attributable
@@ -61,7 +61,7 @@ to you:
 
 ```bash
 git config --local user.name "Your Name"
-git config --local user.email "you@dentthefuture.com"
+git config --local user.email "you@example.com"
 ```
 
 Done. From now on, the workflow is git-native.
@@ -71,11 +71,11 @@ Done. From now on, the workflow is git-native.
 1. **Always pull before you edit.**
 
    ```bash
-   cd ~/gh/dentthefuture/dent-brain-data
+   cd ~/gh/your-org/dent-brain-data
    git pull --ff-only
    ```
 
-   The Dent server pushes commits to this repo every time an agent writes
+   The the brain server pushes commits to this repo every time an agent writes
    (via `/dent-append-evidence` and friends), and other teammates push
    their hand-edits the same way. Pulling first reduces the chance of a
    merge conflict.
@@ -110,7 +110,7 @@ Done. From now on, the workflow is git-native.
    who changed what.
 
 4. **Wait ~5 minutes** for the server to pull your change and re-index.
-   The Dent server runs a `git pull --ff-only` on `dent-brain-data` every
+   The the brain server runs a `git pull --ff-only` on `dent-brain-data` every
    `DENT_BRAIN_PULL_INTERVAL_SECONDS` seconds (default 300 = 5 minutes).
    After the pull, your edit is visible in Cowork queries.
 
@@ -150,7 +150,7 @@ again.
 
 ### What NOT to do
 
-- **Don't push to other branches.** The Dent server only watches `main`.
+- **Don't push to other branches.** The the brain server only watches `main`.
   A push to a feature branch is invisible to Cowork until you merge.
 - **Don't force-push to main.** The server's incremental sync logic
   uses commit ancestry to compute what changed. A force-push that
@@ -168,7 +168,7 @@ again.
 You can mix and match. Hand-edit a page when you want to write the prose
 exactly right, then go back to Cowork and use `/dent-append-evidence` for
 in-the-moment captures. Agent writes show up as commits authored by
-`dent-brain-server <noreply@dentthefuture.com>`; your hand-edits show up
+`dent-brain-server <noreply@example.com>`; your hand-edits show up
 as commits authored by you. `git log` is the audit trail for both.
 
 If you ever need to know who added a specific bullet to a page:
@@ -183,7 +183,7 @@ git log -L /<text-to-find>/,+1:entities/people/some-person.md
 
 ## Reference
 
-- Server: `https://dent-brain.dentthefuture.com`
-- Repo: `https://github.com/dentthefuture/dent-brain-data`
+- Server: `https://dent-brain.example.com`
+- Repo: `https://github.com/your-org/dent-brain-data`
 - Architecture: see `docs/dent-brain/PLAN_v2_MARKDOWN_CANONICAL.md`
 - Operator runbook: see `docs/dent-brain/DEPLOY.md`

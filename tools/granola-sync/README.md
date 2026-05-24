@@ -1,8 +1,8 @@
-# Granola → Dent Brain sync
+# Granola → Distributed Brain sync
 
 A small daemon that pulls meetings from the Granola public API and pushes
-Dent-related notes + transcripts into the brain. Runs hourly via launchd.
-Distributed: each Dent teammate runs their own copy locally, authenticated with
+org-related notes + transcripts into the brain. Runs hourly via launchd.
+Distributed: each teammate runs their own copy locally, authenticated with
 their own Granola API key (stored in the macOS keychain) and their own
 dent-brain bearer token, so nobody's personal meetings (1:1 therapy with a
 friend, family logistics calls, etc.) ever touch the shared brain.
@@ -12,29 +12,30 @@ friend, family logistics calls, etc.) ever touch the shared brain.
 > stopped working. Mint a Granola API key (Settings → Connectors → API keys)
 > and re-run `install.sh` — it'll prompt you for the key the first time.
 
-**Privacy guarantee.** The daemon only syncs meetings that pass the Dent-related
+**Privacy guarantee.** The daemon only syncs meetings that pass the org-related
 filter. Everything else stays local in Granola.
 
 ## Filter rules
 
 A meeting is considered org-related if ANY of these hit (whole-word match,
-case-insensitive — so "Dent" in "Dent dinner" matches but "President" /
-"evident" / "dental" don't):
+case-insensitive — so the keyword `acme` matches "Acme dinner" or "ACME
+sync", and whole-word matching means a keyword like `cat` won't false-match
+"category" / "vacation" / "scatter"):
 
 1. The doc is filed in a **Granola folder** whose name matches one of the
-   configured `orgFolders` (default: `["Dent"]`). Strongest signal — you
+   configured `orgFolders` (default: `["Acme"]`). Strongest signal — you
    curated it yourself.
 2. The meeting **title** contains one of the configured `orgKeywords`
-   (default: `["dent"]`).
+   (default: `["acme"]`).
 3. The meeting **body or transcript** mentions one of the `orgKeywords`.
    Catches meetings where the org came up substantively but isn't in the
    title.
 4. ANY attendee email is from a configured `orgDomains` entry (default:
-   `["dentthefuture.com"]`).
+   `["example.com"]`).
 
 Plus a `fileAll: true` config option that bypasses everything and files
 every meeting. Off by default — turning it on for a cross-org user (e.g.
-someone with Dent + TK + Reclaim Curiosity meetings in the same Granola)
+someone with Acme + Foo Corp + Bar Labs meetings in the same Granola)
 leaks the other orgs' content into this brain.
 
 To retarget the daemon at a different organization, drop a `config.json`
@@ -81,8 +82,8 @@ re-runs of the same meeting are no-ops.
   `/dent-onboard-teammate` via `claude mcp add dent-brain ...`. The daemon
   reads the bearer token + URL from there at runtime.
 
-That's it — no email config, no per-teammate identity setup. The Dent-team
-filter uses `@dentthefuture.com` as the domain signal regardless of who's
+That's it — no email config, no per-teammate identity setup. The team
+filter uses `@example.com` as the domain signal regardless of who's
 running the daemon.
 
 ### Install
@@ -150,7 +151,7 @@ security delete-generic-password -s dent-brain.granola-sync -a "$USER"  # remove
 
 | Path | Purpose |
 |---|---|
-| `~/.dent-brain/granola-sync/config.json` | OPTIONAL. Only created if you need to override defaults (additional Dent domains, etc.). NO tokens — dent-brain token is read from `~/.claude.json`; Granola API key is read from the macOS keychain. |
+| `~/.dent-brain/granola-sync/config.json` | OPTIONAL. Only created if you need to override defaults (additional your org domains, etc.). NO tokens — dent-brain token is read from `~/.claude.json`; Granola API key is read from the macOS keychain. |
 | `~/.dent-brain/granola-sync/cursor.json` | Last-synced timestamp + recent note IDs (for dedup). |
 | `~/.dent-brain/granola-sync/sync.log` | Stdout/stderr from each scheduled run. |
 | `~/.dent-brain/granola-sync/sync.ts` (+ deps) | The runtime. Updated when you re-run `install.sh`. |
@@ -175,7 +176,7 @@ Mint a new one in Granola (Settings → Connectors → API keys) and either re-r
 **`No Granola API key in keychain`:** the keychain entry is missing. Re-run
 `install.sh` and paste the key when prompted.
 
-**`no Dent signal in title or attendees`:** the meeting was correctly skipped.
+**`no a relevant signal in title or attendees`:** the meeting was correctly skipped.
 If it was a false-skip, you can force-sync it: `bun ... --doc-id not_<id>`.
 
 **No transcript page created:** the Granola API only returns notes that have

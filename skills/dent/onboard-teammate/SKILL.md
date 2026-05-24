@@ -6,7 +6,7 @@ triggers:
   - "onboard new user"
   - "add teammate to dent-brain"
   - "issue dent-brain token"
-  - "give Steve access"
+  - "give Alice access"
   - "give Jeff access"
 tools: []
 mutating: true
@@ -35,7 +35,7 @@ This matters because new teammates reasonably worry "if I install this, will it 
 ## When to fire
 
 The admin (Jason today; future deployments: whoever holds `gbrain auth` admin rights) runs this when:
-- A new Dent team member needs dent-brain access in their Claude Code or Cowork sessions
+- A new your team member needs dent-brain access in their Claude Code or Cowork sessions
 - An existing teammate's token needs replacement (revoke old + issue new)
 - A teammate's machine changes and they need to re-register
 
@@ -93,8 +93,8 @@ The teammate-install walkthrough (TEAMMATE_INSTALL.md §3) asks the user to past
 
 Read the deploy-specific values from `plugin/manifest.json` so the skill works for any deployment, not just Dent's:
 
-- `deploy.server_url` → the MCP endpoint (e.g. `https://dent-brain.dentthefuture.com/mcp`).
-- `deploy.code_repo` → the marketplace repo as `<org>/<repo>` (e.g. `jasonp/dent-brain`); construct the URL by prefixing `https://github.com/`.
+- `deploy.server_url` → the MCP endpoint (e.g. `https://dent-brain.example.com/mcp`).
+- `deploy.code_repo` → the marketplace repo as `<org>/<repo>` (e.g. `your-org/dent-brain`); construct the URL by prefixing `https://github.com/`.
 - `deploy.org_prefix` → used to derive the install-walkthrough URL: `https://github.com/<deploy.code_repo>/blob/main/docs/<org_prefix>-brain/TEAMMATE_INSTALL.md`. (The docs folder is named after the org_prefix because the setup script renames `docs/dent-brain/` to `docs/<prefix>-brain/` on fork. For Dent, this resolves to `docs/dent-brain/TEAMMATE_INSTALL.md`.)
 
 Substitute these into the install message in Phase 5. Don't hardcode Dent's URLs.
@@ -167,7 +167,7 @@ PY
 
 ⚠️ **Why this is dual, not single.** Earlier versions of this skill (pre-2026-04-30) used `claude mcp add -s user -t http ...` only. That works for Code mode but Cowork sessions reported "I don't see any dent-brain tools" because they read a different file. The dual-registration above is the empirically verified fix.
 
-⚠️ **Tool registry caches per-chat in EVERY surface** (Claude Code in Desktop, Cowork, classic chats). Tell the teammate to start a NEW chat after each restart, not continue an existing one. Same caveat Steve's FM MCP doc calls out. Old chats won't see the connector even after Claude Desktop restarts.
+⚠️ **Tool registry caches per-chat in EVERY surface** (Claude Code in Desktop, Cowork, classic chats). Tell the teammate to start a NEW chat after each restart, not continue an existing one. Same caveat the FM MCP doc calls out. Old chats won't see the connector even after Claude Desktop restarts.
 
 ⚠️ **Token never logged or backed up to git.** Backups go to `~/.dent-brain/backups/` (gitignored at user-home, never enters any repo). The TOKEN env var is local to the heredoc invocation and dies with the shell session.
 
@@ -302,13 +302,13 @@ PLAN v2.0 (since v0.27.0) makes markdown the canonical store; `dent-brain-data` 
 
 The contract:
 
-- The teammate is added as a collaborator on `dentthefuture/dent-brain-data` (admin grants this — does NOT happen automatically).
+- The teammate is added as a collaborator on `your-org/dent-brain-data` (admin grants this — does NOT happen automatically).
 - The teammate clones the repo locally. Frequency-of-pull is on them; the server's scheduled pull (Phase 4) handles their pushes within ~5 min.
 - The full workflow + conflict guidance lives in `docs/dent-brain/TEAMMATE_GUIDE.md` § Mode 2. Point them at it; do NOT inline the whole doc into the install message.
 
 Steps for the admin:
 
-1. **Add the teammate as a collaborator** on `dentthefuture/dent-brain-data`:
+1. **Add the teammate as a collaborator** on `your-org/dent-brain-data`:
    - GitHub → repo Settings → Collaborators → Add people → `<their GitHub username>`.
    - Choose **Write** access (they need to push commits).
 2. **Send a follow-up install message** to the teammate:
@@ -319,7 +319,7 @@ Steps for the admin:
    dictate to your Claude agent.
 
    1. Confirm you got the GitHub email inviting you to
-      `dentthefuture/dent-brain-data` and accept it.
+      `your-org/dent-brain-data` and accept it.
    2. Read docs/dent-brain/TEAMMATE_GUIDE.md (in this repo) — it walks
       through clone, edit, push, and the git-native conflict workflow.
    3. Pull-before-edit, push-when-done. The server picks up your
@@ -334,7 +334,7 @@ Steps for the admin:
 3. **Verify (after they confirm they cloned and pushed something):**
 
    ```bash
-   gh api repos/dentthefuture/dent-brain-data/commits/master --jq '.commit.author'
+   gh api repos/your-org/dent-brain-data/commits/master --jq '.commit.author'
    ```
 
    If the most recent commit is by them and the server's `mcp_request_log` shows a `tools/call:query` from any token within the lag window after their push, the loop is closed.

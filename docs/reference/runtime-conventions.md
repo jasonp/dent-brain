@@ -1,6 +1,6 @@
 # Runtime conventions — which Claude surface for which work
 
-Dent Brain skills run in two Claude surfaces. The convention below tells the agent (and future contributors) which surface a given skill is designed for, so a teammate doesn't try to install a launchd daemon from a sandboxed Cowork session and hit confusing failures.
+Distributed Brain skills run in two Claude surfaces. The convention below tells the agent (and future contributors) which surface a given skill is designed for, so a teammate doesn't try to install a launchd daemon from a sandboxed Cowork session and hit confusing failures.
 
 ## The two surfaces
 

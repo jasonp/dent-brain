@@ -1,4 +1,4 @@
-# Dent Brain
+# Distributed Brain
 
 **An organizational knowledge brain for small teams that already live in
 Claude Code.** Multiple teammates write into one shared brain;
@@ -10,7 +10,7 @@ without anyone having to remember to update it.
 
 Built as a fork of [GBrain](https://github.com/garrytan/gbrain) — that
 project is the substrate (Postgres + pgvector, hybrid search,
-self-wiring entity graph, contract-first MCP). Dent Brain adds the
+self-wiring entity graph, contract-first MCP). Distributed Brain adds the
 multi-tenant onboarding flow, the per-teammate ingestors, and the
 domain-specific skills that turn it from a personal brain into a
 shared one. Stays compatible with upstream gbrain by design — see
@@ -21,11 +21,17 @@ the merge protocol.
 > They live at [`README.gbrain.md`](README.gbrain.md). This file
 > covers what dent-brain adds on top.
 
+> **A note on names.** The product is **Distributed Brain**. The repository,
+> package, MCP server, and on-disk paths keep the `dent-brain` identifier for
+> continuity, and the CLI binary + shorthand is **`dbrain`**. So "Distributed
+> Brain" and "dent-brain"/"dbrain" refer to the same thing — the former is the
+> name, the latter the identifier you'll see in code, configs, and `~/.dent-brain/`.
+
 ---
 
 ## What's added on top of gbrain
 
-Dent Brain layers four kinds of things on top of the gbrain substrate:
+Distributed Brain layers four kinds of things on top of the gbrain substrate:
 
 ### 1. Per-teammate ingestors (`tools/`)
 
@@ -39,7 +45,7 @@ itself never holds raw inboxes.
 | `granola-sync` | Granola public API | Hourly (launchd) | Pulls Granola meeting notes + transcripts via the public API (key in macOS keychain); each teammate's `user/filter.ts` decides which meetings reach the brain; pushes kept meetings into `meetings/`. |
 | `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only). Canonical noise-filter drops bulk-promo first; each teammate's `user/filter.ts` then decides keep/drop with noise + signature hints. Writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
-| `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
+| `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (your event, etc.). |
 
 Manage these via the [`/dent-extensions`](skills/dent/dent-extensions/SKILL.md)
 skill — list, install, **setup** (author your `user/filter.ts`),
@@ -90,7 +96,7 @@ Claude Code with `/<name>`:
 ### 4. Server-side enhancements
 
 - **Markdown writer service** — every brain write goes through git
-  (Dent Brain Data repo on a private GitHub mirror), so every page edit
+  (Distributed Brain Data repo on a private GitHub mirror), so every page edit
   is a real commit with author attribution. See
   `src/dent/markdown-writer/`.
 - **Bearer-token onboarding** — each teammate gets a personal token
@@ -137,7 +143,7 @@ inside `setup`:
   Granola API key (minted in Granola → Settings → Connectors → API
   keys) and stores it in the macOS keychain.
 - **Email sync** runs a one-time browser OAuth dance against the
-  shared "Dent Brain" Google Cloud OAuth app (test mode, manual
+  shared "Distributed Brain" Google Cloud OAuth app (test mode, manual
   whitelist). The teammate clicks through one "this app isn't
   verified" warning; refresh tokens land in
   `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600).
@@ -166,7 +172,7 @@ inside `setup`:
 └───────────────┼───────────────────────────────┼───────────────┘
                 ▼                                ▼
         ┌────────────────────────────────────────────────┐
-        │       Dent Brain server (Railway)              │
+        │       Distributed Brain server (Railway)              │
         │  - gbrain HTTP MCP                             │
         │  - bearer-token auth (per-teammate)            │
         │  - markdown-writer service (every write =      │
@@ -201,12 +207,12 @@ Two write paths into the brain:
 
 ```
 dent-brain/
-├── README.md                 ← this file (Dent-specific)
+├── README.md                 ← this file (fork-specific)
 ├── README.gbrain.md          ← upstream gbrain README (substrate docs)
 ├── skills/
-│   └── dent/                 ← Dent-only skills (/dent-* commands)
+│   └── dent/                 ← fork-only skills (/dent-* commands)
 ├── src/
-│   └── dent/                 ← Dent-only TypeScript
+│   └── dent/                 ← fork-only TypeScript
 │       ├── markdown-writer/  ← server-side write-through-git layer
 │       ├── ingestors/        ← regfox, mailchimp
 │       └── ...

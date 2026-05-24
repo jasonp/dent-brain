@@ -1,22 +1,22 @@
 # FileMaker MCP — Install walkthrough
 
-Custom MCP server (built by Steve) that lets Claude Desktop query DentCRM
+Custom MCP server (built by your FileMaker admin) that lets Claude Desktop query the CRM
 directly via the FileMaker Data API. **Independent of dent-brain** — they
 share Claude Desktop but nothing else. Installing one doesn't affect the
 other.
 
 This doc is written so a teammate can ask their Claude agent (Claude Code in Desktop, Cowork, or the CLI):
 
-> *"Read https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/FILEMAKER_MCP_INSTALL.md and walk me through the install. Pause at each question and wait for my answer."*
+> *"Read https://github.com/your-org/dent-brain/blob/main/docs/dent-brain/FILEMAKER_MCP_INSTALL.md and walk me through the install. Pause at each question and wait for my answer."*
 
 The agent fetches the page, walks through the steps, and pauses where
 input is needed.
 
 **Time required:** ~15 minutes.
 
-**End state:** a FileMaker account scoped to the teammate (e.g. `mcp_steve`,
-`mcp_robin`) running a local Node.js MCP server, wired into Claude Desktop.
-Your agent can then ask the CRM things like "find people in DentCRM whose
+**End state:** a FileMaker account scoped to the teammate (e.g. `mcp_alice`,
+`mcp_bob`) running a local Node.js MCP server, wired into Claude Desktop.
+Your agent can then ask the CRM things like "find people in the CRM whose
 last name contains 'Smith'" in plain English.
 
 ---
@@ -43,17 +43,17 @@ Everything else: you run it.
 
 ## 0. What you'll need from the admin
 
-Before starting, confirm with the admin (Jason today) that they've sent
+Before starting, confirm with the admin (your deployment admin) that they've sent
 you (via Slack/email/1Password share):
 
 1. The **`FileMaker-MCP-for-<yourhandle>.zip`** archive — contains
-   `server.js`, `package.json`, and a `README.md`. Steve produces this
+   `server.js`, `package.json`, and a `README.md`. Your FileMaker admin produces this
    per-teammate.
-2. Your **FileMaker handle** to use for the MCP account, e.g. `mcp_steve`,
-   `mcp_robin`. Pick something stable; this becomes your audit-log identity
-   inside DentCRM.
+2. Your **FileMaker handle** to use for the MCP account, e.g. `mcp_alice`,
+   `mcp_bob`. Pick something stable; this becomes your audit-log identity
+   inside the CRM.
 3. Confirmation that a **`MCP Read And Edit Records` privilege set** exists
-   in DentCRM (Steve set this up once for everyone).
+   in the CRM (your admin sets this up once for everyone).
 
 If you don't have all three, stop and ask the admin before continuing.
 
@@ -63,7 +63,7 @@ If you don't have all three, stop and ask the admin before continuing.
 
 ### Agent actions
 
-1. **FileMaker Pro check** — ask the user: "Is FileMaker Pro installed and can you log into DentCRM with a full-access account (your own named account, not `Guest`)?" If no, surface to the admin; you can't install FileMaker Pro for them.
+1. **FileMaker Pro check** — ask the user: "Is FileMaker Pro installed and can you log into the CRM with a full-access account (your own named account, not `Guest`)?" If no, surface to the admin; you can't install FileMaker Pro for them.
 
 2. **Node check** — run `node --version` yourself. Need Node 18+.
    - If 18+: ✅ continue silently.
@@ -79,18 +79,18 @@ This step is FileMaker Pro UI only — your agent can't drive it. Walk the user 
 
 ### Agent actions
 
-1. Ask: **"What handle do you want for the FileMaker MCP account? Suggested: `mcp_<yourfirstname>` (e.g. `mcp_robin`, `mcp_jeff`). Pick something stable; this becomes your audit-log identity inside DentCRM."** Save the answer as `<MCP_HANDLE>`.
+1. Ask: **"What handle do you want for the FileMaker MCP account? Suggested: `mcp_<yourfirstname>` (e.g. `mcp_bob`, `mcp_jeff`). Pick something stable; this becomes your audit-log identity inside the CRM."** Save the answer as `<MCP_HANDLE>`.
 
 2. Tell the user (in one message, not multiple back-and-forth):
 
 > **In FileMaker Pro:**
 >
-> 1. Open DentCRM, logged in as your full-access account.
+> 1. Open the CRM, logged in as your full-access account.
 > 2. **File → Manage → Security**.
 > 3. Click **+ New** (bottom left).
 > 4. Fill in:
 >    - **Account Name:** `<MCP_HANDLE>`
->    - **Password:** click the pencil icon → set a strong one → save it in a password manager labeled `FileMaker MCP — DentCRM`. You'll paste it back to me in a moment.
+>    - **Password:** click the pencil icon → set a strong one → save it in a password manager labeled `FileMaker MCP — the CRM`. You'll paste it back to me in a moment.
 >    - **Require password change on next sign-in:** UNCHECKED (critical — checked breaks API login).
 >    - **Active:** ✅
 >    - **Privilege Set:** `MCP Read And Edit Records`
@@ -114,7 +114,7 @@ This step is FileMaker Pro UI only — your agent can't drive it. Walk the user 
 3. Run the curl yourself, substituting the values. **Keep the single quotes around `-u`** so passwords with `!`, `$`, or backticks don't get mangled by the shell:
 
    ```bash
-   curl -s -X POST https://sea-17.fmsdb.com/fmi/data/v1/databases/DentCRM2025/sessions \
+   curl -s -X POST https://sea-17.fmsdb.com/fmi/data/v1/databases/the CRM2025/sessions \
      -H "Content-Type: application/json" \
      -u '<MCP_HANDLE>:<FM_PASSWORD>' \
      -d '{}'
@@ -195,7 +195,7 @@ This is a config-file merge, not a "tell the user to edit JSON manually" step. *
        "args": [os.path.join(HOME, "FileMaker MCP", "server.js")],
        "env": {
            "FM_HOST": "sea-17.fmsdb.com",
-           "FM_DATABASE": "DentCRM2025",
+           "FM_DATABASE": "the CRM2025",
            "FM_USERNAME": os.environ["FM_USER"],
            "FM_PASSWORD": os.environ["FM_PASS"],
        },
@@ -234,7 +234,7 @@ Your agent can't test the install from the current chat (tool registry was cache
    {
      "ok": true,
      "host": "sea-17.fmsdb.com",
-     "database": "DentCRM2025",
+     "database": "the CRM2025",
      "username": "<MCP_HANDLE>",
      "tokenPreview": "a1b2c3d4…"
    }
@@ -242,7 +242,7 @@ Your agent can't test the install from the current chat (tool registry was cache
 
 3. On `ok: true` → ✅ done. Suggest follow-up tests they can try in that new chat:
    - *"What layouts are in my FileMaker database?"*
-   - *"Find people in DentCRM whose last name contains 'Smith'."*
+   - *"Find people in the CRM whose last name contains 'Smith'."*
 
 4. On error → triage via the troubleshooting section below.
 
@@ -250,7 +250,7 @@ Your agent can't test the install from the current chat (tool registry was cache
 
 ## Available tools
 
-Once installed, Your agent can call these against DentCRM:
+Once installed, Your agent can call these against the CRM:
 
 - `fm_ping` — auth sanity check
 - `fm_list_layouts` — list all layouts visible to your account
@@ -294,7 +294,7 @@ the bottom. Send the relevant lines to the admin.
 
 - **Your activity is audited under `<MCP_HANDLE>`**, not a shared account.
   Adding write tools later won't change that.
-- **`server.js` updates** come from Steve when he adds new tools. Drop the
+- **`server.js` updates** come from your FileMaker admin when they add new tools. Drop the
   new version into `~/FileMaker MCP/` and quit/relaunch Claude Desktop.
 - **Don't share your password.** It's scoped to you so audit logs work.
   If it gets exposed: rotate via File → Manage → Security → pencil icon

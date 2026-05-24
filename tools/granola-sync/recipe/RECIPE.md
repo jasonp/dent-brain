@@ -64,7 +64,7 @@ const emails = [
   note.calendar_event?.organiser,
 ].filter((e): e is string => !!e).map(e => e.toLowerCase());
 
-if (emails.some(e => e.endsWith('@dentthefuture.com'))) {
+if (emails.some(e => e.endsWith('@example.com'))) {
   return { keep: true, reason: 'teammate attended' };
 }
 ```
@@ -113,7 +113,7 @@ export const RECIPE_VERSION = 1;
 
 // ─── Customize these ────────────────────────────────────────────────────
 const ORG_FOLDERS   = ['Dent'];
-const ORG_DOMAINS   = ['dentthefuture.com'];
+const ORG_DOMAINS   = ['example.com'];
 const ORG_KEYWORDS  = ['dent'];
 
 const EXCLUDE_FOLDERS  = [/* personal Granola folders */];

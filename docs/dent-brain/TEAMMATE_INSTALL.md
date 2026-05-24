@@ -1,9 +1,9 @@
-# Dent Brain — Teammate install walkthrough
+# Distributed Brain — Teammate install walkthrough
 
 This doc is written so a teammate can paste the URL into a fresh Claude
 Code session in Claude Desktop and say:
 
-> *"Read https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/TEAMMATE_INSTALL.md and walk me through the install step by step. Pause at each question and wait for my answer."*
+> *"Read https://github.com/your-org/dent-brain/blob/main/docs/dent-brain/TEAMMATE_INSTALL.md and walk me through the install step by step. Pause at each question and wait for my answer."*
 
 Your Claude agent will fetch this page, parse the conditional branches, and
 guide you through. Each `### Agent prompt` block is a pause-point: the
@@ -40,9 +40,9 @@ When you do need user input, ask one clean question and wait. Don't bundle "open
 > 1. **Bearer token** — looks like `gbrain_<long-string>`. Authenticates
 >    you to the MCP server. Tied to your name in the audit log.
 > 2. **Server URL** — the MCP endpoint, e.g.
->    `https://dent-brain.dentthefuture.com/mcp` (varies per deployment).
+>    `https://dent-brain.example.com/mcp` (varies per deployment).
 > 3. **Marketplace URL** — the GitHub repo for the plugin, e.g.
->    `https://github.com/jasonp/dent-brain` (varies per deployment).
+>    `https://github.com/your-org/dent-brain` (varies per deployment).
 >
 > If you don't have all three, stop and ask the admin before starting Section 3.
 
@@ -61,9 +61,9 @@ By the end of this walkthrough you'll have:
 - (Optional) A **local clone of `dent-brain-data`** so you can hand-edit
   entity pages in your code editor instead of dictating to your agent.
 - (Optional) **FileMaker MCP** wired up so your agent can also query
-  DentCRM directly — separate from dent-brain, but they compose nicely.
+  the CRM directly — separate from dent-brain, but they compose nicely.
 - (Optional) **granola-sync extension** running hourly on your laptop,
-  pushing your Dent meeting notes into the brain automatically.
+  pushing your a work meeting notes into the brain automatically.
 
 You will **not** need to install Postgres, Bun (until granola-sync), or
 Railway. Those run on the dent-brain server (Railway → Supabase). You
@@ -103,7 +103,7 @@ Don't list every check in chat — run them silently and only surface results wh
 
 ## 2. FileMaker MCP — optional precheck
 
-DentCRM lives in FileMaker. There's a separate MCP server (built by Steve)
+the CRM lives in FileMaker. There's a separate MCP server (built by Steve)
 that lets your agent query the CRM directly. It's optional and totally
 independent of dent-brain — they share Claude Desktop but nothing else.
 
@@ -120,12 +120,12 @@ Ask the user: **"Do you already have FileMaker MCP set up? (yes / no)"**
     can come back to this section any time.
 
   - **If now:** Switch to the FileMaker MCP install walkthrough at
-    https://github.com/jasonp/dent-brain/blob/main/docs/dent-brain/FILEMAKER_MCP_INSTALL.md
+    https://github.com/your-org/dent-brain/blob/main/docs/dent-brain/FILEMAKER_MCP_INSTALL.md
     and walk through it. The user will need from the admin:
     1. The `FileMaker-MCP-for-<yourhandle>.zip` archive (Steve produces
        this per-teammate).
     2. Confirmation that the `MCP Read And Edit Records` privilege set
-       exists in DentCRM.
+       exists in the CRM.
     Once FM MCP is verified working (the `fm_ping` test in §6 of that
     doc returns `ok: true`), come back here and resume from Section 3.
 
@@ -366,25 +366,25 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
 
 ### Agent actions
 
-1. **Confirm collaborator access** — ask the user: **"Check your email for a GitHub invite to `dentthefuture/dent-brain-data`. If you have one, accept it now and tell me. If you don't, the admin needs to add you — ping them and pause here."**
+1. **Confirm collaborator access** — ask the user: **"Check your email for a GitHub invite to `your-org/dent-brain-data`. If you have one, accept it now and tell me. If you don't, the admin needs to add you — ping them and pause here."**
 
-2. **Pick a location for the clone** — ask: **"Where do you usually keep your code repos? Common conventions: `~/gh/<org>/`, `~/code/`, `~/dev/`, `~/Documents/GitHub/`. Or pick a custom path. Default if no preference: `~/gh/dentthefuture/`."** Wait for their answer.
+2. **Pick a location for the clone** — ask: **"Where do you usually keep your code repos? Common conventions: `~/gh/<org>/`, `~/code/`, `~/dev/`, `~/Documents/GitHub/`. Or pick a custom path. Default if no preference: `~/gh/your-org/`."** Wait for their answer.
 
-3. **Ask for git identity** — ask: **"What full name and email should commits be attributed to? (Usually your real name and your dentthefuture.com email if you have one.)"**
+3. **Ask for git identity** — ask: **"What full name and email should commits be attributed to? (Usually your real name and your example.com email if you have one.)"**
 
 4. **Run the clone yourself** — substitute `<BASE_PATH>`, `<NAME>`, `<EMAIL>` with the user's answers and run:
 
    ```bash
    mkdir -p <BASE_PATH>
    cd <BASE_PATH>
-   git clone git@github.com:dentthefuture/dent-brain-data.git
+   git clone git@github.com:your-org/dent-brain-data.git
    cd dent-brain-data
    git config --local user.name "<NAME>"
    git config --local user.email "<EMAIL>"
    git remote -v
    ```
 
-   Capture output. On success, `git remote -v` should show two `origin` lines for `dentthefuture/dent-brain-data.git`.
+   Capture output. On success, `git remote -v` should show two `origin` lines for `your-org/dent-brain-data.git`.
 
 5. **Handle SSH failures** — if `git clone` fails with `Permission denied (publickey)`:
    - The user's GitHub account may not have an SSH key registered, OR
@@ -392,7 +392,7 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
 
    Fall back to HTTPS yourself:
    ```bash
-   git clone https://github.com/dentthefuture/dent-brain-data.git
+   git clone https://github.com/your-org/dent-brain-data.git
    ```
    The first push will prompt for GitHub credentials — that's a Terminal interaction the user has to handle, but the clone itself doesn't need auth for a public-or-collaborator repo.
 
@@ -403,7 +403,7 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
 Pages live under:
 
 - `entities/people/<slug>.md` — individual humans
-- `entities/audience/<slug>.md` — email-list contacts (Mailchimp etc.) who haven't engaged with Dent events
+- `entities/audience/<slug>.md` — email-list contacts (Mailchimp etc.) who haven't engaged with your events
 - `entities/companies/<slug>.md` — orgs
 - `entities/projects/<slug>.md` — initiatives + specific events
 - `meetings/YYYY-MM-DD-<slug>.md` — meeting notes
@@ -426,7 +426,7 @@ meetings, and pushes notes + transcripts to the brain.
 
 ### Agent prompt
 
-Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your Granola meeting notes into Dent Brain hourly. (yes / skip)"**
+Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your Granola meeting notes into Distributed Brain hourly. (yes / skip)"**
 
 - **If skip:** Continue to Section 8. You can install it later by typing
   `/dent-extensions` in any Claude Code session.
@@ -441,7 +441,7 @@ Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your G
 
    ```bash
    if [ ! -d ~/gh/dent-brain ]; then
-     mkdir -p ~/gh && cd ~/gh && git clone git@github.com:jasonp/dent-brain.git
+     mkdir -p ~/gh && cd ~/gh && git clone git@github.com:your-org/dent-brain.git
    else
      cd ~/gh/dent-brain && git pull --ff-only origin main
    fi

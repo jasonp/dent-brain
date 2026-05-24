@@ -29,7 +29,7 @@ Every tick (default 300s) the ingestor:
 The bullet is a gbrain-canonical date-anchored line:
 
 ```
-- **2026-04-22** | Registered for Dent 2026 ($1495.00 USD with discount code EARLYBIRD). [Source: regfox/1440/12345]
+- **2026-04-22** | Registered for Acme Conf 2026 ($1495.00 USD with discount code EARLYBIRD). [Source: regfox/1440/12345]
 ```
 
 The `- **YYYY-MM-DD** | …` shape is what gbrain's `parseTimelineEntries`
@@ -87,7 +87,7 @@ default page size is 100, max 250).
 ## What lands in git
 
 For each new registration that creates an entity, you'll see a commit
-authored by `dent-brain-server <noreply@dentthefuture.com>` (or whatever
+authored by `dent-brain-server <noreply@example.com>` (or whatever
 your `DENT_BRAIN_GIT_NAME` / `DENT_BRAIN_GIT_EMAIL` are set to) with
 message `agent: replace entities/people/<kebab-name>`. Subsequent
 registrations matched-by-email get `agent: append entities/people/<slug>`

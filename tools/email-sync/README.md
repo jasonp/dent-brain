@@ -1,4 +1,4 @@
-# Email → Dent Brain sync
+# Email → Distributed Brain sync
 
 Two-layer pipeline that pulls Gmail directly via Google OAuth and turns it into entity timeline bullets in the brain.
 
@@ -6,7 +6,7 @@ Two-layer pipeline that pulls Gmail directly via Google OAuth and turns it into 
 
 **Layer 2 — enricher.** A Claude Code Desktop scheduled task that fires daily at 3am on the teammate's laptop, under their Claude subscription. Reads the digest pages, walks the **Triage** section, finds or resolves each non-self entity (brain query → FileMaker fallback via FM MCP), appends a timeline bullet to their entity page. Marks the digest `processed: true` so it doesn't re-process. Catches up automatically if the laptop was asleep for a few days. Skill body lives at `~/.dent-brain/skills/process-inbox.md` (canonical) and `skills/dent/process-inbox/SKILL.md` (in repo).
 
-**Privacy guarantee.** The Gmail query strictly scopes to the configured `workEmail`. Users with multiple addresses on the same Gmail inbox (e.g. `jason@dentthefuture.com` + `jason@jrpreston.com`) only get the work-email traffic in the brain. The non-work address never enters any layer of this system. Belt-and-suspenders re-check inside the collector drops anything that slipped through.
+**Privacy guarantee.** The Gmail query strictly scopes to the configured `workEmail`. Users with multiple addresses on the same Gmail inbox (e.g. `you@work.com` + `you@personal.com`) only get the work-email traffic in the brain. The non-work address never enters any layer of this system. Belt-and-suspenders re-check inside the collector drops anything that slipped through.
 
 ## Filter rules
 
@@ -24,9 +24,9 @@ A kept message is then classified:
 
 ## Auth model
 
-Direct Google OAuth via a shared **"Dent Brain" Google Cloud OAuth app** in test mode. The admin (you, if you set up the fork) creates the OAuth app once, adds each teammate's Gmail address as a Test User in the consent screen, and stores the Client ID + Client Secret to pass to install.sh.
+Direct Google OAuth via a shared **"Distributed Brain" Google Cloud OAuth app** in test mode. The admin (you, if you set up the fork) creates the OAuth app once, adds each teammate's Gmail address as a Test User in the consent screen, and stores the Client ID + Client Secret to pass to install.sh.
 
-Each teammate runs the install once, completes a one-time browser OAuth dance ("this app isn't verified" → Advanced → "Go to Dent Brain (unsafe)" → Allow), and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
+Each teammate runs the install once, completes a one-time browser OAuth dance ("this app isn't verified" → Advanced → "Go to Distributed Brain (unsafe)" → Allow), and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
 
 No agent token to hunt down. No third-party broker. Each teammate authorizes their own Gmail; nobody else's tokens ever leave their laptop.
 
@@ -37,7 +37,7 @@ The supported path is via `/dent-extensions install email-sync` (the Claude Code
 Direct path (admin running it on a teammate's laptop, or a teammate doing the manual flow):
 
 ```bash
-DENT_EMAIL_WORK_EMAIL=steve@dentthefuture.com \
+DENT_EMAIL_WORK_EMAIL=you@work.com \
 DENT_GOOGLE_CLIENT_ID=...apps.googleusercontent.com \
 DENT_GOOGLE_CLIENT_SECRET=GOCSPX-... \
 bash tools/email-sync/install.sh

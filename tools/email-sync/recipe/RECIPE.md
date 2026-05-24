@@ -74,7 +74,7 @@ export function filter(email) {
 Use when your work-inbox has substantial personal traffic, or when "exclude everything I might forget" matters more than "catch everything work-related." Stricter — false-negatives are possible but no personal leakage.
 
 ```typescript
-const ALLOWED_SENDER_DOMAINS = ['dentthefuture.com', 'known-investor.com'];
+const ALLOWED_SENDER_DOMAINS = ['example.com', 'known-investor.com'];
 const ALLOWED_SENDERS = ['specific-person@example.com'];
 
 export function filter(email) {

@@ -2,7 +2,7 @@
 name: dent-enrich
 version: 2.0.0
 description: |
-  Re-synthesize a Dent Brain entity page from its current markdown,
+  Re-synthesize a Distributed Brain entity page from its current markdown,
   the linked FileMaker record (when present), and related context
   surfaced through hybrid search. FM is authoritative for owned
   fields; the existing markdown body — including any human
@@ -35,7 +35,7 @@ writes_to:
 
 # /dent-enrich
 
-**Forked from `skills/enrich/SKILL.md` with three Dent-specific
+**Forked from `skills/enrich/SKILL.md` with three org-specific
 modifications:** FM-injection, FM-wins, merge-on-rerun. Read those
 sections carefully — they're the reason this skill exists.
 
@@ -44,7 +44,7 @@ This skill compiles an entity page from two sources:
 1. **FileMaker** — authoritative for owned fields (name, email, current
    employer, registrations, payments, tags). Reached via the FM MCP tools
    (`fm_get_record`, `fm_get_layout_fields`) which the user has installed
-   locally. Dent Brain's server does NOT proxy to FileMaker.
+   locally. Distributed Brain's server does NOT proxy to FileMaker.
 2. **The entity's existing markdown page** — authoritative for everything
    else: prior synthesis, hand-edits, observation bullets accumulated
    under `## Timeline`. Reached via `get_page` (which reads the
@@ -159,7 +159,7 @@ For owned fields, FM wins. Owned fields include:
 
 - Full name, email, secondary emails
 - Current employer, role/title
-- Registrations (Dent conferences, hotel nights, past attendance)
+- Registrations (your events, hotel nights, past attendance)
 - Tags
 - Payments / purchases
 - LinkedIn URL, location, communication preferences
@@ -269,14 +269,14 @@ name them explicitly. Do not silently degrade.
 ## Tier handling
 
 `/dent-enrich` does NOT use the upstream `enrich` skill's tier system
-(Tier 1 / 2 / 3). The Dent context is different: every entity in
-`entities/people/` is in the brain because Steve or another teammate put
+(Tier 1 / 2 / 3). The org context is different: every entity in
+`entities/people/` is in the brain because a teammate put
 it there, which is itself a notability signal. There's no "skip
 enrichment for low-value entities" check. If the user asked for
 synthesis, run it.
 
 External-data-source lookups (Crustdata, Proxycurl, web research) are
-**out of scope** for this skill in MVP. The Dent brain is fed by
+**out of scope** for this skill in MVP. The Distributed Brain is fed by
 FileMaker (structured) + observation bullets logged via
 `/dent-append-evidence` (unstructured). External enrichment APIs are
 deferred to v1+ when the team has signal that they're worth the spend.
@@ -298,7 +298,7 @@ deferred to v1+ when the team has signal that they're worth the spend.
   verbatim per 5b. If the page does not have them, do not invent
   them. `## Timeline` is the one structurally-meaningful exception
   (gbrain-native).
-- **Do not** write the FM record itself into Dent Brain (no
+- **Do not** write the FM record itself into Distributed Brain (no
   `markdown_replace_page` to a `filemaker/` namespace). FM is the
   canonical store; we only read from it.
 - **Do not** create a page when both FM and observations are empty.
