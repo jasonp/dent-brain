@@ -1,20 +1,20 @@
 {
-  "deploy_id": "dent-brain-prod",
+  "deploy_id": "dbrain-prod",
   "org_prefix": "dent",
   "plugin_version": "0.40.0.0",
   "plugin_name": "dent-brain",
   "marketplace_name": "dent-brain",
-  "server_url": "https://dent-brain.dentthefuture.com/mcp",
-  "data_repo": "github.com/dentthefuture/dent-brain-data",
-  "code_repo": "jasonp/dent-brain",
-  "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:jasonp/dent-brain and install dent-brain\"",
+  "server_url": "https://dent-brain.example.com/mcp",
+  "data_repo": "github.com/your-org/dent-brain-data",
+  "code_repo": "your-org/dent-brain",
+  "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:your-org/dent-brain and install dent-brain\"",
   "code_install_command": "bash plugin/marketplace/install-local.sh",
-  "built_at": "2026-05-24T17:16:32.168Z",
+  "built_at": "2026-05-25T02:27:09.203Z",
   "skills": [
     {
       "template": "setup",
       "installed_as": "dent-setup",
-      "bytes": 9554
+      "bytes": 9922
     },
     {
       "template": "append-evidence",
@@ -34,12 +34,12 @@
     {
       "template": "onboard-teammate",
       "installed_as": "dent-onboard-teammate",
-      "bytes": 20046
+      "bytes": 20325
     },
     {
       "template": "add-ingestor",
       "installed_as": "dent-add-ingestor",
-      "bytes": 6510
+      "bytes": 6559
     },
     {
       "template": "extensions",

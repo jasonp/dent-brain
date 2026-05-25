@@ -44,7 +44,6 @@ const DOC_ROOT_FILES = new Set([
   "CLAUDE.md",
   "AGENTS.md",
   "CHANGELOG.md",
-  "TODOS.md",
   "LICENSE",
   "VERSION",
 ]);

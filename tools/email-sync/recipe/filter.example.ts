@@ -37,7 +37,7 @@ const EXCLUDE_SUBJECT_PATTERNS: RegExp[] = [
 
 // Allowlist posture (default-drop, keep only matching things):
 const ALLOWED_SENDER_DOMAINS: string[] = [
-  // 'dentthefuture.com',
+  // 'example.com',
   // 'known-investor.com',
 ];
 const ALLOWED_SENDERS: string[] = [

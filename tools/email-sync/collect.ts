@@ -195,7 +195,7 @@ function saveCursor(path: string, cursor: SyncCursor): void {
  * Build the Gmail search query.
  *
  * Privacy rule: STRICT scoping to the configured work email. Users with
- * multiple addresses on the same inbox (jason@dentthefuture.com,
+ * multiple addresses on the same inbox (you@work.com,
  * jason@jrpreston.com) get only the work-email traffic in the brain.
  * The `-from:` exclusions strip noise senders Gmail-side so they never
  * enter the response — we don't even pay token cost to fetch them.

@@ -1,4 +1,4 @@
-# Dent The Future, Inc. Brain — Cowork plugin (v0.40.0.0)
+# Example Org, Inc. Brain — Cowork plugin (v0.40.0.0)
 
 Adds 10 slash commands:
 
@@ -13,7 +13,7 @@ Adds 10 slash commands:
 - `/dent-update`
 - `/dent-process-inbox`
 
-These run on top of the `dent-brain` MCP server at `https://dent-brain.dentthefuture.com/mcp`.
+These run on top of the `dent-brain` MCP server at `https://dent-brain.example.com/mcp`.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ one-paste install command.
 
 ## Installing this plugin in Cowork
 
-In a Cowork chat, ask: *"Add a custom marketplace from `github:jasonp/dent-brain` and install the dent-brain plugin."*
+In a Cowork chat, ask: *"Add a custom marketplace from `github:your-org/dent-brain` and install the dent-brain plugin."*
 
 Cowork pulls the repo, registers it as a marketplace, and installs the
 plugin into its own per-session cache. After Claude Desktop restart and
@@ -44,6 +44,6 @@ and installs the plugin via `claude plugin install`. Code mode reads from
 
 ## Source
 
-Built from `https://github.com/jasonp/dent-brain` at v0.40.0.0.
+Built from `https://github.com/your-org/dent-brain` at v0.40.0.0.
 Rebuild from source skill templates with `bun run build:plugin` from the
 source repo root. Forks customize via `bun run setup`.

@@ -105,7 +105,7 @@ prompt_required() {
   printf -v "$var" '%s' "$val"
 }
 
-prompt_required DENT_EMAIL_WORK_EMAIL "Your work email (e.g. steve@dentthefuture.com)"
+prompt_required DENT_EMAIL_WORK_EMAIL "Your work email (e.g. you@work.com)"
 prompt_required DENT_GOOGLE_CLIENT_ID "Dent Brain Google OAuth Client ID (...apps.googleusercontent.com)"
 prompt_required DENT_GOOGLE_CLIENT_SECRET "Dent Brain Google OAuth Client Secret (GOCSPX-...)" yes
 DENT_EMAIL_AUTHUSER="${DENT_EMAIL_AUTHUSER:-0}"

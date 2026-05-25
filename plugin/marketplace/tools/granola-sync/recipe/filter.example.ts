@@ -27,7 +27,7 @@ export const RECIPE_VERSION = 1;
 const ORG_KEYWORDS = ['dent'];
 
 /** Email domains for your team. Matched against attendee emails. */
-const ORG_DOMAINS = ['dentthefuture.com'];
+const ORG_DOMAINS = ['example.com'];
 
 /** Granola folder names treated as auto-include (case-insensitive). */
 const ORG_FOLDERS = ['Dent'];

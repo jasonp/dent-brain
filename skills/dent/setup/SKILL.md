@@ -56,9 +56,10 @@ This skill takes no arguments. The admin invokes it the first time they fork the
 
 Run these checks to figure out where the admin is:
 
-- Does `plugin/manifest.json` show the default `dent-*` values, or has it been customized?
+- Is there a `plugin/manifest.local.json` (gitignored real deploy config)? If so, this deploy is already customized — read deploy values from there. The committed `plugin/manifest.json` ships placeholders by design, so seeing placeholders there does NOT mean un-customized.
+- Failing that, does `plugin/manifest.json` show the default placeholder values, or has it been customized in place?
 - Does `.claude-plugin/marketplace.json` exist (means the plugin has been built)?
-- Is the MCP server reachable at `manifest.deploy.server_url`? Try `curl -fsS <url>/health` — version + db status.
+- Is the MCP server reachable at the resolved `deploy.server_url` (from `manifest.local.json` if present, else `manifest.json`)? Try `curl -fsS <url>/health` — version + db status.
 - Is there a `${prefix}-brain@${prefix}-brain` plugin in `claude plugin list`?
 
 Surface a one-line status: "You're at step N of the 10-step setup. Last completed: <step>. Next: <step>."

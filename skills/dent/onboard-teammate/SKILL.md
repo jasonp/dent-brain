@@ -91,7 +91,7 @@ Capture the printed token. The token is shown ONCE. Hold it briefly to construct
 
 The teammate-install walkthrough (TEAMMATE_INSTALL.md §3) asks the user to paste a three-value bundle: `token`, `server`, `marketplace`. The admin sends all three in one message.
 
-Read the deploy-specific values from `plugin/manifest.json` so the skill works for any deployment, not just Dent's:
+Read the deploy-specific values from `plugin/manifest.local.json` if it exists (your real deploy config — gitignored, kept out of the public repo); otherwise fall back to `plugin/manifest.json` (the committed placeholder template). This keeps real endpoints out of git while the skill still works for any deployment:
 
 - `deploy.server_url` → the MCP endpoint (e.g. `https://dent-brain.example.com/mcp`).
 - `deploy.code_repo` → the marketplace repo as `<org>/<repo>` (e.g. `your-org/dent-brain`); construct the URL by prefixing `https://github.com/`.
@@ -236,7 +236,7 @@ local unless you choose otherwise — we don't ship pre-built filters
 that decide for you.
 ```
 
-Substitute (all values come from `plugin/manifest.json` except `<TOKEN>` from Phase 3 and `<FullName>` / `<admin handle>` from Phase 1):
+Substitute (all values come from the resolved manifest — `plugin/manifest.local.json` if present, else `plugin/manifest.json` — except `<TOKEN>` from Phase 3 and `<FullName>` / `<admin handle>` from Phase 1):
 
 - `<FullName>` — teammate's full name (Phase 1 input).
 - `<TOKEN>` — the bearer token issued in Phase 3.

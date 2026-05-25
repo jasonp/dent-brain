@@ -74,3 +74,10 @@ plugin/dist/
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
+
+# Local-only real deploy values (real org identity + endpoints). The committed
+# plugin/manifest.json ships placeholders; the onboarding skill reads this first.
+plugin/manifest.local.json
+
+# Internal working backlog — local-only, not for the public repo.
+TODOS.md

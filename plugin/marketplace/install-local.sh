@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dent The Future, Inc. Brain plugin — Code-mode local installer (v0.40.0.0).
+# Example Org, Inc. Brain plugin — Code-mode local installer (v0.40.0.0).
 #
 # Registers plugin/marketplace/ as a local Claude Code marketplace, then
 # installs the plugin from it. This is for Code mode (terminal CLI / Claude

@@ -71,7 +71,7 @@ export interface SyncConfig {
   googleClientSecret: string;
   /** Path to the OAuth tokens file. Default: ~/.dent-brain/email-sync/google-tokens.json (chmod 0600). */
   googleTokensPath: string;
-  /** The teammate's work email (e.g. steve@dentthefuture.com). The Gmail
+  /** The teammate's work email (e.g. you@work.com). The Gmail
    *  query strictly filters on this — emails on other addresses on the same
    *  inbox never come back. Privacy boundary. */
   workEmail: string;

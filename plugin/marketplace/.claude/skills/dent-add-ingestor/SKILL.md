@@ -112,7 +112,7 @@ This skill ships the user-facing checklist. The ingestor framework itself (per-s
 - **Phase 5.1 (next ship after this one):** RegFox ingestor as the first concrete instance. Adds `src/dent/ingestors/regfox/` + its `/ingest/regfox` route + tests + RegFox-side webhook config docs.
 - **Phase 5.2+:** Gmail, Granola, Dropbox in subsequent ships.
 
-Track Phase 5 progress in `TODOS.md` under `## dent-brain (PLAN v2.0 follow-ups)`.
+Track Phase 5 progress in your local backlog (e.g. a gitignored `TODOS.md`) under a `## dent-brain (PLAN v2.0 follow-ups)` heading.
 
 ---
 

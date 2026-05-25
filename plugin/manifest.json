@@ -2,15 +2,16 @@
   "$schema": "./manifest.schema.json",
   "manifest_version": "1.0",
 
+  "_deploy_note": "PLACEHOLDER VALUES — committed to git. The real deploy identity + endpoints live in plugin/manifest.local.json (gitignored). The build (build:plugin) reads ONLY this committed file, so the published bundle is always placeholder-safe. The onboarding skill reads manifest.local.json first when present. To stand up your own deploy, either run `bun run setup` or edit these fields.",
   "deploy": {
     "org_prefix": "dent",
-    "org_full_name": "Dent The Future, Inc.",
-    "org_email_domain": "dentthefuture.com",
-    "deploy_id": "dent-brain-prod",
-    "server_url": "https://dent-brain.dentthefuture.com/mcp",
+    "org_full_name": "Example Org, Inc.",
+    "org_email_domain": "example.com",
+    "deploy_id": "dbrain-prod",
+    "server_url": "https://dent-brain.example.com/mcp",
     "server_url_dev": "http://localhost:3000/mcp",
-    "data_repo": "github.com/dentthefuture/dent-brain-data",
-    "code_repo": "jasonp/dent-brain"
+    "data_repo": "github.com/your-org/dent-brain-data",
+    "code_repo": "your-org/dent-brain"
   },
 
   "skills": {

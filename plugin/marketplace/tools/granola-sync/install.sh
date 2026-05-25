@@ -84,7 +84,7 @@ if [ ! -d "$GRANOLA_APP" ]; then
   echo
   echo "Granola is the meeting note-taker this daemon syncs from. To set it up:"
   echo "  1. Download Granola from https://granola.ai/download"
-  echo "  2. Install + open it; sign in with your @dentthefuture.com Google account"
+  echo "  2. Install + open it; sign in with your @work.com Google account"
   echo "  3. In Granola Settings → Permissions, grant Mic + Screen Recording access"
   echo "  4. Re-run this installer."
   exit 1
