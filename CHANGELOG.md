@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.40.0.1] - 2026-06-02
+
+## **Sync resilience: one malformed file can no longer freeze the whole brain. Plus the granola-sync slug bug that caused the freeze in the first place.**
+
+A single file with a deterministic content error (a `SLUG_MISMATCH` from a frontmatter `slug:` that didn't match its path) hard-blocked *every* incremental sync — the bookmark refused to advance on any per-file failure, so indexing silently stalled for **17 days** while `get_page` kept working and `search` quietly served stale results. Two linked fixes:
+
+1. **The sync gate now distinguishes deterministic content failures from transient ones.** Deterministic failures (`SLUG_MISMATCH`, `YAML_PARSE`, `NULL_BYTES`, …) — which no retry can fix — are *quarantined* (recorded to `sync-failures.jsonl`, surfaced by `gbrain doctor`) and the sync advances past them so the good files in the diff still import and embed. Potentially-transient failures (`STATEMENT_TIMEOUT`, DB races, the `<head>` git-drift sentinel, `UNKNOWN`) still gate the bookmark so the next sync retries them. `--skip-failed` still forces past everything; a new `--strict-failures` restores the legacy block-on-any-failure behavior.
+
+2. **The granola-sync ingestor stopped generating mismatch-prone slugs.** `kebab()` (and the attendee-stub slugifier) stripped trailing hyphens *before* the 80-char truncation, so a title that truncated on a hyphen boundary re-introduced a trailing dash — guaranteed to `SLUG_MISMATCH` on import. Both now re-strip after the slice, so every emitted slug is already canonical (`slugifyPath(slug) === slug`).
+
+### Itemized changes
+
+#### Fixed
+- `performSync` no longer blocks the entire `last_commit` advance on a single deterministic per-file parse failure; failures are split into block-worthy (transient/infra) vs. quarantine-and-proceed (deterministic content) via the new pure, tested `shouldBlockOnSyncFailures` policy in `src/core/sync.ts`.
+- granola-sync `translator.ts` `kebab()` and `sync.ts` attendee-stub slugifier re-strip trailing hyphens after `.slice(0, 80)`, eliminating the trailing-dash → `SLUG_MISMATCH` class of bug at the source.
+
+#### Added
+- `gbrain sync --strict-failures` — opt back into the legacy block-on-any-parse-failure gate.
+- `DETERMINISTIC_PARSE_CODES` + `shouldBlockOnSyncFailures()` exported from `src/core/sync.ts`.
+- Regression suites: `test/sync-resilience-gate.test.ts` (gate policy) and `test/granola-slug-mismatch.test.ts` (the exact incident title + canonical-slug invariant).
+
 ## [0.40.0.0] - 2026-05-21
 
 ## **Catch up to upstream gbrain. Sixty-five upstream commits (v0.30.1 → v0.37.9.0) merged into the fork in one reviewed wave: ZeroEntropy reranking, code-intelligence MCP ops, hindsight calibration, cross-modal image search, and a source-isolation security seal. The fork keeps its own skin — `dbrain` binary, privacy scrubbing, recipe-model ingestors, v0.40 version line.**

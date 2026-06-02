@@ -34,7 +34,12 @@ function kebab(s: string): string {
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
+    .slice(0, 80)
+    // The 80-char truncation can land on a hyphen boundary, re-introducing a
+    // trailing dash *after* the strip above. gbrain's slugifySegment drops it,
+    // so the path-derived slug would no longer equal this frontmatter slug —
+    // a SLUG_MISMATCH that hard-blocks every sync. Re-strip post-slice.
+    .replace(/-+$/g, '');
 }
 
 function isoDateOf(raw: string | undefined | null): string {

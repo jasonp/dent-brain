@@ -500,6 +500,60 @@ export function classifyErrorCode(errorMsg: string): string {
   return 'UNKNOWN';
 }
 
+/**
+ * Codes for *deterministic content* failures: a malformed file that will fail
+ * identically on every retry until a human edits it (bad frontmatter, slug
+ * mismatch, null bytes, oversized file, …). Re-walking the same diff can never
+ * clear these, so a single one must NOT freeze the whole sync — the import
+ * gate quarantines them (recorded to sync-failures.jsonl, surfaced by `gbrain
+ * doctor`) and advances past them so the good files in the diff still sync.
+ *
+ * Everything NOT in this set (STATEMENT_TIMEOUT, DB_DUPLICATE_KEY races,
+ * UNKNOWN, the `<head>` git-drift sentinel) is treated as potentially transient
+ * and still gates the bookmark, so the next sync re-attempts it.
+ */
+export const DETERMINISTIC_PARSE_CODES: ReadonlySet<string> = new Set([
+  'SLUG_MISMATCH',
+  'YAML_PARSE',
+  'YAML_DUPLICATE_KEY',
+  'MISSING_OPEN',
+  'MISSING_CLOSE',
+  'EMPTY_FRONTMATTER',
+  'NULL_BYTES',
+  'NESTED_QUOTES',
+  'INVALID_UTF8',
+  'FILE_TOO_LARGE',
+  'SYMLINK_NOT_ALLOWED',
+  'TAKES_TABLE_MALFORMED',
+  'TAKES_HOLDER_INVALID',
+]);
+
+/**
+ * Policy: should a set of per-file sync failures BLOCK the `last_commit`
+ * advance (legacy behavior — the diff is re-walked next sync), or be
+ * quarantined so the sync proceeds with the good files?
+ *
+ *   - Empty set → don't block (nothing failed).
+ *   - `skipFailed` → don't block (operator said "advance past everything").
+ *   - `strictFailures` → block (operator restored the legacy gate).
+ *   - Otherwise → block ONLY if some failure might be transient (a retry could
+ *     clear it). When every failure is a deterministic content error, blocking
+ *     would freeze the brain forever on a file no retry can fix, so we proceed.
+ *
+ * Pure + exported so the policy is unit-testable without the engine/git stack.
+ */
+export function shouldBlockOnSyncFailures(
+  failures: Array<{ error: string; code?: string }>,
+  opts: { skipFailed?: boolean; strictFailures?: boolean } = {},
+): boolean {
+  if (failures.length === 0) return false;
+  if (opts.skipFailed) return false;
+  if (opts.strictFailures) return true;
+  return !failures.every(
+    (f) => DETERMINISTIC_PARSE_CODES.has(f.code ?? classifyErrorCode(f.error)),
+  );
+}
+
 /** Group failures by error code and return a sorted summary. */
 export function summarizeFailuresByCode(
   failures: Array<{ error: string; code?: string }>,

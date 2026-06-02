@@ -247,7 +247,10 @@ async function ensureAttendeeStub(
   const local = email.split('@')[0] ?? email;
   const base = (displayName ?? local).toLowerCase()
     .normalize('NFKD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+    // Re-strip trailing hyphens *after* the 80-char slice: truncation can cut on
+    // a hyphen boundary and re-introduce one, which slugifySegment drops →
+    // SLUG_MISMATCH that blocks sync. See translator.ts kebab() for the same fix.
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/g, '');
   const slug = `entities/people/${base || 'unknown-attendee'}`;
   const existing = await fetchPage(client, slug);
   if (existing.exists) return { slug, created: false };
