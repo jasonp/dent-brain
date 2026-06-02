@@ -4,7 +4,9 @@
  * Pairs with `gbrain init` and `gbrain doctor`'s loud-failure paths. Validates
  * that:
  *   1. readContentChunksEmbeddingDim correctly reports null on a fresh brain.
- *   2. After initSchema, it returns the actual templated dim (1536 default).
+ *   2. After initSchema, it returns the actual templated dim — the value
+ *      getEmbeddingDimensions() resolves (1536 default; 1280 for ZeroEntropy
+ *      zembed-1 when ZEROENTROPY_API_KEY is set, e.g. in CI).
  *   3. embeddingMismatchMessage produces a recipe that explicitly drops the
  *      HNSW index, alters the column, wipes embeddings, and conditionally
  *      reindexes — codex's #8 finding from plan review.
@@ -16,6 +18,23 @@ import {
   readContentChunksEmbeddingDim,
   embeddingMismatchMessage,
 } from '../src/core/embedding-dim-check.ts';
+import { getEmbeddingDimensions } from '../src/core/embedding.ts';
+
+/**
+ * The dim initSchema templates into `content_chunks.embedding` — resolved from
+ * the active embedding gateway (`getEmbeddingDimensions()`), defaulting to 1536
+ * when the gateway isn't configured. Mirrors pglite-engine.ts initSchema
+ * exactly. Asserting against this (not a hardcoded 1536) keeps the test green
+ * across providers: 1536 with no key (OpenAI default), 1280 when
+ * ZEROENTROPY_API_KEY is set in CI (zembed-1), etc.
+ */
+function expectedSchemaDims(): number {
+  try {
+    return getEmbeddingDimensions();
+  } catch {
+    return 1536;
+  }
+}
 
 // Canonical pattern: single engine per file, init once, disconnect once.
 // The two tests below diverge in whether they want a migrated brain or a
@@ -34,10 +53,13 @@ afterAll(async () => {
 });
 
 describe('readContentChunksEmbeddingDim', () => {
-  test('returns dims from a migrated brain (default 1536)', async () => {
+  test('returns the dims initSchema templated (configured embedding dim)', async () => {
     const result = await readContentChunksEmbeddingDim(engine);
     expect(result.exists).toBe(true);
-    expect(result.dims).toBe(1536);
+    // initSchema sizes the column from getEmbeddingDimensions() (1536 default,
+    // 1280 for ZeroEntropy zembed-1, …). Assert against that resolver, not a
+    // hardcoded value, so the test is provider-agnostic.
+    expect(result.dims).toBe(expectedSchemaDims());
   }, 30000);
 
   test('returns { exists: false, dims: null } on a fresh brain (no initSchema)', async () => {

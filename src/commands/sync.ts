@@ -13,6 +13,7 @@ import {
   unacknowledgedSyncFailures,
   acknowledgeSyncFailures,
   formatCodeBreakdown,
+  shouldBlockOnSyncFailures,
 } from '../core/sync.ts';
 import { estimateTokens, CHUNKER_VERSION } from '../core/chunkers/code.ts';
 import { EMBEDDING_MODEL, estimateEmbeddingCostUsd } from '../core/embedding.ts';
@@ -130,6 +131,12 @@ export interface SyncOpts {
   skipFailed?: boolean;
   /** Bug 9 — re-attempt unacknowledged failures explicitly (CLI --retry-failed). */
   retryFailed?: boolean;
+  /**
+   * Restore the legacy block-on-any-parse-failure gate (CLI --strict-failures).
+   * Default (false) is resilient: deterministic content failures are quarantined
+   * and the sync advances past them so one bad file can't freeze the whole brain.
+   */
+  strictFailures?: boolean;
   /**
    * v0.18.0 Step 5 — sync a specific named source. When set, sync reads
    * local_path + last_commit from the sources table (not the global
@@ -879,7 +886,18 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     // Emit structured summary grouped by error code so the operator
     // can see *why* files failed, not just how many.
     const codeBreakdown = formatCodeBreakdown(failedFiles);
-    if (!opts.skipFailed) {
+
+    // Resilience gate (2026-06): a single malformed file must not freeze the
+    // whole brain. Deterministic content failures (SLUG_MISMATCH, YAML_PARSE,
+    // …) can only be fixed by editing the file, so re-walking the same diff
+    // forever — the legacy behavior — silently stalled indexing for everyone
+    // (here it cost a 17-day outage from one trailing-dash slug). We quarantine
+    // those (recorded above, surfaced by `gbrain doctor`) and advance past
+    // them. Potentially-transient failures (statement timeouts, DB races, the
+    // `<head>` git-drift sentinel, UNKNOWN) still gate the bookmark so the next
+    // sync retries them. --skip-failed forces past everything; --strict-failures
+    // restores the legacy block-on-any-failure gate.
+    if (shouldBlockOnSyncFailures(failedFiles, opts)) {
       console.error(
         `\nSync blocked: ${failedFiles.length} file(s) failed to parse:\n` +
         `${codeBreakdown}\n\n` +
@@ -903,12 +921,26 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         failedFiles: failedFiles.length,
       };
     }
-    // --skip-failed: acknowledge the now-recorded set and proceed.
-    const acked = acknowledgeSyncFailures();
-    if (acked.count > 0) {
+
+    if (opts.skipFailed) {
+      // --skip-failed: acknowledge the now-recorded set so doctor stops nagging.
+      const acked = acknowledgeSyncFailures();
+      if (acked.count > 0) {
+        console.error(
+          `  Acknowledged ${acked.count} failure(s) and advancing past them:\n` +
+          `${formatCodeBreakdown(acked.summary)}`,
+        );
+      }
+    } else {
+      // Default resilient path: quarantine the deterministic failures (left
+      // UNacknowledged so `gbrain doctor` still surfaces them) and advance so
+      // the good files in this diff sync + embed. Re-import happens when the
+      // offending files are edited (a new diff) or via `gbrain sync --retry-failed`.
       console.error(
-        `  Acknowledged ${acked.count} failure(s) and advancing past them:\n` +
-        `${formatCodeBreakdown(acked.summary)}`,
+        `\nWarning: advancing past ${failedFiles.length} unparseable file(s) ` +
+        `(quarantined — run \`gbrain doctor\` to review):\n` +
+        `${codeBreakdown}\n\n` +
+        `Fix the frontmatter in the files above and re-sync to re-import them.`,
       );
     }
   }
@@ -1159,6 +1191,7 @@ export async function runSync(engine: BrainEngine, args: string[]) {
   const noEmbed = args.includes('--no-embed');
   const skipFailed = args.includes('--skip-failed');
   const retryFailed = args.includes('--retry-failed');
+  const strictFailures = args.includes('--strict-failures');
   const syncAll = args.includes('--all');
   const jsonOut = args.includes('--json');
   const yesFlag = args.includes('--yes');
@@ -1301,7 +1334,7 @@ export async function runSync(engine: BrainEngine, args: string[]) {
     return;
   }
 
-  const opts: SyncOpts = { repoPath, dryRun, full, noPull, noEmbed, skipFailed, retryFailed, sourceId, strategy: strategyArg, concurrency };
+  const opts: SyncOpts = { repoPath, dryRun, full, noPull, noEmbed, skipFailed, retryFailed, strictFailures, sourceId, strategy: strategyArg, concurrency };
 
   // Bug 9 — --retry-failed: before running normal sync, clear acknowledgment
   // flags so the sync picks them up as fresh work. The actual re-attempt
