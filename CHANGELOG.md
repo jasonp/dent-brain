@@ -17,6 +17,7 @@ A single file with a deterministic content error (a `SLUG_MISMATCH` from a front
 #### Fixed
 - `performSync` no longer blocks the entire `last_commit` advance on a single deterministic per-file parse failure; failures are split into block-worthy (transient/infra) vs. quarantine-and-proceed (deterministic content) via the new pure, tested `shouldBlockOnSyncFailures` policy in `src/core/sync.ts`.
 - granola-sync `translator.ts` `kebab()` and `sync.ts` attendee-stub slugifier re-strip trailing hyphens after `.slice(0, 80)`, eliminating the trailing-dash → `SLUG_MISMATCH` class of bug at the source.
+- `test/embedding-dim-check.test.ts` asserts against `getEmbeddingDimensions()` (the same resolver `initSchema` uses) instead of a hardcoded `1536`, so the `test (1)` CI shard stops failing `Expected 1536 / Received 1280` when `ZEROENTROPY_API_KEY` is set and the schema templates zembed-1's 1280-dim column.
 
 #### Added
 - `gbrain sync --strict-failures` — opt back into the legacy block-on-any-parse-failure gate.
