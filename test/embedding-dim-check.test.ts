@@ -17,8 +17,12 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   readContentChunksEmbeddingDim,
   embeddingMismatchMessage,
+  resolveSchemaEmbeddingDim,
+  resolveSchemaMultimodalDim,
+  PGVECTOR_COLUMN_MAX_DIMS,
 } from '../src/core/embedding-dim-check.ts';
 import { getEmbeddingDimensions } from '../src/core/embedding.ts';
+import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 
 /**
  * The dim initSchema templates into `content_chunks.embedding` — resolved from
@@ -43,6 +47,21 @@ function expectedSchemaDims(): number {
 let engine: PGLiteEngine;
 
 beforeAll(async () => {
+  // Hermeticity guard (cross-file gateway-state leak class — see CLAUDE.md
+  // "Test-isolation lint and helpers"). initSchema builds the
+  // content_chunks vector column at the gateway's configured dim. The
+  // bunfig preload pins OpenAI/1536, but its beforeEach only re-applies
+  // legacy when the gateway was RESET (throws) — it does NOT correct a
+  // sibling that configured a different LIVE dim (e.g. ZE/1280) and never
+  // reset. Under weight-based shard bin-packing, such a sibling can run
+  // first, so pin 1536 explicitly here BEFORE initSchema (this is exactly
+  // the "call configureGateway() in your own beforeAll" escape hatch the
+  // preload documents). Reset in afterAll so we don't leak 1536 onward.
+  configureGateway({
+    embedding_model: 'openai:text-embedding-3-large',
+    embedding_dimensions: 1536,
+    env: { ...process.env },
+  });
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
@@ -50,10 +69,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  resetGateway();
 });
 
 describe('readContentChunksEmbeddingDim', () => {
   test('returns the dims initSchema templated (configured embedding dim)', async () => {
+    // The beforeAll above pins OpenAI/1536 explicitly, so initSchema() sizes
+    // the column at 1536 here. (Canonical gateway default is now 1280/ZE; the
+    // bunfig `legacy-embedding-preload.ts` also pins 1536 before any test runs,
+    // preserving the 20+ files with hardcoded 1536-d fixtures.) The assertion
+    // below uses expectedSchemaDims() so it stays correct under either path.
     const result = await readContentChunksEmbeddingDim(engine);
     expect(result.exists).toBe(true);
     // initSchema sizes the column from getEmbeddingDimensions() (1536 default,
@@ -78,12 +103,13 @@ describe('readContentChunksEmbeddingDim', () => {
 });
 
 describe('embeddingMismatchMessage', () => {
-  test('inlines all four recipe steps for HNSW-eligible dims', () => {
+  test('Postgres branch inlines all four recipe steps for HNSW-eligible dims', () => {
     const msg = embeddingMismatchMessage({
       currentDims: 1536,
       requestedDims: 768,
       requestedModel: 'nomic-embed-text',
       source: 'init',
+      engineKind: 'postgres',
     });
     expect(msg).toContain('vector(1536)');
     expect(msg).toContain('vector(768)');
@@ -94,7 +120,7 @@ describe('embeddingMismatchMessage', () => {
     expect(msg).toContain('docs/embedding-migrations.md');
   });
 
-  test('skips HNSW recreate when requested dims exceed pgvector cap', () => {
+  test('Postgres branch skips HNSW recreate when requested dims exceed pgvector cap', () => {
     // Codex finding #8: 2048d (Voyage 4 Large) cannot be HNSW-indexed in pgvector.
     // The recipe must NOT instruct a CREATE INDEX HNSW for that dim.
     const msg = embeddingMismatchMessage({
@@ -102,6 +128,7 @@ describe('embeddingMismatchMessage', () => {
       requestedDims: 2048,
       requestedModel: 'voyage-4-large',
       source: 'init',
+      engineKind: 'postgres',
     });
     expect(msg).toContain('vector(2048)');
     expect(msg).toContain('Skip reindex');
@@ -111,9 +138,215 @@ describe('embeddingMismatchMessage', () => {
   });
 
   test('source: doctor uses a different header than source: init', () => {
-    const initMsg = embeddingMismatchMessage({ currentDims: 1536, requestedDims: 768, source: 'init' });
-    const doctorMsg = embeddingMismatchMessage({ currentDims: 1536, requestedDims: 768, source: 'doctor' });
+    const initMsg = embeddingMismatchMessage({ currentDims: 1536, requestedDims: 768, source: 'init', engineKind: 'postgres' });
+    const doctorMsg = embeddingMismatchMessage({ currentDims: 1536, requestedDims: 768, source: 'doctor', engineKind: 'postgres' });
     expect(initMsg).toContain('Refusing to silently re-template');
     expect(doctorMsg).toContain('Embedding dimension mismatch detected');
+  });
+
+  // v0.37 fix wave Lane D.1: PGLite branch uses wipe-and-reinit recipe
+  // because PGLite can't ALTER vector column types.
+  test('PGLite branch uses wipe-and-reinit, not ALTER COLUMN', () => {
+    const msg = embeddingMismatchMessage({
+      currentDims: 1536,
+      requestedDims: 1280,
+      requestedModel: 'zeroentropyai:zembed-1',
+      source: 'init',
+      engineKind: 'pglite',
+      databasePath: '/tmp/test-brain.pglite',
+    });
+    expect(msg).toContain('vector(1536)');
+    expect(msg).toContain('vector(1280)');
+    expect(msg).toContain('mv /tmp/test-brain.pglite /tmp/test-brain.pglite.bak');
+    expect(msg).toContain('gbrain init --pglite --embedding-model zeroentropyai:zembed-1 --embedding-dimensions 1280');
+    expect(msg).toContain('PGLite cannot ALTER vector column types');
+    // Must NOT contain the Postgres-only SQL recipe.
+    expect(msg).not.toContain('ALTER TABLE content_chunks ALTER COLUMN');
+    expect(msg).not.toContain('DROP INDEX IF EXISTS idx_chunks_embedding');
+  });
+
+  test('PGLite branch falls back to default database path when omitted', () => {
+    const msg = embeddingMismatchMessage({
+      currentDims: 1536,
+      requestedDims: 1280,
+      source: 'init',
+      engineKind: 'pglite',
+    });
+    // Default falls back to gbrainPath('brain.pglite').
+    expect(msg).toMatch(/mv .+brain\.pglite .+brain\.pglite\.bak/);
+  });
+
+  test('PGLite branch must NOT recommend `gbrain config set embedding_model` (no-op after Lane C.2)', () => {
+    const msg = embeddingMismatchMessage({
+      currentDims: 1536,
+      requestedDims: 1280,
+      requestedModel: 'zeroentropyai:zembed-1',
+      source: 'doctor',
+      engineKind: 'pglite',
+    });
+    // The pre-v0.37 recipe pointed at `gbrain config set embedding_model X`
+    // which is a no-op after C.2. Recipe must point at init instead.
+    expect(msg).not.toContain('gbrain config set embedding_model');
+    expect(msg).not.toContain('gbrain config set embedding_dimensions');
+  });
+});
+
+// ============================================================================
+// v0.37.x — D11 + D12 preflight resolvers
+// ============================================================================
+
+describe('resolveSchemaEmbeddingDim', () => {
+  test('OpenAI text-embedding-3-large resolves at default 1536', () => {
+    const got = resolveSchemaEmbeddingDim({ embedding_model: 'openai:text-embedding-3-large' });
+    expect(got).toEqual({
+      ok: true,
+      dim: 1536,
+      model: 'openai:text-embedding-3-large',
+      provider: 'openai',
+      recipeDefault: 1536,
+    });
+  });
+
+  test('ZeroEntropy zembed-1 resolves at recipe default', () => {
+    const got = resolveSchemaEmbeddingDim({ embedding_model: 'zeroentropyai:zembed-1' });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.provider).toBe('zeroentropyai');
+      expect(got.model).toBe('zeroentropyai:zembed-1');
+      expect(got.dim).toBeGreaterThan(0);
+    }
+  });
+
+  test('ZeroEntropy Matryoshka explicit dim (1280) accepted', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'zeroentropyai:zembed-1',
+      embedding_dimensions: 1280,
+    });
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.dim).toBe(1280);
+  });
+
+  test('ZeroEntropy Matryoshka invalid dim (1024) rejected — 1024 is Voyage step, not ZE', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'zeroentropyai:zembed-1',
+      embedding_dimensions: 1024,
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/does not support custom dimensions 1024|only emits/);
+  });
+
+  test('OpenAI text-3-large rejects 2048 (not in declared dims_options)', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: 2048,
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/rejects custom dimensions 2048|does not support custom dimensions/);
+  });
+
+  test('OpenAI text-3-large accepts 768 (declared in recipe dims_options)', () => {
+    // text-embedding-3-large declares dims_options including 768.
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: 768,
+    });
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.dim).toBe(768);
+  });
+
+  test('unknown provider rejected with provider list hint', () => {
+    const got = resolveSchemaEmbeddingDim({ embedding_model: 'notarealprovider:foo' });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/unknown provider/i);
+  });
+
+  test('missing colon rejected', () => {
+    const got = resolveSchemaEmbeddingDim({ embedding_model: 'openai' });
+    expect(got.ok).toBe(false);
+  });
+
+  test('negative dim rejected', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: -100,
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/positive integer/);
+  });
+
+  test('zero dim rejected', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: 0,
+    });
+    expect(got.ok).toBe(false);
+  });
+
+  test('non-integer dim rejected', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: 1536.5,
+    });
+    expect(got.ok).toBe(false);
+  });
+
+  test('dim exceeding pgvector column cap rejected', () => {
+    const got = resolveSchemaEmbeddingDim({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: PGVECTOR_COLUMN_MAX_DIMS + 1,
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/exceed pgvector's column cap/);
+  });
+
+  test('regression: bug-reporter scenario — OpenAI auto-pick resolves at 1536', () => {
+    const got = resolveSchemaEmbeddingDim({ embedding_model: 'openai:text-embedding-3-large' });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.dim).toBe(1536);
+      expect(got.model).toBe('openai:text-embedding-3-large');
+    }
+  });
+});
+
+describe('resolveSchemaMultimodalDim', () => {
+  test('voyage voyage-multimodal-3 accepted', () => {
+    const got = resolveSchemaMultimodalDim({ embedding_multimodal_model: 'voyage:voyage-multimodal-3' });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.provider).toBe('voyage');
+      expect(got.dim).toBeGreaterThan(0);
+    }
+  });
+
+  test('OpenAI text-embedding-3-large rejected — not multimodal', () => {
+    const got = resolveSchemaMultimodalDim({
+      embedding_multimodal_model: 'openai:text-embedding-3-large',
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/does not support multimodal/);
+  });
+
+  test('voyage text-only model (voyage-3-large) rejected via allow-list', () => {
+    const got = resolveSchemaMultimodalDim({
+      embedding_multimodal_model: 'voyage:voyage-3-large',
+    });
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error).toMatch(/not in provider "voyage"'s multimodal allow-list/);
+  });
+
+  test('unknown provider rejected', () => {
+    const got = resolveSchemaMultimodalDim({
+      embedding_multimodal_model: 'notarealprovider:foo',
+    });
+    expect(got.ok).toBe(false);
+  });
+
+  test('dim above pgvector cap rejected', () => {
+    const got = resolveSchemaMultimodalDim({
+      embedding_multimodal_model: 'voyage:voyage-multimodal-3',
+      embedding_multimodal_dimensions: PGVECTOR_COLUMN_MAX_DIMS + 1,
+    });
+    expect(got.ok).toBe(false);
   });
 });
