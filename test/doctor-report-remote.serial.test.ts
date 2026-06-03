@@ -19,10 +19,11 @@ let savedGbrainHome: string | undefined;
 let tmpGbrainHome: string;
 
 beforeAll(async () => {
-  // Isolate $HOME so v0.31.8+ checks (minions_migration, sync_failures) that
-  // read ~/.gbrain/migrations/completed.jsonl + sync-failures.jsonl don't
-  // pull state from the developer machine. Without this, a wedged migration
-  // on the host fails the test even though the brain itself is fresh.
+  // Isolate $HOME so v0.31.8+ checks (minions_migration, sync_failures) and
+  // v0.37.10.0 doctorReportRemote audit reads (reranker_health, sync_failures,
+  // …) that read ~/.gbrain/* don't pull state from the developer machine.
+  // Without this, a wedged migration or stale audit file on the host fails the
+  // test even though the brain itself is fresh.
   savedGbrainHome = process.env.GBRAIN_HOME;
   tmpGbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-doctor-test-'));
   process.env.GBRAIN_HOME = tmpGbrainHome;

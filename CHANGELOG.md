@@ -2,6 +2,41 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.43.0.0] - 2026-06-03
+
+## **Catch up to upstream gbrain again. Seventy-three upstream commits (v0.37.9.0 → v0.42.8.0) merged in one wave: bearer-token onboarding, self-evolving skills, brain-internal synthesis for stub pages, search result auto-sizing, a content-quality gate on sync, and a 94→15 type unification. Fifteen conflicts, all resolved. The fork keeps its `dbrain` skin, its sync-resilience gate, its privacy scrub, and its own version line — now leapfrogged to v0.43 to end the number collision with upstream's v0.42.x track.**
+
+Last sync left us at upstream v0.37.9.0 (folded in as our v0.40.0.0). In the three weeks since, upstream shipped 73 commits and reached v0.42.8.0 — and because both sides had been numbering in the same v0.40–v0.42 space meaning different things, the version lines had quietly collided. This release merges all 73 upstream commits and resolves the collision by jumping the fork to **v0.43.0.0**, unambiguously ahead of upstream's v0.42.x. A straight merge produced **15 conflicts** (down from 106 last sync — the lineage is healthier now). Validation: typecheck clean, `bun run verify` green, **12,411 unit tests pass**, **945 E2E tests pass** against real Postgres.
+
+The genuine three-way merges were the usual contract surface. `auth.ts` took upstream's new `parseAuthCreateArgs` helper (it already subsumed our positional `--takes-holders` fix). `sync.ts` kept the fork's sync-resilience semantics (the 17-day-outage gate: `strictFailures` + quarantine-and-advance) *and* absorbed upstream's `--no-schema-pack`, `--no-extract`, single-source `--timeout`, and `serr` stderr helper. `cli.ts` unioned the command sets — upstream's new `onboard`/`connect`/`enrich`/`schema`/`skillopt` alongside the fork's `ingest`. The big docs (`CLAUDE.md`, `README.md`, `CHANGELOG.md`, `TODOS.md`) stayed the fork's de-identified copies; upstream's feature work is captured here in the fork's voice.
+
+On multi-user, the fork now **runs both onboarding paths**. Upstream's `gbrain onboard` + `gbrain connect` (one-command, bearer-token, the `company-brain` tutorial) land *alongside* the fork's existing teammate-onboarding + `access_tokens` + plugin-marketplace flow. Neither is deprecated — choosing one is a deliberate later call.
+
+What teammates get from upstream: **`gbrain connect`** (wire a coding agent to the brain from a bearer token in one command), **`gbrain enrich --thin`** (brain-internal grounded synthesis that fills in stub pages without a web call), **search autocut** (result sets sized by score discontinuity instead of a fixed top-k), a **content-quality gate on sync** (junk gets quarantined, boilerplate flagged), **`gbrain skillopt`** (self-evolving skills, default OFF), **`gbrain extract --stale`** + a doctor lag check (link/timeline extraction freshness watermark), **`gbrain status`** + **`doctor --scope=brain`**, **`--workers N`** on every bulk command, a 94→15 canonical **type unification**, lens packs, and a wave of minions/queue reliability fixes (RSS watchdog, pooler-reap self-heal, Supavisor retry).
+
+Numbers: 73 upstream commits, 15 conflicts resolved, version leapfrogged v0.40.0.1 → v0.43.0.0. Six known-non-blocking E2E reds remain, all triaged as either local-env (`DATABASE_URL`/`ZEROENTROPY_API_KEY`) or inherited upstream test/code mismatches (their `ALL_PHASES` vs `EXPECTED_PHASES`, their `--break-lock --all` code vs test) — none caused by this merge.
+
+### To take advantage of v0.43.0.0
+
+1. **Teammates on `/dent-update`**: update as usual. Schema migrations apply automatically on the next `dbrain` run. Your recipe files and `access_tokens` are untouched. See `skills/migrations/v0.43.md`.
+2. **Embedding default changed upstream**: the canonical default embedding model is now `zeroentropyai:zembed-1` (1280-dim). Existing brains stay pinned to whatever they were initialized with (the gateway reads your `~/.gbrain` config), so nothing re-embeds on upgrade. A *fresh* `dbrain init` now defaults to zembed-1 and wants `ZEROENTROPY_API_KEY`; set `dbrain config set embedding_model openai:text-embedding-3-small` to stay on OpenAI.
+3. **New onboarding surface available**: `gbrain connect` / `gbrain onboard` now exist alongside the teammate plugin flow. Either path works; the teammate plugin flow is unchanged.
+
+### Itemized changes
+
+#### Added
+- Upstream features (v0.37.9.0 → v0.42.8.0): `gbrain connect` (`src/commands/connect.ts`) + `gbrain onboard` (`src/commands/onboard.ts`, `src/core/onboard/*`), `gbrain enrich --thin`, search autocut, content-quality sync gate, `gbrain skillopt`, `gbrain extract --stale` freshness watermark, `gbrain status`, `doctor --scope=brain`, `--workers N` on bulk commands, lens packs, type-unification cathedral (94→15), and the minions/queue reliability wave.
+- `gbrain sync --no-schema-pack` and `--no-extract` flags; single-source `sync --timeout`.
+- `skills/migrations/v0.43.md` — upgrade guide (auto-applied migrations + the zembed-1 default note).
+- New e2e coverage for the resilient sync default (`test/e2e/sync.test.ts`): a deterministic bad file is quarantined and the bookmark advances.
+
+#### Changed
+- Version leapfrogged to **0.43.0.0** to end the v0.40–v0.42 number collision with upstream's track.
+- `verify` stays the fork's explicit `&&` chain (carries `check:plugin-version` + `check:newlines` + `check:exports-count`, which upstream's parallel dispatcher lacks); upstream's `run-verify-parallel.sh` is exposed as `verify:parallel`.
+- `sync.ts` merges the fork's resilience gate with upstream's `noSchemaPack`/`noExtract`/`--timeout`/`serr`.
+- `test/e2e/sync.test.ts` "blocks on bad file" steps use `--strict-failures` (the legacy gate the resilient default replaced); the `--skip-failed` ack-loop + doctor-breakdown coverage is preserved.
+- Plugin marketplace bundle, `llms-full.txt`/`llms.txt`, and `bun.lock` regenerated to v0.43.0.0.
+
 ## [0.40.0.1] - 2026-06-02
 
 ## **Sync resilience: one malformed file can no longer freeze the whole brain. Plus the granola-sync slug bug that caused the freeze in the first place.**

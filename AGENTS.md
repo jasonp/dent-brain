@@ -59,6 +59,31 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
   <dataset.jsonl>` (v0.28.8) runs against an isolated in-memory PGLite
   per question — your `~/.gbrain` is never opened. Full guide:
   [`docs/eval-bench.md`](./docs/eval-bench.md).
+- **Drive the brain to a target health score (v0.36.4.0):** the one-command
+  loop. `gbrain doctor --remediation-plan --json` previews what would be
+  fixed; `gbrain doctor --remediate --yes --target-score 90 --max-usd 5`
+  walks a dependency-ordered plan (sync before extract, embed after
+  consolidate), re-checking score between every step, refusing to spend
+  past the cost cap. Empty brains (no entity pages) or unconfigured embedding
+  keys hit a `max_reachable_score` ceiling and bail with what's missing.
+  Three phase handlers (synthesize / patterns / consolidate) are
+  PROTECTED — only trusted local callers can submit them; MCP cannot.
+  Reference: [`docs/architecture/topologies.md`](./docs/architecture/topologies.md)
+  and the CHANGELOG entry for v0.36.4.0.
+- **Track a founder/company over time (v0.35.7):** when an entity has
+  typed metric claims in its `## Facts` fence (`metric: mrr`, `value: 50000`,
+  `unit: USD`, `period: monthly` columns), run
+  `gbrain eval trajectory <entity-slug>` for the chronological history
+  with regressions auto-flagged, or `gbrain founder scorecard <entity-slug>`
+  for a four-signal JSON rollup (claim_accuracy / consistency /
+  growth_trajectory / red_flags). MCP op `find_trajectory` exposes the
+  same data — read scope, visibility-filtered for remote callers. **v0.40.2.0:**
+  `gbrain think` now uses this substrate automatically on temporal /
+  knowledge_update intent (default ON; flip `think.trajectory_enabled=false`
+  to opt out). Migration v82 added `facts.event_type` so non-metric event
+  rows (`meeting`, `job_change`, `location_change`) ride through the same
+  pipeline; pass `kind: 'event'` or `'all'` to `find_trajectory` to query
+  them.
 - **Everything else:** [`./llms.txt`](./llms.txt) is the full documentation map.
   [`./llms-full.txt`](./llms-full.txt) is the same map with core docs inlined for
   single-fetch ingestion.

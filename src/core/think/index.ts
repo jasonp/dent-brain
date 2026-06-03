@@ -24,10 +24,10 @@ import { renderTakesBlock } from './sanitize.ts';
 import { buildThinkSystemPrompt, buildThinkUserMessage } from './prompt.ts';
 import { resolveCitations, type ParsedCitation } from './cite-render.ts';
 import { resolveModel } from '../model-config.ts';
-import { chat as gatewayChat, type ChatResult } from '../ai/gateway.ts';
-import { resolveRecipe } from '../ai/model-resolver.ts';
+import { chat as gatewayChat, probeChatModel, type ChatResult } from '../ai/gateway.ts';
 import { AIConfigError } from '../ai/errors.ts';
-import { loadConfig } from '../config.ts';
+import { normalizeModelId } from '../model-id.ts';
+import { hasAnthropicKey } from '../ai/anthropic-key.ts';
 
 /** Anthropic Messages client interface — same shape used by subagent.ts so test stubs can be shared. */
 export interface ThinkLLMClient {
@@ -46,6 +46,14 @@ export interface RunThinkOpts {
   take?: boolean;
   /** Model override (CLI flag). Falls through resolveModel's 6-tier chain. */
   model?: string;
+  /**
+   * v0.41.x (#1698) — true when the CALLER explicitly supplied a model
+   * (CLI `--model`, or the MCP `think` op's `model` param). When true, an
+   * unresolvable model is a HARD ERROR (throws before gather) instead of
+   * silently degrading to the no-LLM stub. Default false: the configured /
+   * default model path keeps its graceful-degrade behavior.
+   */
+  modelExplicit?: boolean;
   /** Optional time window for temporal questions. */
   since?: string;
   until?: string;
@@ -72,6 +80,37 @@ export interface RunThinkOpts {
    * consulted when withCalibration=true.
    */
   calibrationHolder?: string;
+  /**
+   * v0.40.2.0 — when true (default), inject a `<trajectory>` block for
+   * temporal / knowledge_update intents. Bypass via
+   * `think.trajectory_enabled=false` config OR explicit `withTrajectory:false`
+   * caller opt. Kill switch for the rare regression. When set, runThink
+   * runs `classifyIntent` + `extractCandidateEntities` + per-candidate
+   * `findTrajectory` (5s timeout, concurrency cap 3) before prompt assembly.
+   * `other` intent short-circuits the path entirely — no per-candidate
+   * SQL fires.
+   */
+  withTrajectory?: boolean;
+  /**
+   * v0.40.2.0 — scalar projection of `OperationContext.sourceId`. MCP
+   * `think` op handler populates this via `sourceScopeOpts(ctx)` so
+   * trajectory queries inherit the same source scope as page/take
+   * retrieval. CLI callers omit it and get the engine's default source.
+   */
+  sourceId?: string;
+  /**
+   * v0.40.2.0 — scalar projection of `OperationContext.auth.allowedSources`.
+   * Federated-read OAuth clients scoped to multiple sources see their
+   * full federation. Mutually exclusive with `sourceId` (the array wins
+   * when both set, per `sourceScopeOpts` contract).
+   */
+  allowedSources?: string[];
+  /**
+   * v0.40.2.0 — scalar projection of `OperationContext.remote`. When
+   * true, trajectory queries apply `visibility='world'` filter (mirrors
+   * the recall posture for untrusted callers). CLI defaults to false.
+   */
+  remote?: boolean;
 }
 
 /** Structured response from the LLM (matches the schema declared in prompt.ts). */
@@ -92,6 +131,14 @@ export interface ThinkResult {
   modelUsed: string;
   rounds: number;
   warnings: string[];
+  /**
+   * v0.41.x (#1698) — true only when an actual synthesis produced a NON-EMPTY
+   * answer. False for the no-LLM graceful stub, malformed (not-JSON) output, and
+   * valid-but-empty JSON (`{"answer":""}`). `persistSynthesis` refuses to write
+   * when this is `=== false`, so an empty page can never be saved. Undefined on
+   * pre-existing/test `ThinkResult` literals → treated as persistable (back-compat).
+   */
+  synthesisOk?: boolean;
   /** Only set when --save was true and the caller persisted a synthesis page. */
   savedSlug?: string;
   /** Diagnostics for `--explain` callers (CLI surface for v0.29). */
@@ -191,6 +238,21 @@ export async function runThink(
     fallback: 'opus',  // think is the high-stakes synthesis op; opus is the right default
   });
 
+  // #1698: fail fast on an unresolvable EXPLICIT model (CLI --model, or the MCP op's
+  // model param) BEFORE gather, so we don't waste retrieval per failure (the 200-call
+  // batch case). The default/configured-model path is unaffected (modelExplicit false →
+  // it keeps the graceful no-LLM-stub degrade). Test/injected client + stub bypass.
+  if (opts.modelExplicit && !opts.client && !opts.stubResponse) {
+    const probe = probeChatModel(normalizeModelId(modelUsed));
+    if (!probe.ok) {
+      throw new Error(
+        `think: --model "${opts.model}" is not usable (${probe.reason}): ${probe.detail}. ` +
+        `Refusing to run synthesis with no model — fix the model id or omit --model.` +
+        (probe.fix ? ` Fix: ${probe.fix}` : ''),
+      );
+    }
+  }
+
   // Optional question embedding — caller decides whether to pay the embedder.
   let questionEmbedding: Float32Array | undefined;
   if (opts.embedQuestion) {
@@ -250,6 +312,91 @@ export async function runThink(
     }
   }
 
+  // v0.40.2.0 — trajectory injection for temporal / knowledge_update
+  // intents. Default ON (Eng D1). `think.trajectory_enabled` config flag
+  // is the kill switch. `withTrajectory: false` caller opt also bypasses.
+  // `other` intent short-circuits before any SQL fires.
+  let trajectoryBlock = '';
+  let trajectoryPointsCount = 0;
+  const trajectoryEnabledConfig = await readThinkTrajectoryEnabled(engine);
+  const trajectoryEnabledOpt = opts.withTrajectory !== false; // default true
+  if (trajectoryEnabledConfig && trajectoryEnabledOpt) {
+    try {
+      const { classifyIntent } = await import('./intent.ts');
+      const trajIntent = classifyIntent(opts.question);
+      if (trajIntent === 'temporal' || trajIntent === 'knowledge_update') {
+        const { extractCandidateEntities } = await import('./entity-extract.ts');
+        const retrievedSlugs = gather.pages.map(p => p.slug);
+        const candidates = extractCandidateEntities(opts.question, retrievedSlugs);
+        if (candidates.length > 0) {
+          const { resolveEntitySlugWithSource } = await import('../entities/resolve.ts');
+          const { formatTrajectoryBlock } = await import('../trajectory-format.ts');
+          const sourceIdScalar = opts.sourceId ?? 'default';
+          // Per-candidate trajectory fetch. Concurrency cap = 3; each call
+          // has its own 5s timeout via Promise.race. allSettled prevents
+          // one error from killing the others (Codex Problem 13: timeout
+          // bounds latency, not just failure propagation).
+          const allBlocks: string[] = [];
+          const seenSlugs = new Set<string>();
+          let totalPoints = 0;
+          const candidateQueue = [...candidates];
+          while (candidateQueue.length > 0) {
+            const batch = candidateQueue.splice(0, 3);
+            const settled = await Promise.allSettled(
+              batch.map(async (cand) => {
+                const resolved = await resolveEntitySlugWithSource(engine, sourceIdScalar, cand.raw);
+                if (!resolved) return null;
+                if (resolved.source === 'fallback_slugify') return null;
+                if (seenSlugs.has(resolved.slug)) return null;
+                seenSlugs.add(resolved.slug);
+                // 5s per-candidate timeout. Promise.race resolves with the
+                // first to land; the timeout returns [] (empty trajectory).
+                const points = await Promise.race([
+                  engine.findTrajectory({
+                    entitySlug: resolved.slug,
+                    ...(opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
+                    ...(opts.allowedSources !== undefined ? { sourceIds: opts.allowedSources } : {}),
+                    ...(opts.remote !== undefined ? { remote: opts.remote } : {}),
+                    kind: 'all',
+                    limit: 100,
+                  }),
+                  new Promise<import('../engine.ts').TrajectoryPoint[]>(resolve => {
+                    setTimeout(() => resolve([]), 5000);
+                  }),
+                ]);
+                if (points.length === 0) return null;
+                const fmt = formatTrajectoryBlock(points, resolved.slug, {
+                  intent: trajIntent,
+                });
+                if (fmt.rendered.length === 0) return null;
+                return { rendered: fmt.rendered, points: fmt.emittedPoints };
+              }),
+            );
+            for (const s of settled) {
+              if (s.status !== 'fulfilled' || s.value === null) continue;
+              allBlocks.push(s.value.rendered);
+              totalPoints += s.value.points;
+            }
+          }
+          if (allBlocks.length > 0) {
+            trajectoryBlock = allBlocks.join('\n\n');
+            trajectoryPointsCount = totalPoints;
+          }
+        }
+      }
+    } catch (err) {
+      // Defensive: trajectory injection is best-effort. Any unexpected
+      // error degrades to "no trajectory block" + a warning. The think
+      // call itself never fails because of trajectory wiring.
+      warnings.push(
+        `TRAJECTORY_INJECTION_FAILED: ${err instanceof Error ? err.message : 'unknown'}`,
+      );
+    }
+  }
+  if (trajectoryPointsCount > 0) {
+    warnings.push(`TRAJECTORY_INJECTED_${trajectoryPointsCount}_POINTS`);
+  }
+
   // SYNTHESIZE
   const intent = inferIntent(opts.question, opts.anchor);
   const systemPrompt = buildThinkSystemPrompt({
@@ -266,8 +413,14 @@ export async function runThink(
     takesBlock,
     ...(graphBlock !== undefined ? { graphBlock } : {}),
     ...(calibrationBlockOpts !== undefined ? { calibration: calibrationBlockOpts } : {}),
+    ...(trajectoryBlock.length > 0 ? { trajectoryBlock } : {}),
   });
 
+  // #1698: true only when an actual synthesis produced a non-empty answer. Set false
+  // on the not-JSON branch (covers malformed output AND the buildGracefulMessage
+  // sentinel, which is non-JSON) and on the no-client early return below; the final
+  // return ANDs it with a non-empty-answer check (catches valid-but-empty JSON).
+  let synthesisOk = true;
   let response: ThinkResponse;
   if (opts.stubResponse) {
     response = opts.stubResponse;
@@ -284,7 +437,7 @@ export async function runThink(
     // That bypassed gateway config (gbrain config set anthropic_api_key)
     // because the Anthropic SDK only reads process.env.ANTHROPIC_API_KEY.
     // Closes #952 (think over MCP returns "no LLM available").
-    const client = opts.client ?? await tryBuildGatewayClient(modelUsed);
+    const client = opts.client ?? await tryBuildGatewayClient(modelUsed, { explicitModel: opts.modelExplicit });
     if (!client) {
       warnings.push('NO_ANTHROPIC_API_KEY');
       // Degrade gracefully: return the gather without synthesis. Better than throwing.
@@ -299,6 +452,7 @@ export async function runThink(
         modelUsed,
         rounds: 0,
         warnings,
+        synthesisOk: false,  // #1698: no LLM ran — never persist this
         diagnostics: {
           pagesFromHybrid: gather.diagnostics.pagesFromHybrid,
           takesFromKeyword: gather.diagnostics.takesFromKeyword,
@@ -318,6 +472,7 @@ export async function runThink(
     const parsed = tryParseJSON(text);
     if (!parsed || typeof parsed !== 'object') {
       warnings.push('LLM_OUTPUT_NOT_JSON');
+      synthesisOk = false;  // #1698: malformed output (and the non-JSON graceful sentinel)
       response = { answer: text, citations: [], gaps: [] };
     } else {
       const r = parsed as Partial<ThinkResponse>;
@@ -353,6 +508,9 @@ export async function runThink(
     modelUsed,
     rounds: 1,
     warnings,
+    // #1698: persistable only when a real synthesis produced a non-empty answer.
+    // ANDs the not-JSON/sentinel flag with a content check (catches valid-but-empty JSON).
+    synthesisOk: synthesisOk && response.answer.trim().length > 0,
     diagnostics: {
       pagesFromHybrid: gather.diagnostics.pagesFromHybrid,
       takesFromKeyword: gather.diagnostics.takesFromKeyword,
@@ -370,6 +528,14 @@ export async function persistSynthesis(
   engine: BrainEngine,
   result: ThinkResult,
 ): Promise<{ slug: string; evidenceInserted: number; warnings: string[] }> {
+  // #1698: never persist an empty synthesis. Returned signal (NOT a throw, F3) so
+  // the MCP `think` op can return the gather result + warning instead of a bare error
+  // envelope; the CLI keys off this warning to exit non-zero. Guard on `=== false` so
+  // pre-existing/test ThinkResult literals without the field still persist (back-compat).
+  if (result.synthesisOk === false) {
+    return { slug: '', evidenceInserted: 0, warnings: ['SYNTHESIS_EMPTY_NOT_PERSISTED'] };
+  }
+
   const today = new Date().toISOString().slice(0, 10);
   const slugSafe = result.question
     .toLowerCase()
@@ -434,36 +600,56 @@ export async function persistSynthesis(
 // ─────────────────────────────────────────────────────────────────
 
 /**
+ * v0.40.2.0 — read the `think.trajectory_enabled` config key. Default
+ * true. Returns false ONLY when the value is set AND parses to a false
+ * string. Any read error (table missing on pre-v36 brains, etc.) returns
+ * true so users on legacy installs still get the feature. The flag is
+ * the kill switch for the rare prod regression.
+ */
+async function readThinkTrajectoryEnabled(engine: BrainEngine): Promise<boolean> {
+  try {
+    const v = await engine.getConfig('think.trajectory_enabled');
+    if (v === null || v === undefined) return true;
+    const lower = v.trim().toLowerCase();
+    if (lower === 'false' || lower === '0' || lower === 'no' || lower === 'off') return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Try to build a gateway-backed ThinkLLMClient for the given model.
  * Returns null when the gateway cannot resolve a usable chat provider for
  * this model (missing API key for the resolved provider, unknown provider,
  * touchpoint not supported, etc.). Caller falls through to the graceful
  * "no LLM available" stub on null.
  */
-async function tryBuildGatewayClient(modelUsed: string): Promise<ThinkLLMClient | null> {
-  // Normalize: ensure provider:model shape. resolveModel returns bare
-  // anthropic ids (e.g. `claude-opus-4-7`); gateway.chat needs `anthropic:...`.
-  const modelStr = modelUsed.includes(':') ? modelUsed : `anthropic:${modelUsed}`;
+async function tryBuildGatewayClient(
+  modelUsed: string,
+  opts: { explicitModel?: boolean } = {},
+): Promise<ThinkLLMClient | null> {
+  // Normalize: ensure provider:model shape (and slash→colon — #1698). resolveModel
+  // returns bare anthropic ids (`claude-opus-4-7`); gateway.chat needs `anthropic:...`.
+  const modelStr = normalizeModelId(modelUsed);
 
-  // Availability probe: resolveRecipe throws on unknown provider; assertTouchpoint
-  // throws if the resolved recipe doesn't support chat. Both are AIConfigError.
-  let providerId: string;
-  try {
-    const { parsed } = resolveRecipe(modelStr);
-    providerId = parsed.providerId;
-  } catch (e) {
-    if (e instanceof AIConfigError) return null;
-    throw e;
+  // #1698: ONE shared probe (resolveRecipe + assertTouchpoint + isAvailable).
+  // assertTouchpoint catches typo'd native models; isAvailable catches missing keys.
+  // For an EXPLICIT model the user typed, an unusable model is a HARD ERROR (throw)
+  // — never silently degrade to the no-LLM stub. For the default/configured-model
+  // path, return null so the caller falls through to the graceful "no LLM" stub
+  // (preserves the documented no-key gather-only behavior).
+  const probe = probeChatModel(modelStr);
+  if (!probe.ok) {
+    if (opts.explicitModel) {
+      throw new Error(
+        `think: --model "${modelUsed}" is not usable (${probe.reason}): ${probe.detail}. ` +
+        `Refusing to run synthesis with no model — fix the model id or omit --model.` +
+        (probe.fix ? ` Fix: ${probe.fix}` : ''),
+      );
+    }
+    return null;
   }
-
-  // API-key availability probe. The gateway lazily checks keys inside
-  // instantiateChat at first .chat() call and throws AIConfigError on miss.
-  // Pre-checking here preserves the legacy "NO_ANTHROPIC_API_KEY" warning
-  // signal AND avoids paying for a wasted gateway call when the user clearly
-  // has no key configured. Reads BOTH the gbrain config file (`anthropic_api_key`
-  // set via `gbrain config set`) AND the process env, matching gateway's
-  // own loadConfig precedence.
-  if (providerId === 'anthropic' && !hasAnthropicKey()) return null;
 
   return {
     create: async (params): Promise<Anthropic.Message> => {
@@ -487,10 +673,13 @@ async function tryBuildGatewayClient(modelUsed: string): Promise<ThinkLLMClient 
           maxTokens: params.max_tokens,
         });
       } catch (e) {
-        // AIConfigError at chat time = missing API key for resolved provider.
-        // Surface as a sentinel "no LLM available"-shaped Message so the
+        // AIConfigError at chat time = e.g. key revoked mid-run. For an EXPLICIT
+        // model the user typed, this is a hard error (rethrow) — the early gate
+        // normally catches it first; this is defense-in-depth. For the default
+        // path, surface a sentinel "no LLM available"-shaped Message so the
         // existing JSON-parse path produces the graceful degradation answer.
         if (e instanceof AIConfigError) {
+          if (opts.explicitModel) throw e;
           return buildGracefulMessage(modelStr) as unknown as Anthropic.Message;
         }
         throw e;
@@ -527,17 +716,6 @@ function chatResultToMessage(result: ChatResult, modelStr: string): {
     },
     stop_reason: mapStopReason(result.stopReason),
   };
-}
-
-function hasAnthropicKey(): boolean {
-  if (process.env.ANTHROPIC_API_KEY) return true;
-  try {
-    const cfg = loadConfig();
-    if (cfg?.anthropic_api_key) return true;
-  } catch {
-    // loadConfig may throw on first-run installs; treat as no key available.
-  }
-  return false;
 }
 
 function mapStopReason(s: ChatResult['stopReason']): 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' {

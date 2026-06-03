@@ -453,7 +453,14 @@ describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #5
     }
   });
 
-  test('full --skip-failed loop: blocks on bad file, skip advances bookmark, doctor shows code breakdown', async () => {
+  // NOTE (v0.40 sync resilience, PR #26): the DEFAULT sync no longer blocks on
+  // a deterministic content failure (SLUG_MISMATCH et al.) — it quarantines the
+  // bad file and advances the bookmark so one malformed page can't freeze the
+  // brain (the 17-day-outage fix). `--strict-failures` restores the legacy
+  // block-on-any-failure gate. This test exercises that strict gate + the
+  // --skip-failed ack loop; the resilient-default advance is covered by the
+  // separate test below and by test/sync-resilience-gate.test.ts (policy unit).
+  test('full --strict-failures + --skip-failed loop: strict blocks on bad file, skip advances bookmark + acks, doctor shows code breakdown', async () => {
     const { performSync } = await import('../../src/commands/sync.ts');
     const { loadSyncFailures, summarizeFailuresByCode } = await import('../../src/core/sync.ts');
     const engine = getEngine();
@@ -474,8 +481,10 @@ describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #5
     ].join('\n'));
     execSync('git add -A && git commit -m "add broken bob"', { cwd: repoPath, stdio: 'pipe' });
 
-    // Step 3: Sync should block. Bookmark must NOT advance.
-    result = await performSync(engine, { repoPath, noPull: true, noEmbed: true });
+    // Step 3: Sync with --strict-failures should block. Bookmark must NOT advance.
+    // (The default sync would quarantine bob + advance — see the resilient-default
+    // test below; strict restores the legacy block so the skip-loop can be tested.)
+    result = await performSync(engine, { repoPath, noPull: true, noEmbed: true, strictFailures: true });
     expect(result.status).toBe('blocked_by_failures');
     const afterBlockedCommit = await engine.getConfig('sync.last_commit');
     expect(afterBlockedCommit).toBe(firstCommit); // bookmark stuck at the pre-broken commit
@@ -529,8 +538,8 @@ describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #5
     ].join('\n'));
     execSync('git add -A && git commit -m "add carol with bad slug"', { cwd: repoPath, stdio: 'pipe' });
 
-    // Step 7: Sync blocks again on the new failure. Old entry stays acked.
-    result = await performSync(engine, { repoPath, noPull: true, noEmbed: true });
+    // Step 7: Sync (strict) blocks again on the new failure. Old entry stays acked.
+    result = await performSync(engine, { repoPath, noPull: true, noEmbed: true, strictFailures: true });
     expect(result.status).toBe('blocked_by_failures');
     failures = loadSyncFailures();
     expect(failures.length).toBe(2);
@@ -552,5 +561,36 @@ describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #5
 
     const finalSummary = summarizeFailuresByCode(failures);
     expect(finalSummary).toEqual([{ code: 'SLUG_MISMATCH', count: 2 }]);
+  });
+
+  test('resilient default: a deterministic bad file is quarantined and the bookmark ADVANCES (one bad file does not freeze the brain)', async () => {
+    const { performSync } = await import('../../src/commands/sync.ts');
+    const { loadSyncFailures } = await import('../../src/core/sync.ts');
+    const engine = getEngine();
+
+    const beforeCommit = await engine.getConfig('sync.last_commit');
+
+    // A third deterministic SLUG_MISMATCH. The DEFAULT sync (no --strict-failures,
+    // no --skip-failed) must NOT block: it quarantines dave (recorded UNacked so
+    // `gbrain doctor` still surfaces it) and advances past him so the good files
+    // in this diff still index. This is the 17-day-outage fix end-to-end.
+    writeFileSync(join(repoPath, 'people/dave.md'), [
+      '---', 'type: person', 'title: Dave', 'slug: dave-wrong-slug', '---', '', 'Body.',
+    ].join('\n'));
+    execSync('git add -A && git commit -m "add dave with bad slug"', { cwd: repoPath, stdio: 'pipe' });
+
+    const result = await performSync(engine, { repoPath, noPull: true, noEmbed: true });
+    expect(result.status).toBe('synced'); // advanced, NOT blocked_by_failures
+
+    const afterCommit = await engine.getConfig('sync.last_commit');
+    expect(afterCommit).not.toBe(beforeCommit); // bookmark moved past the broken commit
+
+    // Quarantine recorded but left UNacknowledged (default path doesn't ack —
+    // only --skip-failed does), so doctor keeps surfacing it.
+    const failures = loadSyncFailures();
+    const dave = failures.find(f => f.path?.includes('dave'));
+    expect(dave).toBeTruthy();
+    expect(dave!.code).toBe('SLUG_MISMATCH');
+    expect(dave!.acknowledged).toBeFalsy();
   });
 });
