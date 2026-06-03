@@ -9,7 +9,7 @@
   "code_repo": "jasonp/dent-brain",
   "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:jasonp/dent-brain and install dent-brain\"",
   "code_install_command": "bash plugin/marketplace/install-local.sh",
-  "built_at": "2026-06-02T17:59:06.223Z",
+  "built_at": "2026-06-03T16:55:45.416Z",
   "skills": [
     {
       "template": "setup",
