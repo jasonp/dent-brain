@@ -118,6 +118,12 @@ describe('embeddingMismatchMessage', () => {
     expect(msg).toContain('UPDATE content_chunks SET embedding = NULL');
     expect(msg).toContain('CREATE INDEX IF NOT EXISTS idx_chunks_embedding');
     expect(msg).toContain('docs/embedding-migrations.md');
+    // Regression guard: the NULL wipe MUST precede the ALTER. pgvector rejects
+    // `ALTER COLUMN TYPE vector(N)` while old-width rows remain ("expected N
+    // dimensions, not M"), so the prior recipe (ALTER before wipe) failed on a
+    // real Postgres brain mid-migration. Order matters, not just presence.
+    expect(msg.indexOf('UPDATE content_chunks SET embedding = NULL'))
+      .toBeLessThan(msg.indexOf('ALTER TABLE content_chunks ALTER COLUMN embedding TYPE'));
   });
 
   test('Postgres branch skips HNSW recreate when requested dims exceed pgvector cap', () => {

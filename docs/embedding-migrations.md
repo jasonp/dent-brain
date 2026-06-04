@@ -115,11 +115,13 @@ BEGIN;
 -- 1. Drop the HNSW index. It can't survive the column type change.
 DROP INDEX IF EXISTS idx_chunks_embedding;
 
--- 2. Alter the column type.
-ALTER TABLE content_chunks ALTER COLUMN embedding TYPE vector(<NEW_DIMS>);
-
--- 3. Clear stale embeddings so they don't survive into the new space.
+-- 2. Clear stale embeddings FIRST. pgvector rejects the ALTER below while the
+--    column still holds old-width vectors ("expected N dimensions, not M"),
+--    so the old embeddings must be NULLed before the column is resized.
 UPDATE content_chunks SET embedding = NULL, embedded_at = NULL;
+
+-- 3. Alter the column type (now that the column holds no old-width vectors).
+ALTER TABLE content_chunks ALTER COLUMN embedding TYPE vector(<NEW_DIMS>);
 
 -- 4. Recreate the HNSW index ONLY IF dims <= 2000. Above that, leave it
 --    indexless and rely on exact scans (gbrain searchVector handles this
