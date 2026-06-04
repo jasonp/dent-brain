@@ -217,8 +217,11 @@ export function embeddingMismatchMessage(opts: EmbeddingMismatchOpts): string {
     ``,
     `  BEGIN;`,
     `  DROP INDEX IF EXISTS idx_chunks_embedding;`,
-    `  ALTER TABLE content_chunks ALTER COLUMN embedding TYPE vector(${requestedDims});`,
+    // Wipe BEFORE the ALTER: pgvector rejects `ALTER COLUMN TYPE vector(N)`
+    // while existing rows hold vectors of the old width ("expected N
+    // dimensions, not M"), so the old embeddings must be NULLed first.
     `  UPDATE content_chunks SET embedding = NULL, embedded_at = NULL;`,
+    `  ALTER TABLE content_chunks ALTER COLUMN embedding TYPE vector(${requestedDims});`,
     `  ${reindexLine.split('\n').join('\n  ')}`,
     `  COMMIT;`,
     ``,
