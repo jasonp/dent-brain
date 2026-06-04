@@ -37,11 +37,13 @@ The supported path is via `/dent-extensions install email-sync` (the Claude Code
 Direct path (admin running it on a teammate's laptop, or a teammate doing the manual flow):
 
 ```bash
-DENT_EMAIL_WORK_EMAIL=steve@dentthefuture.com \
+DENT_EMAIL_WORK_EMAIL=you@example.com \
 DENT_GOOGLE_CLIENT_ID=...apps.googleusercontent.com \
 DENT_GOOGLE_CLIENT_SECRET=GOCSPX-... \
-bash tools/email-sync/install.sh
+bun tools/email-sync/install.ts
 ```
+
+Cross-platform (macOS + Windows): the installer is a Bun script — same command on both OSes. It picks launchd (macOS) or Windows Task Scheduler automatically. Or run it through the manager: `dent-extensions install email-sync`.
 
 The installer also drops the Layer-2 skill body at `~/.dent-brain/skills/process-inbox.md`. After install completes, set up Layer 2 by asking Claude in any Claude Code Desktop session:
 
@@ -71,8 +73,7 @@ The collector writes one digest page per day in the range. The 3am Sonnet run pi
 | `noise-filter.ts` | Deterministic noise + signature classification. |
 | `link-gen.ts` | Gmail deep-link generator. Code, never LLM. |
 | `digest.ts` | Builds the daily digest markdown page. |
-| `install.sh` | One-shot installer (collects config, runs OAuth dance, installs launchd plist, drops Layer-2 skill body). |
-| `com.dent.email-sync.plist.template` | launchd template (StartInterval=21600 = every 6h). |
+| `install.ts` | Cross-platform one-shot installer (collects config, runs OAuth dance, stages the schedule via the scheduler abstraction, drops Layer-2 skill body). macOS + Windows. |
 | `config.example.json` | Reference config shape. |
 
 ## Manual ops
