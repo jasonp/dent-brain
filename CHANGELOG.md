@@ -2,6 +2,29 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.43.0.1] - 2026-06-07
+
+## **Fix a source split-brain in the dent MCP server: reads and `put_page` writes now target the canonical `dent` source instead of `default`, so content written through `markdown_*` and the ingestors is finally visible to `get_page`/search. Also fix `embed --catch-up`, which silently embedded zero chunks.**
+
+The fork serves one logical brain but stores every page under a `source_id`. `markdown_append_to_page` / `markdown_replace_page` and the regfox/mailchimp ingestors all sync into the `dent` source, but the MCP server's operation context was hard-coded to read (and route `put_page` writes to) `source_id = 'default'`. The two halves never met: anything written to `dent` was invisible to every read, and direct `put_page` calls quietly accumulated on `default`. `serve.ts` now builds its context from `DENT_SOURCE_ID`, the same constant the writer uses, so the read and write sides can no longer drift apart, with a `DENT_BRAIN_READ_SOURCE` env override for redeploy-free rollback.
+
+Second fix: `embed --catch-up` set its wall-clock budget to `Number.MAX_SAFE_INTEGER` and armed `setTimeout(abort, budget)`. `setTimeout` clamps any delay over ~24.8 days to 1ms, so the abort fired almost immediately and catch-up embedded **0 chunks** while reporting a clean exit. Catch-up now omits the wall-clock timer entirely and runs until the stale-chunk count reaches zero.
+
+### To take advantage of v0.43.0.1
+
+1. **Redeploy the server** so the read-source switch takes effect. To roll back without a redeploy, set `DENT_BRAIN_READ_SOURCE=default` in the environment.
+2. **One-time source convergence**: a brain that accumulated pages on `default` before this fix needs those pages present on `dent` (render them to markdown in the data repo, then `sync --source dent`) so reads resolve them after the switch.
+
+### Itemized changes
+
+#### Fixed
+- `src/dent/serve.ts` — MCP operation context reads/writes via `DENT_SOURCE_ID` (env-overridable through `DENT_BRAIN_READ_SOURCE`) instead of a hard-coded `'default'`, closing the read/write source split-brain.
+- `src/commands/embed.ts` — `--catch-up` no longer arms a `setTimeout` whose out-of-range delay clamped to 1ms and aborted instantly; the wall-clock timer is omitted entirely in catch-up mode.
+
+#### Tests
+- `test/dent/markdown-writer/append.test.ts` — pins the invariant that a markdown write lands on `DENT_SOURCE_ID` and is invisible to a `default`-scoped read.
+- `test/embed.serial.test.ts` — `--catch-up` embeds all stale chunks instead of aborting at the clamped timer.
+
 ## [0.43.0.0] - 2026-06-03
 
 ## **Catch up to upstream gbrain again. Seventy-three upstream commits (v0.37.9.0 → v0.42.8.0) merged in one wave: bearer-token onboarding, self-evolving skills, brain-internal synthesis for stub pages, search result auto-sizing, a content-quality gate on sync, and a 94→15 type unification. Fifteen conflicts, all resolved. The fork keeps its `dbrain` skin, its sync-resilience gate, its privacy scrub, and its own version line — now leapfrogged to v0.43 to end the number collision with upstream's v0.42.x track.**
