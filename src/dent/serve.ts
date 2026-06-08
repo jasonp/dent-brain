@@ -46,7 +46,7 @@ import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
-import { ensureDataRepo, setRepoContext } from './markdown-writer/repo.ts';
+import { ensureDataRepo, setRepoContext, DENT_SOURCE_ID } from './markdown-writer/repo.ts';
 import { startScheduledPull, DEFAULT_PULL_INTERVAL_SECONDS, type ScheduledPullHandle } from './markdown-writer/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
 import {
@@ -361,9 +361,16 @@ function buildContext(): OperationContext {
     },
     dryRun: false,
     remote: true,
-    // v0.34 D4: sourceId is required at the type level; auto-fill 'default'
-    // to match dispatch.ts / cli.ts for this single-source dent context.
-    sourceId: 'default',
+    // The dent fork's canonical store is the markdown-backed 'dent' source:
+    // markdown_* writes and the regfox/mailchimp ingestors all sync into it.
+    // This context drives BOTH reads (get_page/search) and put_page writes, so
+    // it must target 'dent' too — otherwise content written to 'dent' is
+    // invisible to reads and direct put_page calls drift onto 'default'
+    // (the split-brain that stranded the v0.43 bulk imports). Overridable via
+    // DENT_BRAIN_READ_SOURCE for emergency rollback without a redeploy. Reads
+    // reference the SAME DENT_SOURCE_ID constant the markdown-writer writes to,
+    // so the two can't drift apart again.
+    sourceId: process.env.DENT_BRAIN_READ_SOURCE || DENT_SOURCE_ID,
   };
 }
 

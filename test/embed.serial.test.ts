@@ -759,3 +759,44 @@ describe('embedAllStale --source threading (D7)', () => {
     expect((firstCallOpts as { sourceId?: string }).sourceId).toBe('media-corpus');
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// --catch-up timer-overflow regression
+//
+// --catch-up used to set BUDGET_MS = Number.MAX_SAFE_INTEGER and always arm
+// setTimeout(abort, BUDGET_MS). setTimeout clamps any delay > 2^31-1 ms to 1ms
+// (TimeoutOverflowWarning), so the wall-clock abort fired almost immediately and
+// catch-up embedded 0 chunks across 0 pages. The fix omits the timer entirely
+// when catchUp. The default 30ms embedBatch mock latency guarantees a 1ms timer
+// would fire mid-embed if it were (incorrectly) armed.
+// ────────────────────────────────────────────────────────────────
+describe('runEmbedCore --stale --catch-up (timer-overflow regression)', () => {
+  test('catch-up embeds ALL stale chunks instead of aborting at the clamped 1ms timer', async () => {
+    const { runEmbedCore } = await import('../src/commands/embed.ts');
+    const chunksBySlug = new Map<string, any[]>([
+      ['a', [{ chunk_index: 0, chunk_text: 'a', chunk_source: 'compiled_truth', embedded_at: null, token_count: 1 }]],
+      ['b', [
+        { chunk_index: 0, chunk_text: 'x', chunk_source: 'compiled_truth', embedded_at: null, token_count: 1 },
+        { chunk_index: 1, chunk_text: 'y', chunk_source: 'compiled_truth', embedded_at: null, token_count: 1 },
+      ]],
+    ]);
+    const stale = [
+      { slug: 'a', chunk_index: 0, chunk_text: 'a', chunk_source: 'compiled_truth' as const, model: null, token_count: 1, source_id: 'dent', page_id: 1 },
+      { slug: 'b', chunk_index: 0, chunk_text: 'x', chunk_source: 'compiled_truth' as const, model: null, token_count: 1, source_id: 'dent', page_id: 2 },
+      { slug: 'b', chunk_index: 1, chunk_text: 'y', chunk_source: 'compiled_truth' as const, model: null, token_count: 1, source_id: 'dent', page_id: 2 },
+    ];
+    const engine = mockEngine({
+      countStaleChunks: async () => 3,
+      listStaleChunks: async () => stale,
+      getChunks: async (slug: string) => chunksBySlug.get(slug) || [],
+      upsertChunks: async () => {},
+    });
+
+    const result = await runEmbedCore(engine, { stale: true, catchUp: true });
+
+    // After the fix: all 3 stale chunks embed across 2 pages. Before the fix the
+    // clamped 1ms wall-clock timer aborted the run and embedded ~0.
+    expect(result.embedded).toBe(3);
+    expect(result.pages_processed).toBe(2);
+  });
+});

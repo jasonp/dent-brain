@@ -11,6 +11,7 @@ setDefaultTimeout(30_000);
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { appendToPage } from '../../../src/dent/markdown-writer/append.ts';
+import { DENT_SOURCE_ID } from '../../../src/dent/markdown-writer/repo.ts';
 import { markdownWriteOperations } from '../../../src/dent/operations/markdown-write.ts';
 import { setupMarkdownWriter, makeCtx, rawGit, type MdWriterFixture } from './_helpers.ts';
 
@@ -48,6 +49,27 @@ describe('appendToPage — service layer', () => {
     // Confirm the commit landed in the bare remote.
     const log = rawGit(fx.bareRepo, ['log', '--oneline', '-5']);
     expect(log).toContain('agent: append');
+  });
+
+  // Split-brain regression: markdown writes sync into DENT_SOURCE_ID, never
+  // 'default'. The prod serve.ts read context was hardcoded to 'default', so a
+  // default-scoped read could not see anything written here — the bug that
+  // stranded the v0.43 bulk imports. serve.ts now reads from DENT_SOURCE_ID; this
+  // test pins the write side of that invariant.
+  test('write lands on DENT_SOURCE_ID and is invisible to a default-scoped read', async () => {
+    await appendToPage(fx.engine, {
+      slug: SLUG,
+      content: '- 2026-05-02 canonical observation',
+      section: 'Timeline',
+    });
+
+    const onDent = await fx.engine.getPage(SLUG, { sourceId: DENT_SOURCE_ID });
+    expect(onDent).not.toBeNull();
+    expect(`${onDent?.compiled_truth ?? ''}${onDent?.timeline ?? ''}`).toContain('canonical observation');
+
+    // A read scoped to 'default' (the pre-fix serve.ts behavior) returns null.
+    const onDefault = await fx.engine.getPage(SLUG, { sourceId: 'default' });
+    expect(onDefault).toBeNull();
   });
 
   test('appends to existing page without creating section', async () => {

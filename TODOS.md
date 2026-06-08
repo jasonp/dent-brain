@@ -1,5 +1,11 @@
 # TODOS
 
+## Source convergence follow-ups (filed 2026-06-07, v0.43.0.1)
+
+- [ ] **P1 — Surface `performSync` failures from the markdown writer instead of returning a bare `ok`.** `appendToPage` (`src/dent/markdown-writer/append.ts:~226`) and `replacePage` (`src/dent/markdown-writer/replace.ts:~121`) write the markdown file + commit, then call `performSync(..., noEmbed, noPull)` to import the row into the DB — but wrap it in a `try/catch` that only `console.error`s and still returns `status: 'ok'`. If that import throws (transient DB error, lock, pooler timeout), the git side succeeds while the DB row silently never updates, and the caller believes the write landed. This is the exact failure mode behind the stranded bulk imports that motivated the v0.43.0.1 source-convergence work. Fix: thread the sync outcome into the result (e.g. `status: 'ok' | 'ok_db_pending'`, or an `import_failed: true` + reason field) so a failed import is observable to the caller. Add a test that forces `performSync` to throw and asserts the non-`ok` signal. This is the root cause, not just the symptom.
+
+- [ ] **P3 — Purge the vestigial `default`-source duplicate rows after a stability window.** The v0.43.0.1 source convergence left the old `default`-source copy of every migrated page live in the DB; reads now resolve to `dent`, so those `default` rows are invisible but still occupy space and could confuse future cross-source queries. After a few days of confirmed-stable `dent` reads in production, hard-delete the `default` rows that have a live `dent` twin (keep any `default`-only row that lacks one). Reversible until purged; verify counts before and after.
+
 ## v0.43 upstream-sync reconcile-later (filed 2026-06-03)
 
 - [ ] **Decide onboard/connect vs teammate-onboarding.** The v0.43 sync brought upstream's `gbrain onboard` + `gbrain connect` (bearer-token, one-command, `docs/tutorials/company-brain.md`) in *alongside* the fork's teammate plugin install + `access_tokens` flow — both run, neither deprecated (deliberate "run both" call during the merge). Pick a canonical path once both are exercised in the field, then deprecate the other where they overlap. Filed during the v0.43.0.0 ship.
