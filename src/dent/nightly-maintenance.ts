@@ -1,8 +1,8 @@
 /**
  * Nightly brain maintenance — runs deterministic gbrain dream-cycle
  * phases (backlinks, extract, embed) once per UTC day from inside the
- * dent-brain Railway container. Sibling of `markdown-writer/cron.ts`
- * (scheduled-pull) and `ingestors/regfox/cron.ts` (regfox-ingestor).
+ * dent-brain Railway container. Sibling of `exporter/cron.ts`
+ * (nightly DB→git export) and `ingestors/regfox/cron.ts` (regfox-ingestor).
  *
  * Why server-side: every teammate adding their own laptop cron would
  * stomp on each other (duplicate work, race for the cycle lock), and
@@ -23,7 +23,8 @@
  *     separately when budget is signed off.
  *   - `purge` — destructive (hard-deletes soft-deleted pages past 72h).
  *     Fine to run, but worth its own decision.
- *   - `sync` — already covered by `markdown-writer/cron.ts` every 5 min.
+ *   - `sync` — retired; the DB is canonical (single-brain Stage B), the
+ *     git repo is a derived export mirror that must never be imported.
  *   - `lint` — runs locally before commits; cron-side noise.
  *   - `orphans` — listing only; not actionable nightly.
  *
@@ -55,7 +56,9 @@ export interface NightlyMaintenanceHandle {
 }
 
 export interface NightlyMaintenanceOpts {
-  brainDir: string;
+  /** Filesystem dir for the backlinks/extract walks. null = no mirror
+   *  available; runCycle skips dir-dependent phases (embed still runs). */
+  brainDir: string | null;
   hourUtc?: number;
   phases?: CyclePhase[];
   /** Override for tests — defaults to setInterval. */
@@ -76,7 +79,7 @@ export interface NightlyMaintenanceOpts {
  */
 export async function nightlyTick(
   engine: BrainEngine,
-  opts: { brainDir: string; hourUtc: number; phases: CyclePhase[]; now: () => Date },
+  opts: { brainDir: string | null; hourUtc: number; phases: CyclePhase[]; now: () => Date },
 ): Promise<'fired' | 'too_early' | 'already_today' | 'failed'> {
   const now = opts.now();
   const hourUtcNow = now.getUTCHours();
@@ -97,7 +100,8 @@ export async function nightlyTick(
     const report = await runCycle(engine, {
       brainDir: opts.brainDir,
       phases: opts.phases,
-      // pull=false: scheduled-pull cron handles git pulls every 5 min.
+      // pull=false: the git repo is a one-way export mirror now; nothing
+      // on the maintenance path should ever pull/import from it.
       pull: false,
     });
     const failed = report.phases.filter((p) => p.status === 'fail').length;

@@ -17,9 +17,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# PLAN v2.0 Phase 1: serve.ts boots a clone of dent-brain-data via
-# git+SSH using the deploy key in DENT_BRAIN_DATA_DEPLOY_KEY. The bun
-# alpine base ships neither tool. ca-certificates is required so SSH
+# Single-brain Stage B: the nightly DB→git exporter (src/dent/exporter/)
+# clones/pushes the dent-brain-data mirror via git+SSH using the deploy
+# key in DENT_BRAIN_DATA_DEPLOY_KEY. The bun alpine base ships neither
+# tool. ca-certificates is required so SSH
 # verifies github.com on first contact (StrictHostKeyChecking=accept-new).
 # tini is PID 1 — reaps any zombies our SIGCHLD handler can't reach
 # (e.g. native-addon child processes). Belt-and-suspenders against

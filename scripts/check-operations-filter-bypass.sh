@@ -50,6 +50,7 @@ ALLOWED=(
   "src/commands/book-mirror.ts"                 # local CLI tool; not network-exposed
   "src/commands/tools-json.ts"                  # gbrain --tools-json introspection; full op list IS the purpose
   "src/commands/serve-http.ts"                  # MUST APPLY .filter(op => !op.localOnly) — verified by grep below
+  "src/dent/serve.ts"                           # dent HTTP MCP surface; MUST APPLY .filter(op => !op.localOnly) — verified by grep below
 )
 
 # Pattern: any import that brings the `operations` VALUE in from core/operations.ts.
@@ -102,6 +103,20 @@ if [ -f "$SERVE_HTTP" ]; then
     echo "FAIL: $SERVE_HTTP no longer contains the canonical"
     echo "      operations.filter(op => !op.localOnly) expression. The HTTP MCP"
     echo "      surface depends on this filter to enforce localOnly. Restore"
+    echo "      the filter or refactor the trust boundary explicitly."
+    FAIL=1
+  fi
+fi
+
+# Check 3: the dent HTTP MCP entry point (src/dent/serve.ts) MUST contain
+# the same canonical filter — it merges upstream `operations` into its
+# registry and serves them over HTTP (remote callers).
+DENT_SERVE="src/dent/serve.ts"
+if [ -f "$DENT_SERVE" ]; then
+  if ! grep -qE 'operations\.filter\(\s*op\s*=>\s*!op\.localOnly\s*\)' "$DENT_SERVE"; then
+    echo "FAIL: $DENT_SERVE no longer contains the canonical"
+    echo "      operations.filter(op => !op.localOnly) expression. The dent HTTP"
+    echo "      MCP surface depends on this filter to enforce localOnly. Restore"
     echo "      the filter or refactor the trust boundary explicitly."
     FAIL=1
   fi

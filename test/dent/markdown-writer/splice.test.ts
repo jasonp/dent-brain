@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { spliceFragment } from '../../../src/dent/markdown-writer/append.ts';
+import { spliceFragment } from '../../../src/dent/db-writer/append.ts';
 
 describe('spliceFragment — EOF append (no section)', () => {
   test('appends to empty body', () => {

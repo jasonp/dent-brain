@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Phase 1 gate test for markdown_append_to_page (PLAN v2.0).
+ * Over-the-wire gate test for markdown_append_to_page.
  *
- * Calls the dent-brain HTTP MCP endpoint over the wire, appends a bullet
- * to a test page, and prints the resulting commit SHA + file path. Then
- * fetches the page back via `query` to confirm the Postgres index
- * surfaces the new content.
+ * Calls the dent-brain HTTP MCP endpoint, appends a bullet to a test page
+ * (DB-direct since single-brain Stage B — no git commit on the write
+ * path), then fetches the page back via `get_page`/`query` to confirm the
+ * Postgres brain surfaces the new content.
+ *
+ * TODO(Stage C): fold this into the rebuilt DB-backed e2e suite.
  *
  * Usage:
  *   DENT_BRAIN_URL=https://dent-brain.dentthefuture.com \
@@ -120,10 +122,10 @@ async function main() {
   console.log('query top hit:');
   console.log(JSON.stringify((queryResult as any)?.hits?.[0] ?? queryResult, null, 2));
 
-  console.log('\n✓ Phase 1 gate test PASSED');
-  console.log(`  commit: ${(appendResult as { commit_sha?: string }).commit_sha}`);
-  console.log(`  file:   ${(appendResult as { file_path?: string }).file_path}`);
-  console.log(`  Verify in github: https://github.com/dentthefuture/dent-brain-data/commits/master`);
+  console.log('\n✓ markdown-write gate test PASSED');
+  console.log(`  hash: ${(appendResult as { content_hash?: string }).content_hash}`);
+  console.log(`  file: ${(appendResult as { file_path?: string }).file_path}`);
+  console.log('  (DB-direct write; the git mirror updates on the nightly export / export_brain_now)');
 }
 
 main().catch((e) => {
