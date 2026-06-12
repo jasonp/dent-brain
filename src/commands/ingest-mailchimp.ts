@@ -13,7 +13,6 @@ import { existsSync, statSync, readdirSync } from 'fs';
 import { join, isAbsolute, resolve } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { runMailchimpBootstrap } from '../dent/ingestors/mailchimp/csv-bootstrap.ts';
-import { ensureDataRepo, setRepoContext } from '../dent/markdown-writer/repo.ts';
 
 export async function runIngestMailchimp(engine: BrainEngine, args: string[]): Promise<void> {
   const sub = args[0];
@@ -141,16 +140,8 @@ async function runBootstrap(engine: BrainEngine, args: string[]): Promise<void> 
   for (const p of csvPaths) process.stderr.write(`  - ${p}\n`);
   process.stderr.write(`[mailchimp-bootstrap] mode: ${flags.dryRun ? 'DRY RUN' : 'APPLY'}${flags.limit ? ` (limit ${flags.limit})` : ''}\n`);
 
-  // Initialize the dent-brain-data repo context — same step the production
-  // server runs at boot. Required before any markdown_* op (the bootstrap
-  // calls withBatch internally). Skipped on dry-run since dry-run never writes.
-  if (!flags.dryRun) {
-    process.stderr.write(`[mailchimp-bootstrap] initializing dent-brain-data repo…\n`);
-    const repoCtx = await ensureDataRepo(engine);
-    setRepoContext(repoCtx);
-    process.stderr.write(`[mailchimp-bootstrap] data repo ready: ${repoCtx.repoPath} @ ${repoCtx.headCommit.slice(0, 8)} branch=${repoCtx.branch}\n`);
-  }
-
+  // Writes go DB-direct via the db-writer batch (source 'dent') — no
+  // dent-brain-data repo setup required.
   const outcome = await runMailchimpBootstrap(engine, {
     csvPaths,
     limit: flags.limit,

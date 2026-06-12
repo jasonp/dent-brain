@@ -1,10 +1,13 @@
 /**
- * MCP ops for the markdown-canonical write path (PLAN v2.0 Phase 1).
+ * MCP ops for the DB-direct write path (single-brain Stage A).
  *
  *   - markdown_append_to_page: 95% case. Append a fragment to a page,
  *     under an optional section heading or at EOF.
  *   - markdown_replace_page: rare case. Full rewrite with optimistic
  *     concurrency via expected_prior_hash.
+ *
+ * Both ops write straight to the DB (source 'dent') via importFromContent;
+ * page history is versioned via get_versions — no git involved.
  *
  * Both ops:
  *   - Are mutating (set ctx.dryRun gate).
@@ -18,8 +21,9 @@
 
 import type { Operation } from '../../core/operations.ts';
 import { DentOperationError } from '../errors.ts';
-import { appendToPage } from '../markdown-writer/append.ts';
-import { replacePage, hashContent } from '../markdown-writer/replace.ts';
+import { appendToPageDb } from '../db-writer/append.ts';
+import { replacePageDb } from '../db-writer/replace.ts';
+import { hashContent } from '../db-writer/page-io.ts';
 
 // ---------------------------------------------------------------------------
 // Per-token write rate limit
@@ -79,7 +83,7 @@ function requireString(v: unknown, name: string): string {
 const markdown_append_to_page: Operation = {
   name: 'markdown_append_to_page',
   description:
-    "Append a fragment to a markdown page in dent-brain-data, then push to GitHub and re-index. Use this for individual observations/bullets — the canonical write path. The fragment is spliced under `section` (case-insensitive `## …` heading match) or at EOF if `section` is omitted. Concurrent writers commute via git pull --rebase. Per-token write cap: 30/min.",
+    "Append a fragment to a markdown page — DB-direct, the canonical write path for individual observations/bullets. The fragment is spliced under `section` (case-insensitive `## …` heading match) or at EOF if `section` is omitted. Writes are versioned; inspect history via get_versions. Per-token write cap: 30/min.",
   params: {
     slug: {
       type: 'string',
@@ -97,7 +101,7 @@ const markdown_append_to_page: Operation = {
     },
     commit_note: {
       type: 'string',
-      description: 'Optional extra context for the git commit message body.',
+      description: 'Optional advisory note about the write. Accepted for compatibility; not persisted.',
     },
   },
   mutating: true,
@@ -118,11 +122,11 @@ const markdown_append_to_page: Operation = {
       return { dry_run: true, action: 'markdown_append_to_page', slug, section };
     }
 
-    const result = await appendToPage(ctx.engine, { slug, content, section, commitNote });
+    const result = await appendToPageDb(ctx.engine, { slug, content, section, commitNote });
     if (result.status === 'busy') {
       throw new DentOperationError(
         'rate_limited',
-        'dent-brain-data is busy serving another writer. Retry in a moment.',
+        'Another writer holds the lock for this page. Retry in a moment.',
       );
     }
     if (result.status === 'error') {
@@ -139,7 +143,7 @@ const markdown_append_to_page: Operation = {
 const markdown_replace_page: Operation = {
   name: 'markdown_replace_page',
   description:
-    "Replace a markdown page in dent-brain-data with new full content, then push and re-index. Pass expected_prior_hash (sha256 of the markdown you read before synthesizing) for optimistic concurrency — if the page changed since, the op returns `page_changed` with the current text so you can re-synthesize. Omit expected_prior_hash only when creating a brand-new page. Per-token write cap: 30/min.",
+    "Replace a markdown page with new full content — DB-direct. Pass expected_prior_hash (sha256 of the markdown you read before synthesizing) for optimistic concurrency — if the page changed since, the op returns `page_changed` with the current text so you can re-synthesize. Omit expected_prior_hash only when creating a brand-new page. Writes are versioned; inspect history via get_versions. Per-token write cap: 30/min.",
   params: {
     slug: {
       type: 'string',
@@ -157,7 +161,7 @@ const markdown_replace_page: Operation = {
     },
     commit_note: {
       type: 'string',
-      description: 'Optional extra context for the git commit message body.',
+      description: 'Optional advisory note about the write. Accepted for compatibility; not persisted.',
     },
   },
   mutating: true,
@@ -178,11 +182,11 @@ const markdown_replace_page: Operation = {
       return { dry_run: true, action: 'markdown_replace_page', slug, has_prior_hash: !!expected_prior_hash };
     }
 
-    const result = await replacePage(ctx.engine, { slug, content, expected_prior_hash, commitNote });
+    const result = await replacePageDb(ctx.engine, { slug, content, expected_prior_hash, commitNote });
     if (result.status === 'busy') {
       throw new DentOperationError(
         'rate_limited',
-        'dent-brain-data is busy serving another writer. Retry in a moment.',
+        'Another writer holds the lock for this page. Retry in a moment.',
       );
     }
     if (result.status === 'error') {
