@@ -157,6 +157,7 @@ export interface ReconcileSummary {
   writes: number;
   errors: number;
   config_repo_path_deleted: boolean;
+  exporter_unlocked: boolean;
 }
 
 export async function reconcile(
@@ -188,6 +189,7 @@ export async function reconcile(
     writes: 0,
     errors: 0,
     config_repo_path_deleted: false,
+    exporter_unlocked: false,
   };
   const records: SlugRecord[] = [];
 
@@ -281,6 +283,12 @@ export async function reconcile(
   if (opts.apply) {
     await engine.executeRaw(`DELETE FROM config WHERE key = 'sync.repo_path'`);
     summary.config_repo_path_deleted = true;
+    // Unlock the nightly exporter: until this key exists, exportTick refuses
+    // to run (a pre-migration export would rewrite the mirror from a stale
+    // page set and prune the pages this migration is about to reconcile).
+    const { MIGRATED_KEY } = await import('../../src/dent/exporter/cron.ts');
+    await engine.setConfig(MIGRATED_KEY, new Date().toISOString());
+    summary.exporter_unlocked = true;
   }
 
   return { summary, records };

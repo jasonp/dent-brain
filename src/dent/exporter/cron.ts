@@ -25,6 +25,8 @@ export const DEFAULT_EXPORT_HOUR_UTC = 10;
 const TICK_INTERVAL_MS = 60_000; // check every minute
 
 const LAST_RUN_KEY = 'dent_export_last_run';
+/** Set by scripts/dent/migrate-v0.45-single-brain.ts --apply. Gates the exporter. */
+export const MIGRATED_KEY = 'dent_single_brain_migrated';
 
 export interface ExportCronHandle {
   /** Stop the scheduler. Idempotent. */
@@ -52,12 +54,25 @@ export async function exportTick(
     now: () => Date;
     ensureRepoImpl?: (engine: BrainEngine) => Promise<MirrorRepoContext>;
   },
-): Promise<'fired' | 'too_early' | 'already_today' | 'failed'> {
+): Promise<'fired' | 'too_early' | 'already_today' | 'failed' | 'awaiting_migration'> {
   const now = opts.now();
   const hourUtcNow = now.getUTCHours();
   const todayUtc = now.toISOString().slice(0, 10);
 
   if (hourUtcNow < opts.hourUtc) return 'too_early';
+
+  // Rollout guard: the FIRST export after the v0.45 cutover must not run
+  // until the one-time reconciliation migration has landed the git/default
+  // content in source 'dent'. Exporting (and pruning) from a pre-migration
+  // DB would rewrite the mirror from a stale page set. The migration script
+  // (--apply) sets this key; absence = skip with a loud log.
+  const migrated = (await engine.getConfig(MIGRATED_KEY)) ?? '';
+  if (!migrated) {
+    console.error(
+      `[dent-exporter] export skipped: config '${MIGRATED_KEY}' unset — run scripts/dent/migrate-v0.45-single-brain.ts --apply first (see skills/migrations/v0.45.md)`,
+    );
+    return 'awaiting_migration';
+  }
 
   const lastRun = (await engine.getConfig(LAST_RUN_KEY)) ?? '';
   if (lastRun.startsWith(todayUtc)) return 'already_today';

@@ -239,6 +239,9 @@ describe('reconcile — winner selection', () => {
       const { summary } = await reconcile(engine, { repo: fx.repo, ref: fx.ref, apply: true });
       expect(summary.config_repo_path_deleted).toBe(true);
       expect(await engine.getConfig('sync.repo_path')).toBeNull();
+      // --apply also unlocks the nightly exporter (it refuses to run pre-migration).
+      expect(summary.exporter_unlocked).toBe(true);
+      expect(await engine.getConfig('dent_single_brain_migrated')).not.toBeNull();
     } finally {
       fx.cleanup();
     }

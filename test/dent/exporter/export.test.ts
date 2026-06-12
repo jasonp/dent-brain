@@ -23,7 +23,7 @@ import { resetPgliteState } from '../../helpers/reset-pglite.ts';
 import { tryAcquireDbLock } from '../../../src/core/db-lock.ts';
 import { importFromContent } from '../../../src/core/import-file.ts';
 import { exportBrainToGit, isManagedPath, DENT_EXPORT_LOCK_ID } from '../../../src/dent/exporter/export.ts';
-import { exportTick } from '../../../src/dent/exporter/cron.ts';
+import { exportTick, MIGRATED_KEY } from '../../../src/dent/exporter/cron.ts';
 import type { MirrorRepoContext } from '../../../src/dent/exporter/repo.ts';
 import { DENT_SOURCE_ID, readPageMarkdown } from '../../../src/dent/db-writer/page-io.ts';
 import type { BrainEngine } from '../../../src/core/engine.ts';
@@ -246,10 +246,14 @@ describe('exportBrainToGit', () => {
 // exportTick — once-per-UTC-day gating (mirrors nightly-maintenance.test.ts)
 // ---------------------------------------------------------------------------
 
-function mockEngine(initialLastRun?: string): BrainEngine {
+function mockEngine(initialLastRun?: string, migrated = true): BrainEngine {
   let lastRun: string | null = initialLastRun ?? null;
   return {
-    getConfig: async (k: string) => (k === 'dent_export_last_run' ? lastRun : null),
+    getConfig: async (k: string) => {
+      if (k === 'dent_export_last_run') return lastRun;
+      if (k === MIGRATED_KEY) return migrated ? '2026-06-12T00:00:00.000Z' : null;
+      return null;
+    },
     setConfig: async (k: string, v: string) => {
       if (k === 'dent_export_last_run') lastRun = v;
     },
@@ -273,6 +277,17 @@ describe('exportTick gating', () => {
       ensureRepoImpl: async () => { throw new Error('must not be called'); },
     });
     expect(result).toBe('already_today');
+  });
+
+  test('returns awaiting_migration (and does not mark the slot) until the v0.45 migration sets the unlock key', async () => {
+    const eng = mockEngine(undefined, false);
+    const result = await exportTick(eng, {
+      hourUtc: 10,
+      now: () => new Date('2026-06-11T12:00:00Z'),
+      ensureRepoImpl: async () => { throw new Error('must not be called'); },
+    });
+    expect(result).toBe('awaiting_migration');
+    expect(await eng.getConfig('dent_export_last_run')).toBeNull();
   });
 
   test('marks the slot taken BEFORE running; ensure failure → failed, no re-fire today', async () => {
@@ -301,6 +316,7 @@ describe('exportTick gating', () => {
     const fx = setupGitFixture();
     try {
       await seedDentPage('entities/people/cron-export-page', '---\ntitle: Cron Export\n---\n\nbody\n');
+      await engine.setConfig(MIGRATED_KEY, '2026-06-11T00:00:00.000Z');
 
       const result = await exportTick(engine, {
         hourUtc: 10,

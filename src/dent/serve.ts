@@ -399,6 +399,22 @@ async function dispatch(name: string, args: Record<string, unknown>, tokenName?:
   if (!op) {
     return { content: [{ type: 'text', text: `Error: Unknown tool: ${name}` }], isError: true };
   }
+  // Admin-scope gate: every caller here is a remote bearer token (local
+  // operators use the CLI / railway run, never this transport). Ops marked
+  // scope:'admin' (e.g. export_brain_now) are denied unless the token's
+  // name is allowlisted via DENT_BRAIN_ADMIN_TOKENS (comma-separated).
+  // The localOnly filter strips upstream's admin surface at registry build;
+  // this guards the dent-registered admin ops the same way.
+  if (op.scope === 'admin') {
+    const adminTokens = (process.env.DENT_BRAIN_ADMIN_TOKENS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (!tokenName || !adminTokens.includes(tokenName)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: 'permission_denied', message: `Operation '${name}' requires an admin token (DENT_BRAIN_ADMIN_TOKENS).` }, null, 2) }],
+        isError: true,
+      };
+    }
+  }
   const validationError = validateParams(op, args);
   if (validationError) {
     return {
