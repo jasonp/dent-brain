@@ -1,0 +1,7 @@
+.agents/
+STATE_OF_THE_UNION.md
+plugin/manifest.local.json
+skills-lock.json
+.git/
+node_modules/
+chrome_profile/

@@ -35,7 +35,9 @@ import type { PageType } from '../core/types.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import {
   extractPageLinks, parseTimelineEntries, inferLinkType, makeResolver,
-  extractFrontmatterLinks, LINK_EXTRACTOR_VERSION_TS,
+  extractFrontmatterLinks, isGlobalBasenameEnabled, LINK_EXTRACTOR_VERSION_TS,
+  WIKILINK_BASENAME_LINK_TYPE,
+  buildBasenameIndex, queryBasenameIndex, stripCodeBlocks,
   type UnresolvedFrontmatterRef, type LinkCandidate,
 } from '../core/link-extraction.ts';
 import { createProgress } from '../core/progress.ts';
@@ -58,6 +60,7 @@ import { createHash } from 'crypto';
 // v0.41.15.0 (T7, D9): --workers N for the fs-walk inner loops via the
 // shared sliding-pool helper + PGLite-clamp wrapper.
 import { runSlidingPool } from '../core/worker-pool.ts';
+import { isAborted } from '../core/abort-check.ts';
 import { parseWorkers, resolveWorkersWithClamp } from '../core/sync-concurrency.ts';
 
 // Batch size for addLinksBatch / addTimelineEntriesBatch.
@@ -156,6 +159,11 @@ export interface ExtractedLink {
   to_slug: string;
   link_type: string;
   context: string;
+  // Issue #972: provenance for FS-source edges. Set to 'wikilink-resolved'
+  // on basename-matched bare wikilinks so the FS path tags them the same way
+  // the DB / put_page paths do. Undefined for ordinary markdown edges (the
+  // engine defaults those to 'markdown').
+  link_source?: string;
 }
 
 export interface ExtractedTimelineEntry {
@@ -274,6 +282,56 @@ export function resolveSlug(fileDir: string, relTarget: string, allSlugs: Set<st
 }
 
 /**
+ * Issue #972: return every slug whose basename matches `name` (the
+ * final path segment, with case-insensitive + slugified fallback keys).
+ * Pure-function variant of the resolver's `resolveBasenameMatches` that
+ * reads a pre-loaded Set directly — no engine call. Used by the
+ * FS-source path's `resolveSlugAll`.
+ *
+ * Matches are deterministically sorted (shortest-slug first, then
+ * lexical) so repeated runs over the same brain produce stable edges.
+ * Returns `[]` on empty input or no matches.
+ */
+export function resolveBasenameMatchesFromSlugs(
+  name: string, allSlugs: Set<string>,
+): string[] {
+  // Issue #972 (codex [P2] DRY): delegate to the shared matcher so the FS
+  // path keys + sorts identically to the resolver and doctor. (Per-call
+  // index build is O(N), the same cost as the prior inline scan.)
+  return queryBasenameIndex(buildBasenameIndex(allSlugs), name);
+}
+
+/**
+ * Issue #972: multi-match variant of `resolveSlug`. Always tries the
+ * existing ancestor walk first (preserving the v0.10.1 behavior); on
+ * miss, falls back to basename lookup against `allSlugs` when
+ * `opts.globalBasename === true`. Returns an array so the caller emits
+ * one graph edge per matching page.
+ *
+ * Return shape:
+ *   - Ancestor walk hits → `[ancestor_match]` (length 1)
+ *   - Ancestor walk misses + globalBasename off → `[]`
+ *   - Ancestor walk misses + globalBasename on + basename hits → all matches
+ *   - Ancestor walk misses + globalBasename on + no basename hits → `[]`
+ */
+export function resolveSlugAll(
+  fileDir: string, relTarget: string, allSlugs: Set<string>,
+  opts: { globalBasename?: boolean } = {},
+): string[] {
+  const direct = resolveSlug(fileDir, relTarget, allSlugs);
+  if (direct !== null) return [direct];
+  if (!opts.globalBasename) return [];
+  // Strip .md suffix + dirname so `[[struktura]]` (relTarget=`struktura.md`)
+  // and `[[notes/struktura]]` (relTarget=`notes/struktura.md`) both query
+  // for the basename `struktura`.
+  const targetNoExt = relTarget.endsWith('.md') ? relTarget.slice(0, -3) : relTarget;
+  const basename = targetNoExt.includes('/')
+    ? targetNoExt.slice(targetNoExt.lastIndexOf('/') + 1)
+    : targetNoExt;
+  return resolveBasenameMatchesFromSlugs(basename, allSlugs);
+}
+
+/**
  * Directory-based link-type inference for the fs-source path.
  *
  * FS-source operates without a BrainEngine. We have paths, not pages. This
@@ -319,20 +377,49 @@ function parseFrontmatterFromContent(content: string, relPath: string): Record<s
  */
 export async function extractLinksFromFile(
   content: string, relPath: string, allSlugs: Set<string>,
-  opts?: { includeFrontmatter?: boolean },
+  opts?: { includeFrontmatter?: boolean; globalBasename?: boolean },
 ): Promise<ExtractedLink[]> {
   const links: ExtractedLink[] = [];
   const slug = pathToSlug(relPath);
   const fileDir = dirname(relPath);
   const fm = parseFrontmatterFromContent(content, relPath);
+  // Issue #972: globalBasename routes bare `[[name]]` wikilinks through
+  // basename lookup against allSlugs when the ancestor walk fails. Off
+  // by default for back-compat with the v0.10.1 ancestor-only behavior.
+  const globalBasename = opts?.globalBasename ?? false;
 
-  for (const { name, relTarget } of extractMarkdownLinks(content)) {
-    const resolved = resolveSlug(fileDir, relTarget, allSlugs);
-    if (resolved !== null) {
+  // Issue #972 (codex [P2]): strip code fences before scanning so a
+  // `[[name]]` inside a code block doesn't create an FS edge. Mirrors the
+  // DB path, which goes through extractEntityRefs (which strips internally).
+  const scanContent = stripCodeBlocks(content);
+
+  for (const { name, relTarget } of extractMarkdownLinks(scanContent)) {
+    const resolvedSlugs = resolveSlugAll(fileDir, relTarget, allSlugs, { globalBasename });
+    if (resolvedSlugs.length === 0) continue;
+    // Single hit on the ancestor path → emit one edge with the inferred
+    // verb type. Multiple hits (only possible when globalBasename is on
+    // AND ancestor walk missed) → emit one edge per match, all tagged
+    // `wikilink_basename` so users can audit via `gbrain graph-query
+    // <slug> --type wikilink_basename`.
+    const isBasename = resolvedSlugs.length > 1
+      || (globalBasename && resolvedSlugs.length === 1
+          && resolveSlug(fileDir, relTarget, allSlugs) === null);
+    for (const target of resolvedSlugs) {
+      // Issue #972 (codex [P2]): drop a basename self-loop ([[own-tail]] on
+      // its own page resolving back to itself).
+      if (isBasename && target === slug) continue;
       links.push({
-        from_slug: slug, to_slug: resolved,
-        link_type: inferTypeByDir(fileDir, dirname(resolved), fm),
-        context: `markdown link: [${name}]`,
+        from_slug: slug,
+        to_slug: target,
+        link_type: isBasename
+          ? WIKILINK_BASENAME_LINK_TYPE
+          : inferTypeByDir(fileDir, dirname(target), fm),
+        context: isBasename
+          ? `wikilink (basename match): [${name}]`
+          : `markdown link: [${name}]`,
+        // Issue #972: tag basename edges so the FS path matches DB/put_page
+        // provenance and migration v112's widened CHECK is exercised here too.
+        link_source: isBasename ? 'wikilink-resolved' : undefined,
       });
     }
   }
@@ -440,6 +527,14 @@ export interface ExtractOpts {
    * own pagination and stay serial in v0.41.15.0.
    */
   workers?: number;
+  /**
+   * #1972: cooperative-abort signal. Forwarded into the sliding pool (which
+   * propagates it to every worker) and checked at the top of each onItem, so a
+   * cancelled cycle's extract (incremental OR full-walk) relinquishes its
+   * worker slot well under the 30s force-evict. Honored by the cycle-reachable
+   * paths: extractForSlugs, extractLinksFromDir, extractTimelineFromDir.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -478,7 +573,7 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
       // Nothing changed — skip entirely.
       return result;
     }
-    const r = await extractForSlugs(engine, opts.dir, opts.slugs, opts.mode, dryRun, jsonMode, workers);
+    const r = await extractForSlugs(engine, opts.dir, opts.slugs, opts.mode, dryRun, jsonMode, workers, opts.signal);
     result.links_created = r.links_created;
     result.timeline_entries_created = r.timeline_created;
     result.pages_processed = r.pages;
@@ -487,12 +582,12 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
 
   // Full walk path: CLI `gbrain extract` or first-run.
   if (opts.mode === 'links' || opts.mode === 'all') {
-    const r = await extractLinksFromDir(engine, opts.dir, dryRun, jsonMode, workers);
+    const r = await extractLinksFromDir(engine, opts.dir, dryRun, jsonMode, workers, opts.signal);
     result.links_created = r.created;
     result.pages_processed = r.pages;
   }
   if (opts.mode === 'timeline' || opts.mode === 'all') {
-    const r = await extractTimelineFromDir(engine, opts.dir, dryRun, jsonMode, workers);
+    const r = await extractTimelineFromDir(engine, opts.dir, dryRun, jsonMode, workers, opts.signal);
     result.timeline_entries_created = r.created;
     result.pages_processed = Math.max(result.pages_processed, r.pages);
   }
@@ -845,6 +940,7 @@ async function extractForSlugs(
   // shared flush primitive; JS single-threaded event loop makes the
   // shared counter increments atomic.
   workers: number = 1,
+  signal?: AbortSignal,
 ): Promise<{ links_created: number; timeline_created: number; pages: number }> {
   // Build the full slug set for link resolution (fast: just readdir, no file reads)
   const allFiles = walkMarkdownFiles(brainDir);
@@ -859,6 +955,9 @@ async function extractForSlugs(
   let linksCreated = 0;
   let timelineCreated = 0;
   let pagesProcessed = 0;
+
+  // Issue #972: read the basename flag once per extract run.
+  const globalBasename = await isGlobalBasenameEnabled(engine);
 
   const linkBatch: LinkBatchInput[] = [];
   const timelineBatch: TimelineBatchInput[] = [];
@@ -903,8 +1002,12 @@ async function extractForSlugs(
   await runSlidingPool({
     items: slugs,
     workers,
+    signal,
     failureLabel: (slug) => slug,
     onItem: async (slug) => {
+      // #1972: bail before doing any work for this slug on abort. Trailing
+      // flushLinks/flushTimeline still commit accumulated rows — no torn write.
+      if (isAborted(signal)) return;
       const relPath = slug + '.md';
       const fullPath = join(brainDir, relPath);
       try {
@@ -912,7 +1015,7 @@ async function extractForSlugs(
         const content = readFileSync(fullPath, 'utf-8');
 
         if (doLinks) {
-          const links = await extractLinksFromFile(content, relPath, allSlugs);
+          const links = await extractLinksFromFile(content, relPath, allSlugs, { globalBasename });
           for (const link of links) {
             if (dryRun) {
               if (!jsonMode) console.log(`  ${link.from_slug} → ${link.to_slug} (${link.link_type})`);
@@ -959,9 +1062,15 @@ async function extractLinksFromDir(
   engine: BrainEngine, brainDir: string, dryRun: boolean, jsonMode: boolean,
   // v0.41.15.0 (T7): in-process worker count. Default 1.
   workers: number = 1,
+  signal?: AbortSignal,
 ): Promise<{ created: number; pages: number }> {
   const files = walkMarkdownFiles(brainDir);
   const allSlugs = new Set(files.map(f => pathToSlug(f.relPath)));
+
+  // Issue #972: read once before the walk so the per-file calls don't
+  // re-query the DB. globalBasename = true emits one edge per basename
+  // match for bare wikilinks like `[[struktura]]`.
+  const globalBasename = await isGlobalBasenameEnabled(engine);
 
   // Progress stream on stderr (separate from the action-events --json writes
   // to stdout, which tests grep for). Rate-gated; respects global --quiet /
@@ -994,11 +1103,14 @@ async function extractLinksFromDir(
   await runSlidingPool({
     items: files,
     workers,
+    signal,
     failureLabel: (f) => f.relPath,
     onItem: async (file) => {
+      // #1972: bail before this file on abort; trailing flush() commits the batch.
+      if (isAborted(signal)) return;
       try {
         const content = readFileSync(file.path, 'utf-8');
-        const links = await extractLinksFromFile(content, file.relPath, allSlugs);
+        const links = await extractLinksFromFile(content, file.relPath, allSlugs, { globalBasename });
         for (const link of links) {
           if (dryRunSeen) {
             const key = `${link.from_slug}::${link.to_slug}::${link.link_type}`;
@@ -1029,6 +1141,7 @@ async function extractTimelineFromDir(
   engine: BrainEngine, brainDir: string, dryRun: boolean, jsonMode: boolean,
   // v0.41.15.0 (T7): in-process worker count. Default 1.
   workers: number = 1,
+  signal?: AbortSignal,
 ): Promise<{ created: number; pages: number }> {
   const files = walkMarkdownFiles(brainDir);
 
@@ -1059,8 +1172,11 @@ async function extractTimelineFromDir(
   await runSlidingPool({
     items: files,
     workers,
+    signal,
     failureLabel: (f) => f.relPath,
     onItem: async (file) => {
+      // #1972: bail before this file on abort; trailing flush() commits the batch.
+      if (isAborted(signal)) return;
       try {
         const content = readFileSync(file.path, 'utf-8');
         const slug = pathToSlug(file.relPath);
@@ -1107,14 +1223,16 @@ export async function extractLinksForSlugs(
   const linkOpts = opts?.sourceId
     ? { fromSourceId: opts.sourceId, toSourceId: opts.sourceId, originSourceId: opts.sourceId }
     : undefined;
+  // Issue #972: same flag as the standalone extract path.
+  const globalBasename = await isGlobalBasenameEnabled(engine);
   let created = 0;
   for (const slug of slugs) {
     const filePath = join(repoPath, slug + '.md');
     if (!existsSync(filePath)) continue;
     try {
       const content = readFileSync(filePath, 'utf-8');
-      for (const link of await extractLinksFromFile(content, slug + '.md', allSlugs)) {
-        try { await engine.addLink(link.from_slug, link.to_slug, link.context, link.link_type, undefined, undefined, undefined, linkOpts); created++; } catch { /* skip */ } // gbrain-allow-direct-insert: gbrain extract single-row fallback when batch path declines a row
+      for (const link of await extractLinksFromFile(content, slug + '.md', allSlugs, { globalBasename })) {
+        try { await engine.addLink(link.from_slug, link.to_slug, link.context, link.link_type, link.link_source, undefined, undefined, linkOpts); created++; } catch { /* skip */ } // gbrain-allow-direct-insert: gbrain extract single-row fallback when batch path declines a row
       }
     } catch { /* skip */ }
   }
@@ -1170,12 +1288,19 @@ async function extractLinksFromDB(
   // Batch resolver: pg_trgm + exact only, NO search fallback. Dodges the
   // N-thousand API call trap on 46K-page brains. Resolver has a per-run
   // cache so duplicate names (same person appearing on many pages) resolve
-  // once, not once per mention.
-  const resolver = makeResolver(engine, { mode: 'batch' });
+  // once, not once per mention. Used for BOTH the frontmatter pass (gated
+  // by `includeFrontmatter` via `opts.skipFrontmatter` on extractPageLinks)
+  // AND the issue-#972 global-basename pass (gated by `globalBasename`).
+  // Replaces the pre-issue-#972 `nullResolver` ternary — that synthetic
+  // resolver lacked `resolveBasenameMatches`, so we always pass the real
+  // one and let extractPageLinks's opts gate which pass actually runs.
+  // Issue #972 (codex [P1]): scope basename resolution to the source being
+  // extracted so bare wikilinks don't resolve across unrelated sources.
+  const resolver = makeResolver(engine, { mode: 'batch', sourceId: sourceIdFilter });
   const unresolved: UnresolvedFrontmatterRef[] = [];
-  const nullResolver = {
-    resolve: async () => null as string | null,
-  };
+  // Issue #972: opt-in global-basename wikilink resolution. Read once
+  // per extract run; threaded into each extractPageLinks call.
+  const globalBasename = await isGlobalBasenameEnabled(engine);
   // v0.32.8: listAllPageRefs enumerates (slug, source_id) so we can thread
   // sourceId to getPage AND build a cross-source resolution map for link
   // disambiguation. Pre-fix used getAllSlugs() which collapsed
@@ -1252,9 +1377,11 @@ async function extractLinksFromDB(
     // --include-frontmatter default OFF in v0.13 (codex tension 5, back-compat).
     // Migration orchestrator explicitly enables it for the one-time backfill;
     // user-invoked `gbrain extract links` stays outgoing-only.
-    const activeResolver = includeFrontmatter ? resolver : nullResolver;
+    // Issue #972: globalBasename routes bare `[[name]]` wikilinks through
+    // basename lookup; off by default for back-compat.
     const extracted = await extractPageLinks(
-      slug, fullContent, page.frontmatter, page.type, activeResolver,
+      slug, fullContent, page.frontmatter, page.type, resolver,
+      { skipFrontmatter: !includeFrontmatter, globalBasename },
     );
     unresolved.push(...extracted.unresolved);
 
@@ -1531,7 +1658,12 @@ async function extractStaleFromDB(
       // landing between this SELECT and the stamp advances updated_at past the
       // stamped value, so the page stays stale and re-extracts next run instead
       // of being marked fresh-with-stale-content.
-      processedRefs.push({ slug: page.slug, source_id: page.source_id, extractedAt: page.updated_at.toISOString() });
+      //
+      // #1768: stamp the FULL-µs `updated_at_iso` (projected via to_char), NOT
+      // `page.updated_at.toISOString()` — the JS Date is ms-truncated, so the
+      // µs-precision DB updated_at stayed strictly greater and the page never
+      // cleared on Postgres. Stamping the exact value makes them equal.
+      processedRefs.push({ slug: page.slug, source_id: page.source_id, extractedAt: page.updated_at_iso });
     }
 
     // Flush NON-swallowing (CDX-4): a throw here propagates out of the sweep so

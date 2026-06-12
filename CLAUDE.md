@@ -28,11 +28,11 @@ Define success criteria. Loop until verified.
 Don't follow steps. Define success and iterate.
 Strong success criteria let you loop independently.
 
-## Reference files (read on demand)
+## Reference map (read on demand)
 
 - `docs/reference/runtime-conventions.md` — which Claude surface (Code Desktop vs Cowork) hosts which skill, and why
 - `docs/reference/ingestors.md` — granola-sync + email-sync quick reference
-- `docs/reference/key-files.md` — per-file change annotations (drifts fast; prefer `git log` / reading the file)
+- `docs/architecture/KEY_FILES.md` — canonical per-file index (current-state, CI-guarded). The older `docs/reference/key-files.md` is a frozen pre-v0.44 snapshot; prefer KEY_FILES.md.
 - `docs/reference/testing.md` — full testing handbook (file taxonomy, isolation lint, canonical PGLite block, `withEnv`, inventory)
 - `docs/reference/release-ops.md` — version locations, migration policy, CHANGELOG voice, GH Actions SHA pinning, community PR waves, E2E DB lifecycle, bulk progress reporting
 - `docs/reference/version-history.md` — commands added per release (CHANGELOG.md is authoritative)
@@ -54,11 +54,63 @@ Contract-first: `src/core/operations.ts` defines the shared operations; CLI and 
 
 Explore via `ls src/core/`, `ls src/commands/`, `ls src/mcp/` — names are descriptive; read files for detail. Do not maintain a file inventory in this doc; it goes stale fast.
 
-**Trust boundary:** `OperationContext.remote` distinguishes trusted local CLI callers (`remote: false`, set by `src/cli.ts`) from untrusted agent-facing callers (`remote: true`, set by MCP transports). Security-sensitive ops tighten behavior when remote; missing/undefined is treated as remote (fail-closed).
+**Cross-cutting invariants (must-never-violate, regardless of which file you touch).**
+These used to be buried across the per-file index; they live here so they always load.
+Per-file detail is in `docs/architecture/KEY_FILES.md`.
+
+- **Trust is fail-closed.** `OperationContext.remote` is REQUIRED on the type. Anything not
+  strictly `false` is treated as remote/untrusted (`ctx.remote === false` for trusted-only
+  sites; `ctx.remote !== false` for untrust-unless-explicit-false). Don't default it falsy.
+- **Source isolation.** Every read-side op routes through `sourceScopeOpts(ctx)`; precedence
+  is federated array (`ctx.auth.allowedSources`) > scalar (`ctx.sourceId`) > nothing. Don't
+  hand-roll source filtering — a missed thread is a cross-source data leak.
+- **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it;
+  PGLite hides the bug. Pass raw objects to `engine.executeRaw`, or use `executeRawJsonb`.
+  Guarded by `scripts/check-jsonb-pattern.sh`.
+- **Engine parity.** `src/core/postgres-engine.ts` and `src/core/pglite-engine.ts` move in
+  lockstep — a new method/SQL shape lands in BOTH, pinned by `test/e2e/engine-parity.test.ts`.
+  Forward-referenced columns/indexes go in the bootstrap probe set (guarded by
+  `test/schema-bootstrap-coverage.test.ts`).
+- **Contract-first.** `src/core/operations.ts` is the single source; CLI + MCP are generated
+  from it. Every op carries `scope: 'read'|'write'|'admin'` + optional `localOnly`. HTTP
+  dispatch enforces scope/localOnly before the handler runs.
+- **Migrations.** Schema DDL lives in the `MIGRATIONS` array in `src/core/migrate.ts`.
+  `CREATE INDEX CONCURRENTLY` needs `transaction: false` (pre-drop invalid remnants on
+  Postgres; plain `CREATE INDEX` on PGLite via `sqlFor.pglite`).
+- **Multi-source.** Slug uniqueness is `(source_id, slug)`, not slug. Key batch ops and
+  reverse-writes on the composite key; `validateSourceId` before any `source_id` path join.
+- **One canonical chat-pricing table.** All paid-cloud chat/completion prices live ONCE in
+  `src/core/model-pricing.ts` (`CANONICAL_PRICING` + `canonicalLookup`). Every other table
+  (`anthropic-pricing.ts`'s `ANTHROPIC_PRICING`, `takes-quality-eval/pricing.ts`'s
+  `MODEL_PRICING`, the contradictions/cross-modal/skillopt cost views) is a DERIVED view, never
+  a hand-copied duplicate — so cross-table price drift is structurally impossible. Update a
+  price in `model-pricing.ts` only; each consumer keeps its own key allowlist + miss policy
+  (fail-closed vs warn-only vs null), not its own numbers. Pinned by `test/model-pricing.test.ts`
+  (drift guard asserts each view equals canonical). Embeddings price separately in
+  `embedding-pricing.ts` (different unit).
+
 
 ## Commands & Skills
 
 `gbrain --help` / `gbrain --tools-json` is the source of truth. Read `skills/RESOLVER.md` before brain ops; cross-cutting rules live in `skills/conventions/`, `skills/_brain-filing-rules.md`, `skills/_output-rules.md`.
+
+## Sync resumability + lock tuning (v0.42.x, #1794)
+
+`gbrain sync` is resumable and converges under pool exhaustion + repeated kills.
+Progress banks into the append-only `op_checkpoint_paths` table (one row per drained
+path, written via the direct session pool so it survives `EMAXCONNSESSION`); a killed
+run resumes from the checkpoint and `last_commit` only advances on true completion. The
+per-source lock heartbeats through the direct pool and refuses to steal a live,
+recently-refreshed holder. Five env knobs tune it (all env-only, incident-time escape
+hatches — no config-dashboard surface by design):
+
+| Env var | Default | What it does |
+|---|---|---|
+| `GBRAIN_SYNC_CHECKPOINT_EVERY` | 1000 | Flush the checkpoint every N drained files. |
+| `GBRAIN_SYNC_CHECKPOINT_SECONDS` | 10 | Also flush every N seconds (whichever comes first) — bounds worst-case loss regardless of throughput. Flush also fires after the first file. |
+| `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
+| `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
+| `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
 
 ## Build
 
@@ -120,7 +172,7 @@ After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran 
 
 ## Version locations
 
-The version moves in five files together: `VERSION`, `package.json`, `CHANGELOG.md`, `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived (must be regenerated before /ship pushes the version commit): `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`), and the Cowork plugin marketplace bundle — `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and the rendered skill copies under `plugin/marketplace/.claude/skills/` (all via `bun run build:plugin`). **If you skip `build:plugin`, Claude Desktop's plugin UI shows the previous version forever** — the MCP server reports the new version via the initialize handshake, but the plugin metadata stays stale. Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
+Version format is MAJOR.MINOR.PATCH.MICRO (e.g. `0.43.0.1`). The version moves in five files together: `VERSION`, `package.json`, `CHANGELOG.md`, `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived (must be regenerated before /ship pushes the version commit): `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`), and the Cowork plugin marketplace bundle — `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and the rendered skill copies under `plugin/marketplace/.claude/skills/` (all via `bun run build:plugin`). **If you skip `build:plugin`, Claude Desktop's plugin UI shows the previous version forever** — the MCP server reports the new version via the initialize handshake, but the plugin metadata stays stale. Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
 
 ## CHANGELOG voice
 
@@ -143,6 +195,59 @@ Use generic placeholders: `your agent fork` / `agent-fork`, `alice-example` / `a
 Household-brand companies (Stripe, Brex, OpenAI, GitHub) in illustrative API examples are fine — public entities, not contacts.
 
 **Test:** "Would this reveal private info about the user's contacts/investments/portfolio if a stranger read it?" If yes, replace with placeholders.
+
+## Responsible-disclosure rule: don't broadcast attack surface in release notes
+
+**When a release fixes a security gap or a user-impacting bug, describe the fix
+functionally. Do not enumerate the attack surface, quantify the exposure window,
+or highlight the most sensitive records by name in public-facing artifacts.**
+
+Public-facing artifacts include: `CHANGELOG.md`, `README.md`, `docs/`, PR titles
+and bodies, commit messages, GitHub issue titles and comments, release pages,
+tweets, blog posts.
+
+**Don't write:**
+- "10 tables were publicly readable by the anon key for months, including X, Y, Z"
+- "X and Y are the most sensitive ones"
+- "N tables exposed. Fix: enable RLS on these specific tables: ..."
+
+**Do write:**
+- "Security hardening pass. Fresh installs secure by default. Existing brains
+  brought to the same bar automatically on upgrade."
+- "If `gbrain doctor` still flags anything after upgrade, the message names each
+  table and gives the exact fix."
+
+Why: anyone reading the release page before they've upgraded now has a directed
+probe list for unpatched installs. The source code ships the specifics anyway
+(`src/schema.sql`, `src/core/migrate.ts`, test fixtures) — reverse engineers can
+get them. But the release page is a broadcast channel. Don't hand attackers a
+curated list with a banner.
+
+**The test:** if a reader with no prior context could read the release note and
+walk away knowing "gbrain at version X has table Y readable by anon key until
+they patch," the note is too specific. Rewrite until that's no longer possible.
+
+**What IS fine in public artifacts:**
+- The mechanism of the fix ("the check now scans every public table instead of
+  a hardcoded allowlist").
+- User-facing operator ergonomics (the escape-hatch SQL template, the upgrade
+  commands, the breaking-change flag).
+- Credit to contributors.
+- Generic framing of severity ("security posture tightening pass") without
+  quantification.
+
+**What stays in private artifacts (plan files, private memories, internal docs):**
+- Specific table names, record counts, exposure duration.
+- Which records stand out as highest-risk.
+- Detailed before/after tables in the "numbers that matter" format.
+
+If the CEO/Eng review of a plan produces a detailed exposure table, keep it in
+the plan file under `~/.claude/plans/` or `~/.gstack/projects/`. Don't copy it
+into the CHANGELOG or PR body.
+
+Applies retroactively: if you see a prior CHANGELOG entry naming attack-surface
+specifics, scrub it as a small cleanup commit, the same way a stale Wintermute
+reference gets swept.
 
 ## GitHub Actions SHA pinning
 

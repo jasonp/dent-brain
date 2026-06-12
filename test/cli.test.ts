@@ -46,6 +46,14 @@ describe('CLI structure', () => {
     expect(onlyMatch![1]).toContain(`'reindex'`);
   });
 
+  // Fork pin: 'ingest' is a dent-brain addition to CLI_ONLY. Upstream syncs
+  // resolve this Set by union; this test catches a resolution that drops it.
+  test('ingest stays in CLI_ONLY across upstream syncs', () => {
+    const onlyMatch = cliSource.match(/const CLI_ONLY = new Set\(\[([\s\S]*?)\]\)/);
+    expect(onlyMatch).not.toBeNull();
+    expect(onlyMatch![1]).toContain(`'ingest'`);
+  });
+
   test('has formatResult function for CLI output', () => {
     expect(cliSource).toContain('function formatResult');
   });

@@ -2,6 +2,39 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.44.0.0] - 2026-06-11
+
+## **Catch up to upstream gbrain: thirty-one upstream commits (v0.42.9.0 → v0.42.40.0) merged in one wave. Relationship questions now get relationship answers (typed-edge retrieval), the agent learns when and what to retrieve (Retrieval Reflex), sync becomes resumable and single-flight, and source-isolation grants are enforced on every read. Only twelve conflicts — and two of them dissolved because upstream independently shipped the same fixes the fork had already made.**
+
+Three weeks after the v0.43 wave left us at upstream v0.42.8.0, upstream reached v0.42.40.0. This merge folds in all 31 commits. The lineage keeps getting healthier: 12 conflicts (down from 15 last wave, 106 the wave before), and the interesting ones were cases of convergent evolution. Upstream's #1946 fixed the exact `embed --catch-up` setTimeout-overflow bug the fork fixed in v0.43.0.1 — same diagnosis, same fix shape — so the fork's patch retired in favor of upstream's, with the fork's regression test surviving untouched. And upstream's new bounded auto-skip sync gate (`sync-failure-ledger.ts`) replaces the fork's quarantine-immediately resilience gate from v0.40.0.1: a poison file now blocks its source for at most **3 consecutive syncs** before being auto-skipped (vs. the fork's skip-on-first-sight), which trades a little latency for upstream's sturdier ledger — bounded either way, so the 17-day-outage class stays dead. The fork's gate code and its test retired with attribution; upstream's 100-test ledger suite pins the new behavior, including the fork's original SLUG_MISMATCH incident message.
+
+What teammates get from upstream: **typed-edge relational retrieval** (asking "who introduced X to Y" walks actual relationship edges instead of hoping a chunk mentions both), **Retrieval Reflex** (the agent is taught when a question deserves retrieval and what kind), **resumable, durable, single-flight sync** (a crashed or interrupted sync resumes from a checkpoint instead of starting over; concurrent syncs can't stampede), **source-isolation grant enforcement** (a remote caller's reads are checked against its granted sources on every op — the fork's server now populates that grant, see below), **link provenance** (`link-add` / `link-rm` / `link-sources` with open provenance tracking), job-lock reaping + cooperative abort for stuck background jobs, batch inserts via `jsonb_to_recordset`, and Opus 4.8 pricing support.
+
+The merge also hardened the fork's own server. The pre-landing review caught that upstream widened the engine's pool-rebuild paths: the fork's serve layer captured the Postgres client once at boot, which post-merge would have left auth, `/health`, and the audit log querying a dead pool after the first rebuild — every request 401s until a container restart. The client is now resolved per-call. Same pass wired the fork's bearer-token context into upstream's new source-isolation enforcement (an explicit out-of-grant `source_id` param from a remote caller is now rejected instead of silently honored) and guarded the audit logger against a synchronous throw during the reconnect window.
+
+Numbers: 31 upstream commits, 12 conflicts, version 0.43.0.1 → 0.44.0.0. Validation: typecheck clean, `verify` green, full unit suite green minus 6 known local-env LLM-key reds (reproduce identically on clean main), E2E green minus 6 known reds — 2 pre-existing local-harness, 4 new-from-upstream that reproduce identically on pure upstream/master in the same harness. None caused by this merge. No migration file: nothing an existing brain must do after upgrading.
+
+### To take advantage of v0.44.0.0
+
+1. **Teammates on `/dent-update`**: update as usual. Schema migrations (v113–v115, all additive) apply automatically on the next `dbrain` run.
+2. **Sync failure behavior changed**: a file that fails to parse now blocks its source's bookmark for up to 3 consecutive syncs, then auto-skips (visible in `gbrain doctor`). Previously deterministic parse failures were skipped on first sight. `--skip-failed` still forces past everything; the `--strict-failures` flag is gone.
+3. **Nothing else to do.** Embedding model, tokens, recipes, and the teammate plugin flow are untouched.
+
+### Itemized changes
+
+#### Added
+- Upstream features (v0.42.9.0 → v0.42.40.0): typed-edge relational retrieval, Retrieval Reflex, resumable/durable single-flight sync, source-isolation grant enforcement, link provenance commands (`link-add`/`link-rm`/`link-sources`, `list_link_sources` op), job-lock reaping + cooperative abort, supervisor watchdog, `jsonb_to_recordset` batch inserts, `gbrain self-upgrade`, Opus 4.8 pricing, UTF-16 surrogate well-forming before jsonb.
+- `src/dent/serve.ts` — operation contexts now carry `auth.allowedSources` so upstream's grant enforcement applies to the fork's bearer-token callers (union of `DENT_BRAIN_READ_SOURCE` and `dent`, so the rollback lever can never strand written content).
+- `test/cli.test.ts` — pins the fork's `ingest` CLI_ONLY membership so a future upstream sync can't silently drop it.
+
+#### Changed
+- Sync failure gate: upstream's bounded auto-skip ledger (`src/core/sync-failure-ledger.ts`, block ≤3 consecutive syncs then auto-skip) replaces the fork's quarantine-immediately gate from v0.40.0.1; `--strict-failures` removed. The fork's `test/sync-resilience-gate.test.ts` retired — upstream's ledger suite pins the successor behavior.
+- `src/commands/embed.ts` — fork's v0.43.0.1 `--catch-up` overflow fix superseded by upstream's identical #1946 fix; the fork's regression test remains.
+- `src/dent/serve.ts` — Postgres client for auth//health/audit resolved per-call instead of snapshotted at boot (upstream widened instance-pool rebuild sites); audit logger guarded against synchronous getter throws during pool rebuild.
+- CLAUDE.md — folded in upstream's cross-cutting invariants block and responsible-disclosure rule; per-file index canonicalized on `docs/architecture/KEY_FILES.md`.
+- `docs/TESTING.md` / `docs/RELEASING.md` (imported from upstream) — fork notes reconciling command tables and release conventions (`main` branch, 4-part versions) with the fork; `package.json` is authoritative for check chains.
+- Plugin marketplace bundle, `llms-full.txt`/`llms.txt`, and `bun.lock` regenerated to v0.44.0.0.
+
 ## [0.43.0.1] - 2026-06-07
 
 ## **Fix a source split-brain in the dent MCP server: reads and `put_page` writes now target the canonical `dent` source instead of `default`, so content written through `markdown_*` and the ingestors is finally visible to `get_page`/search. Also fix `embed --catch-up`, which silently embedded zero chunks.**

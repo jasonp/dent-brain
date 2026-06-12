@@ -20,14 +20,17 @@
  * shape suitable for the Cowork skill or scripts to parse.
  */
 
-import { existsSync, readFileSync, statSync, unlinkSync, rmSync } from 'fs';
+import { existsSync, readFileSync, statSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { EXTENSIONS, findExtension } from './registry.ts';
-import type { Extension, ExtensionStatus } from './types.ts';
+import type { Extension, ExtensionStatus, Platform } from './types.ts';
+import { getScheduler, buildSpec, type ScheduleSpec } from './scheduler/index.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
+/** The bun executable running this CLI — used as the daemon's interpreter. */
+const BUN_PATH = process.execPath;
 const ARGS = process.argv.slice(2);
 const FLAG_JSON = ARGS.includes('--json');
 const COMMAND = ARGS.find((a) => !a.startsWith('-')) ?? 'list';
@@ -38,12 +41,30 @@ function expand(p: string | undefined): string | undefined {
   return p.replace(/\$\{HOME\}/g, homedir());
 }
 
-function isLaunchdLoaded(label: string | undefined): boolean {
-  if (!label) return false;
-  const r = spawnSync('launchctl', ['print', `gui/${process.getuid?.() ?? ''}/${label}`], {
-    encoding: 'utf-8',
-  });
-  return r.status === 0;
+/** Daemon-kind extensions run on a scheduler (launchd / Task Scheduler). */
+function isDaemonKind(ext: Extension): boolean {
+  return ext.kind === 'launchd-daemon' || ext.kind === 'scheduled-task';
+}
+
+/** Build the platform-neutral schedule spec for an extension, or null when it
+ * lacks the daemon fields (or isn't a daemon). */
+function schedulerSpec(ext: Extension): ScheduleSpec | null {
+  if (!isDaemonKind(ext)) return null;
+  return buildSpec(ext, expand, BUN_PATH, homedir());
+}
+
+/** True if the extension's daemon is currently registered with the OS
+ * scheduler. Returns false on unsupported platforms (getScheduler throws). */
+function schedulerRunning(ext: Extension): boolean {
+  const spec = schedulerSpec(ext);
+  if (!spec) return false;
+  try { return getScheduler().isLoaded(spec); } catch { return false; }
+}
+
+/** True when this extension is allowed to install on the current OS. */
+function platformAllowed(ext: Extension): boolean {
+  if (!ext.platform || ext.platform.length === 0) return true;
+  return ext.platform.includes(process.platform as Platform);
 }
 
 function checkConfigConfigured(configPath: string | undefined, markers: string[] | undefined): { exists: boolean; configured: boolean; markersFound: string[] } {
@@ -70,7 +91,7 @@ function getStatus(ext: Extension): ExtensionStatus {
   const installDir = expand(ext.installDir);
   const installed = !!installDir && existsSync(installDir);
   const configCheck = checkConfigConfigured(expand(ext.configPath), ext.unconfiguredMarkers);
-  const running = ext.kind === 'launchd-daemon' ? isLaunchdLoaded(ext.launchdLabel) : false;
+  const running = schedulerRunning(ext);
   const userFilterPath = expand(ext.userFilterPath);
   const hasUserFilter = !ext.userFilterPath ? true : (!!userFilterPath && existsSync(userFilterPath));
 
@@ -100,7 +121,7 @@ function getStatus(ext: Extension): ExtensionStatus {
   if (installed && ext.userFilterPath && !hasUserFilter) {
     notes.push(`No user filter at ${userFilterPath}. Daemon is inert. Run \`dent-extensions setup ${ext.id}\` (or in Claude Code: "set up ${ext.id}").`);
   }
-  if (installed && hasUserFilter && !running && ext.kind === 'launchd-daemon') {
+  if (installed && hasUserFilter && !running && isDaemonKind(ext)) {
     notes.push(`Daemon is not armed. Preview first: \`dent-extensions preview ${ext.id}\`, then arm: \`dent-extensions arm ${ext.id}\`.`);
   }
   if (lastRunAt && logBytes != null && logBytes < 100) {
@@ -173,15 +194,19 @@ function cmdStatus(id: string | undefined) {
   console.log(`  status:       ${statusBadge(status)}`);
   console.log(`  installed:    ${status.installed ? 'yes' : 'no'}`);
   console.log(`  configured:   ${status.configured ? 'yes' : 'no'}`);
-  if (ext.kind === 'launchd-daemon') console.log(`  running:      ${status.running ? 'yes' : 'no'}`);
+  if (isDaemonKind(ext)) console.log(`  running:      ${status.running ? 'yes' : 'no'}`);
   if (status.lastRunAt) console.log(`  last run:     ${rel(status.lastRunAt)} (${status.lastRunAt})`);
   if (status.logBytes != null) console.log(`  log size:     ${status.logBytes} bytes`);
   console.log();
   console.log(`  source:       ${ext.sourceDir}`);
   if (ext.installDir) console.log(`  install dir:  ${expand(ext.installDir)}`);
   if (ext.configPath) console.log(`  config:       ${expand(ext.configPath)}`);
-  if (ext.launchdLabel) console.log(`  launchd label: ${ext.launchdLabel}`);
-  if (ext.launchdPlistPath) console.log(`  launchd plist: ${expand(ext.launchdPlistPath)}`);
+  const dspec = schedulerSpec(ext);
+  if (dspec) {
+    const schedKind = process.platform === 'win32' ? 'scheduled-task' : 'launchd';
+    console.log(`  scheduler:    ${schedKind}`);
+    console.log(`  definition:   ${dspec.definitionPath}`);
+  }
   if (status.notes.length > 0) {
     console.log();
     console.log(`  notes:`);
@@ -198,6 +223,14 @@ function cmdInstall(id: string | undefined) {
   if (!id) { console.error('Usage: dent-extensions install <id>'); process.exit(1); }
   const ext = findExtension(id);
   if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
+  if (!platformAllowed(ext)) {
+    console.error(`Extension ${id} does not support ${process.platform}.`);
+    console.error(`Supported: ${(ext.platform ?? []).join(', ')}.`);
+    if (ext.id === 'granola-sync') {
+      console.error(`granola-sync is macOS-only — Granola.app (which mints the API key) doesn't run on Windows.`);
+    }
+    process.exit(1);
+  }
   if (!ext.installScript) {
     console.error(`Extension ${id} has no installer script. See ${ext.sourceDir}/README.md.`);
     process.exit(1);
@@ -207,8 +240,12 @@ function cmdInstall(id: string | undefined) {
     console.error(`Installer not found at ${scriptPath}. Did you \`git pull\`?`);
     process.exit(1);
   }
-  console.error(`==> Running ${scriptPath}`);
-  const r = spawnSync('bash', [scriptPath], { stdio: 'inherit' });
+  // .ts installers run on the bun running this CLI (cross-platform); legacy
+  // .sh installers run via bash (macOS-only extensions).
+  const isTs = scriptPath.endsWith('.ts');
+  const runner = isTs ? BUN_PATH : 'bash';
+  console.error(`==> Running ${isTs ? 'bun' : 'bash'} ${scriptPath}`);
+  const r = spawnSync(runner, [scriptPath], { stdio: 'inherit' });
   process.exit(r.status ?? 1);
 }
 
@@ -309,8 +346,8 @@ function cmdArm(id: string | undefined) {
   if (!id) { console.error('Usage: dent-extensions arm <id>'); process.exit(1); }
   const ext = findExtension(id);
   if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
-  if (ext.kind !== 'launchd-daemon' || !ext.launchdLabel || !ext.launchdPlistPath) {
-    console.error(`Extension ${id} is not a launchd daemon — nothing to arm.`);
+  if (!isDaemonKind(ext)) {
+    console.error(`Extension ${id} is not a daemon — nothing to arm.`);
     process.exit(1);
   }
   const installDir = expand(ext.installDir);
@@ -324,31 +361,32 @@ function cmdArm(id: string | undefined) {
     console.error(`Run \`dent-extensions setup ${id}\` first (the filter decides what reaches the brain).`);
     process.exit(1);
   }
-  const plist = expand(ext.launchdPlistPath);
-  if (!plist || !existsSync(plist)) {
-    console.error(`Plist not found at ${plist}. Re-run \`dent-extensions install ${id}\`.`);
+  const spec = schedulerSpec(ext);
+  if (!spec) {
+    console.error(`Cannot arm ${id}: missing schedule fields (label/definition path/interval).`);
     process.exit(1);
   }
+  if (!existsSync(spec.definitionPath)) {
+    console.error(`Schedule definition not found at ${spec.definitionPath}. Re-run \`dent-extensions install ${id}\`.`);
+    process.exit(1);
+  }
+  let scheduler;
+  try { scheduler = getScheduler(); }
+  catch (e) { console.error(`    ${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
   // Strongly recommend a preview has been run, but don't gate on it — preview
   // writes no state to check against. The trust contract is: user authored
   // the filter, user is now flipping the switch. Their preview habit is on them.
   console.error(`==> Arming ${ext.name}…`);
-  console.error(`    filter:  ${userFilter}`);
-  console.error(`    plist:   ${plist}`);
-  const uid = process.getuid?.();
-  if (typeof uid !== 'number') {
-    console.error(`    cannot determine uid — launchctl needs gui/<uid>. Run \`bash ${ext.sourceDir}/install.sh\` directly instead.`);
+  console.error(`    filter:      ${userFilter}`);
+  console.error(`    scheduler:   ${scheduler.kind}`);
+  console.error(`    definition:  ${spec.definitionPath}`);
+  // arm() is idempotent (tears down a prior registration first) and reports
+  // ok=false on a failed register — we MUST NOT claim "armed" when it fails,
+  // or a daemon that never registered looks live.
+  const result = scheduler.arm(spec);
+  if (!result.ok) {
+    console.error(`    arm failed: ${result.error ?? 'unknown error'}`);
     process.exit(1);
-  }
-  // Tear down any prior bootstrap (idempotent arm).
-  if (isLaunchdLoaded(ext.launchdLabel)) {
-    console.error(`    bootout (refresh)…`);
-    spawnSync('launchctl', ['bootout', `gui/${uid}`, plist], { stdio: 'inherit' });
-  }
-  const r = spawnSync('launchctl', ['bootstrap', `gui/${uid}`, plist], { stdio: 'inherit' });
-  if (r.status !== 0) {
-    console.error(`    bootstrap failed (exit ${r.status}). Check Console.app for launchd errors.`);
-    process.exit(r.status ?? 1);
   }
   console.error(`    armed. Daemon is now live — first run will fire shortly.`);
   console.error();
@@ -362,16 +400,17 @@ function cmdUninstall(id: string | undefined) {
   if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
   console.error(`==> Uninstalling ${ext.name} (${ext.id})…`);
 
-  // 1. Stop launchd agent if loaded
-  if (ext.launchdLabel && ext.launchdPlistPath) {
-    const plist = expand(ext.launchdPlistPath);
-    if (plist && existsSync(plist) && isLaunchdLoaded(ext.launchdLabel)) {
-      console.error(`    bootout ${ext.launchdLabel}…`);
-      spawnSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? ''}`, plist], { stdio: 'inherit' });
-    }
-    if (plist && existsSync(plist)) {
-      try { unlinkSync(plist); console.error(`    removed plist: ${plist}`); }
-      catch (e) { console.error(`    warn: could not remove ${plist}: ${e instanceof Error ? e.message : String(e)}`); }
+  // 1. Stop the daemon if registered, then remove its schedule definition.
+  const spec = schedulerSpec(ext);
+  if (spec) {
+    try {
+      const scheduler = getScheduler();
+      console.error(`    disarm ${spec.label} (${scheduler.kind})…`);
+      scheduler.disarm(spec);
+      scheduler.removeDefinition(spec);
+      console.error(`    removed schedule definition: ${spec.definitionPath}`);
+    } catch (e) {
+      console.error(`    warn: scheduler teardown skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
