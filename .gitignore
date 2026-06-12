@@ -74,3 +74,4 @@ plugin/dist/
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
+plugin/manifest.local.json

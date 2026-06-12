@@ -76,6 +76,7 @@ export const BATCH_AUDIT_SITES = [
   // Engine-method defaults (used when caller doesn't supply auditSite).
   'addLinksBatch',
   'addTimelineEntriesBatch',
+  'addTakesBatch',
   'upsertChunks',
   // extract.ts per-site labels.
   'extract.links_inc',
@@ -137,10 +138,15 @@ export interface WithRetryOpts {
    * for hours when DB credentials are bad.
    *
    * Engine-level callers (PostgresEngine.batchRetry) inject
-   * `() => this.reconnect()` which already handles both module and
-   * instance pools, race-safe via `_reconnecting` guard.
+   * `(ctx) => this.reconnect(ctx)` which already handles both module and
+   * instance pools, race-safe via the `_reconnecting` guard.
+   *
+   * v0.42.x (#1685 CODEX #8): receives the triggering error so the engine can
+   * classify it (pooler reap vs network/auth) for the pool-recovery audit. The
+   * arg is optional — back-compat zero-arg callbacks (`() => this.reconnect()`)
+   * still satisfy the type.
    */
-  reconnect?: () => Promise<void>;
+  reconnect?: (ctx?: { error?: unknown }) => Promise<void>;
 }
 
 /**
@@ -272,7 +278,9 @@ export async function withRetry<T>(
       // immediate-recovery half of that pair.
       if (opts.reconnect) {
         if (signal?.aborted) throw new RetryAbortError();
-        await opts.reconnect();
+        // Thread the triggering error so the engine can classify it (pooler
+        // reap vs other) for the pool-recovery audit (#1685 CODEX #8).
+        await opts.reconnect({ error: err });
       }
       const delay = computeNextDelay(attempt, prevDelay, baseDelay, maxDelay, jitter);
       prevDelay = delay;
