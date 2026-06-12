@@ -24,7 +24,7 @@ Things only the user can do (these are the legitimate pause-points):
 
 - **Provide a secret** (bearer token from the admin, FileMaker password). Secrets aren't in the chat history; the user has to type them.
 - **Click a UI dialog outside Terminal**: the macOS `xcode-select --install` popup, FileMaker Pro's Manage Security window, GitHub's "Accept Invitation" button, the Claude Desktop quit/relaunch (Cmd+Q), the Customize-panel UI clicks for installing the plugin marketplace, and the new session needed to verify install (the current session caches its tool registry).
-- **State a preference**: where to clone the data repo, what handle to use for the FileMaker MCP account, yes/no on optional sections (FM MCP, hand-edit mode, granola-sync).
+- **State a preference**: where to clone the data repo, what handle to use for the FileMaker MCP account, yes/no on optional sections (FM MCP, read-only mirror clone, granola-sync).
 - **Confirm an ambiguous output**: when a command's exit is non-zero or the result is unexpected, show the user and ask before guessing.
 
 Everything else — `git --version`, `brew install node`, reading and writing JSON config, running the Python install block, `git clone`, `npm install`, `curl` health checks — **you run yourself**. The user shouldn't have to copy-paste between windows unless their judgment or their hands are required.
@@ -58,8 +58,10 @@ By the end of this walkthrough you'll have:
 - The **dent-brain plugin** installed in Claude Code, giving you the
   `/dent-*` slash commands (`/dent-append-evidence`, `/dent-enrich`,
   `/dent-resolve-entity`, `/dent-extensions`, etc.).
-- (Optional) A **local clone of `dent-brain-data`** so you can hand-edit
-  entity pages in your code editor instead of dictating to your agent.
+- (Optional) A **read-only local clone of `dent-brain-data`** (the
+  brain's nightly export mirror) so you can grep and browse entity pages
+  in your code editor. Edits to brain content always go through your
+  agent — pushes to the mirror are not ingested.
 - (Optional) **FileMaker MCP** wired up so your agent can also query
   DentCRM directly — separate from dent-brain, but they compose nicely.
 - (Optional) **granola-sync extension** running hourly on your laptop,
@@ -349,15 +351,23 @@ the agent can verify the install via the filesystem.
 
 ---
 
-## 6. (Optional) Hand-edit mode — clone `dent-brain-data`
+## 6. (Optional) Read-only clone of `dent-brain-data`
 
-This step is for teammates who want to edit markdown pages directly in a
-code editor (VS Code, Cursor, Sublime, vim, whatever). **Skip this entire
-section** if you only plan to interact with the brain through Claude.
+> **⚠️ Since v0.45, `dent-brain-data` is a one-way nightly export mirror
+> (DB → git). Hand-edits pushed to the repo are NOT ingested** — the next
+> nightly export overwrites them. All brain writes go through Claude
+> (`/dent-append-evidence` and friends). The clone is useful as a
+> read-only view: grep across pages, browse offline, diff nightly
+> changes.
+
+This step is for teammates who want to browse markdown pages directly in
+a code editor (VS Code, Cursor, Sublime, vim, whatever). **Skip this
+entire section** if you only plan to interact with the brain through
+Claude.
 
 ### Agent prompt
 
-Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (yes / no)"**
+Ask: **"Do you want a read-only local clone of the brain's markdown mirror, for grepping/browsing in a code editor? (yes / no)"**
 
 - **If no:** Skip to Section 7. Claude-only is fine; the brain works
   identically either way.
@@ -370,23 +380,19 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
 
 2. **Pick a location for the clone** — ask: **"Where do you usually keep your code repos? Common conventions: `~/gh/<org>/`, `~/code/`, `~/dev/`, `~/Documents/GitHub/`. Or pick a custom path. Default if no preference: `~/gh/dentthefuture/`."** Wait for their answer.
 
-3. **Ask for git identity** — ask: **"What full name and email should commits be attributed to? (Usually your real name and your dentthefuture.com email if you have one.)"**
-
-4. **Run the clone yourself** — substitute `<BASE_PATH>`, `<NAME>`, `<EMAIL>` with the user's answers and run:
+3. **Run the clone yourself** — substitute `<BASE_PATH>` with the user's answer and run:
 
    ```bash
    mkdir -p <BASE_PATH>
    cd <BASE_PATH>
    git clone git@github.com:dentthefuture/dent-brain-data.git
    cd dent-brain-data
-   git config --local user.name "<NAME>"
-   git config --local user.email "<EMAIL>"
    git remote -v
    ```
 
    Capture output. On success, `git remote -v` should show two `origin` lines for `dentthefuture/dent-brain-data.git`.
 
-5. **Handle SSH failures** — if `git clone` fails with `Permission denied (publickey)`:
+4. **Handle SSH failures** — if `git clone` fails with `Permission denied (publickey)`:
    - The user's GitHub account may not have an SSH key registered, OR
    - The collaborator invite isn't accepted yet.
 
@@ -394,9 +400,8 @@ Ask: **"Do you want to be able to hand-edit markdown pages in a code editor? (ye
    ```bash
    git clone https://github.com/dentthefuture/dent-brain-data.git
    ```
-   The first push will prompt for GitHub credentials — that's a Terminal interaction the user has to handle, but the clone itself doesn't need auth for a public-or-collaborator repo.
 
-6. **Confirm to the user**: **"Cloned successfully to `<BASE_PATH>/dent-brain-data`. The full edit/commit/push workflow is documented in TEAMMATE_GUIDE.md — pull before you edit, push when you're done, server picks up changes within ~5 minutes."**
+5. **Confirm to the user**: **"Cloned successfully to `<BASE_PATH>/dent-brain-data`. This is a read-only mirror — `git pull --ff-only` to refresh (it advances one commit per nightly export). Don't hand-edit and push pages; edits there are never ingested. To change brain content, write through Claude."**
 
 ### What's in the repo
 
@@ -409,10 +414,10 @@ Pages live under:
 - `meetings/YYYY-MM-DD-<slug>.md` — meeting notes
 - `meetings/YYYY-MM-DD-<slug>--transcript.md` — raw transcripts (granola-sync writes these)
 
-For the full edit/commit/push workflow + conflict resolution + what NOT
-to edit, read **`docs/dent-brain/TEAMMATE_GUIDE.md` § Mode 2** in this
-same repo. That doc is the canonical reference for hand-editing; this
-walkthrough only handles the install.
+For the full read-only workflow + what NOT to do, read
+**`docs/dent-brain/TEAMMATE_GUIDE.md` § Mode 2** in this same repo. That
+doc is the canonical reference for the mirror clone; this walkthrough
+only handles the install.
 
 ---
 

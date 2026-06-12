@@ -163,15 +163,18 @@ See `DEPLOY.md §2` for the canonical recipe. Quick summary:
    | `DENT_BRAIN_DATA_PATH` | `/app/dent-brain-data` (default; override if needed) |
    | `DENT_BRAIN_GIT_NAME` | `acme-brain-server` |
    | `DENT_BRAIN_GIT_EMAIL` | `noreply@acme.com` |
-   | `DENT_BRAIN_PULL_INTERVAL_SECONDS` | `300` (default — set to `0` to disable scheduled pull during debug) |
+   | `DENT_BRAIN_EXPORT_HOUR_UTC` | `10` (default — UTC hour for the nightly DB→git export to the mirror repo) |
+   | `DENT_BRAIN_ADMIN_TOKENS` | (optional) comma-separated bearer-token names allowed to call `export_brain_now` |
 
 3. Deploy:
    ```bash
    railway up --detach
    ```
 
-   The first deploy will FAIL at boot because `DENT_BRAIN_DATA_DEPLOY_KEY`
-   isn't set yet. That's expected. §6 fixes it.
+   Without `DENT_BRAIN_DATA_DEPLOY_KEY` the server boots and all write
+   ops work (writes are DB-direct), but the nightly git export mirror is
+   disabled — logs show `exporter: disabled (DENT_BRAIN_DATA_DEPLOY_KEY
+   unset)`. §6 sets up the key.
 
 4. (Optional) Networking → Generate Domain (Railway gives you
    `acme-brain-production.up.railway.app`). Or set up a custom domain
@@ -181,9 +184,11 @@ See `DEPLOY.md §2` for the canonical recipe. Quick summary:
 
 ## 6. Generate + register the deploy key
 
-The server clones your `acme-brain-data` repo at boot via SSH. It needs
-a private key whose public counterpart is registered as a GitHub
-deploy key on the data repo (with **write** access).
+The nightly exporter clones your `acme-brain-data` mirror repo via SSH
+and pushes one commit per export. It needs a private key whose public
+counterpart is registered as a GitHub deploy key on the data repo (with
+**write** access). The key powers only the export mirror — brain writes
+are DB-direct and work without it.
 
 ```bash
 # 1. Generate a fresh ed25519 keypair, no passphrase.
@@ -225,8 +230,8 @@ Tail the logs to confirm boot succeeds:
 ```bash
 railway logs --deployment
 # Look for:
-#   [dent-brain] data repo ready: /app/dent-brain-data @ <sha> (source=dent)
-#   [dent-brain] scheduled-pull: every 300s
+#   [dent-brain] exporter: nightly DB→git export scheduled (DENT_BRAIN_EXPORT_HOUR_UTC or default 10:00 UTC)
+#   [dent-exporter] mirror ready: /app/dent-brain-data @ <sha> branch=main (source=dent, mirror=true)
 #   [dent-brain] HTTP MCP server listening on :8080 (env=production, version=…)
 ```
 
@@ -304,18 +309,18 @@ In a fresh Cowork chat, run:
 Expected behavior:
 1. Cowork detects "founder" → matches `entities/people/founder` (the seed page from §3).
 2. Calls `markdown_append_to_page` with a date-anchored bullet under `## Timeline`.
-3. Returns `commit_sha`.
+3. Returns `content_hash`.
 
-Verify on disk + GitHub:
+Verify in the brain (the write is DB-direct; the git mirror only
+refreshes on the nightly export, so don't look there yet):
 
 ```bash
-cd ~/<your local clone of acme-brain-data>
-git fetch origin main
-git log origin/main --pretty="%h %an %s" -3
-# Top: <sha> acme-brain-server <noreply@acme.com> agent: append entities/people/founder
-git pull --ff-only
-grep -A 1 "Timeline" entities/people/founder.md
-# Should show your new bullet
+curl -fsS -X POST https://acme-brain.acme.com/mcp \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ACME_BRAIN_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_page","arguments":{"slug":"entities/people/founder"}}}'
+# Body should include your new Timeline bullet; get_versions on the same
+# slug shows the new version entry.
 ```
 
 Round-trip via query:
@@ -344,7 +349,7 @@ The skill walks through:
   connector in their `~/.claude.json` (Code mode) AND
   `~/Library/Application Support/Claude/claude_desktop_config.json` (Cowork).
 - Optionally walk them through Cowork plugin install (Phase 9 of the skill —
-  for teammates who want hand-edit access on the data repo too).
+  for teammates who want a read-only clone of the export mirror too).
 
 Audit-log verification confirms registration before the onboarding is
 declared complete.

@@ -1020,10 +1020,12 @@ Claude Code with `/<name>`:
 
 ### 4. Server-side enhancements
 
-- **Markdown writer service** — every brain write goes through git
-  (Dent Brain Data repo on a private GitHub mirror), so every page edit
-  is a real commit with author attribution. See
-  `src/dent/markdown-writer/`.
+- **DB-direct markdown writes** — `markdown_append_to_page` /
+  `markdown_replace_page` write straight to Postgres (source `dent`);
+  page history lives in `page_versions` (inspect via `get_versions`).
+  A nightly exporter (10:00 UTC) renders the DB to the Dent Brain Data
+  git repo as a one-way mirror — hand-edits pushed to that repo are
+  NOT ingested. See `src/dent/db-writer/` and `src/dent/exporter/`.
 - **Bearer-token onboarding** — each teammate gets a personal token
   scoped read+write so attribution stays clean across the shared
   brain. Token issuance lives in `/dent-onboard-teammate`.
@@ -1100,14 +1102,15 @@ inside `setup`:
         │       Dent Brain server (Railway)              │
         │  - gbrain HTTP MCP                             │
         │  - bearer-token auth (per-teammate)            │
-        │  - markdown-writer service (every write =      │
-        │    git commit on dent-brain-data)              │
+        │  - DB-direct markdown writes (Postgres,        │
+        │    source 'dent'; history in page_versions)    │
+        │  - nightly exporter → dent-brain-data mirror   │
         └────────────────┬───────────────────────────────┘
                          ▼
                   ┌───────────────┐  ┌───────────────────┐
                   │  Supabase     │  │  dent-brain-data  │
-                  │  (Postgres +  │  │  (private GitHub  │
-                  │   pgvector)   │  │   mirror)         │
+                  │  (Postgres +  │  │  (one-way nightly │
+                  │   pgvector)   │  │   export mirror)  │
                   └───────────────┘  └───────────────────┘
                          ▲
                          │ also reachable
@@ -1138,7 +1141,8 @@ dent-brain/
 │   └── dent/                 ← Dent-only skills (/dent-* commands)
 ├── src/
 │   └── dent/                 ← Dent-only TypeScript
-│       ├── markdown-writer/  ← server-side write-through-git layer
+│       ├── db-writer/        ← DB-direct markdown write ops
+│       ├── exporter/         ← nightly one-way DB→git export mirror
 │       ├── ingestors/        ← regfox, mailchimp
 │       └── ...
 ├── tools/

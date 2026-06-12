@@ -93,12 +93,13 @@ In the project's **Variables** tab, add:
 | `DATABASE_URL` | `postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres` |
 | `NODE_ENV` | `production` |
 | `PORT` | Railway sets this automatically — **do not set manually** |
-| `DENT_BRAIN_DATA_DEPLOY_KEY` | PEM-formatted SSH private key with write access to `dentthefuture/dent-brain-data` (PLAN v2.0 Phase 1). See §2.3.1 below. |
+| `DENT_BRAIN_DATA_DEPLOY_KEY` | PEM-formatted SSH private key with write access to `dentthefuture/dent-brain-data`. Used only by the nightly DB→git export mirror (since v0.45); writes are DB-direct and work without it. See §2.3.1 below. |
 | `DENT_BRAIN_DATA_REPO_URL` | (optional) Override clone URL. Default: `git@github.com:dentthefuture/dent-brain-data.git`. |
 | `DENT_BRAIN_DATA_PATH` | (optional) Override clone path. Default: `/app/dent-brain-data`. Set to `/tmp/dent-brain-data` for ephemeral storage. |
 | `DENT_BRAIN_GIT_NAME` | (optional) git commit author name. Default: `dent-brain-server`. |
 | `DENT_BRAIN_GIT_EMAIL` | (optional) git commit author email. Default: `noreply@dentthefuture.com`. |
-| `DENT_BRAIN_PULL_INTERVAL_SECONDS` | (optional, PLAN v2.0 Phase 4) Interval for the scheduled `git pull --ff-only` + `performSync` against `dent-brain-data`. Default: `300` (5 minutes). Set to `0` to disable (e.g., for staging or single-writer debug runs). |
+| `DENT_BRAIN_EXPORT_HOUR_UTC` | (optional, since v0.45) UTC hour-of-day for the nightly DB→git export to `dent-brain-data`. Default: `10`. The export is one-way (DB → git); the server never ingests from the repo. |
+| `DENT_BRAIN_ADMIN_TOKENS` | (optional, since v0.45) Comma-separated bearer-token names allowed to call admin ops (`export_brain_now`). Calls from unlisted tokens return `permission_denied`. |
 | `DENT_BRAIN_REGFOX_API_KEY` | (optional, Phase 5.1) Webconnex API key for the RegFox polling ingestor. When set, the server polls `/search/registrants` every `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` and translates each new registration into a markdown bullet on the right entity page. See `docs/dent-brain/ingestors/regfox.md` for the full guide. |
 | `DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS` | (optional, default `300`) Tick interval for the RegFox cron. Set `0` to disable. |
 | `DENT_BRAIN_REGFOX_FORM_IDS` | (optional, default poll-all) Comma-separated form IDs to scope polling. |
@@ -108,14 +109,16 @@ In the project's **Variables** tab, add:
 The server reads `PORT` from env and binds to whatever Railway provides.
 
 When `DENT_BRAIN_DATA_DEPLOY_KEY` is unset, the server still boots but logs
-`DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable`
-and the new `markdown_append_to_page` / `markdown_replace_page` ops fail when
-called. All other ops (read, query, evidence, entity-detection) work normally.
+`exporter: disabled (DENT_BRAIN_DATA_DEPLOY_KEY unset) — no git mirror will
+be maintained.` All ops — including `markdown_append_to_page` /
+`markdown_replace_page` — work normally; since v0.45 writes go DB-direct to
+Postgres (source `dent`), and the key only powers the export mirror.
 
 ### 2.3.1 GitHub deploy key for the dent-brain-data clone
 
-PLAN v2.0 (markdown-canonical) writes through the markdown repo, so the Railway
-server needs an SSH key with **write** access to `dentthefuture/dent-brain-data`.
+The nightly exporter (since v0.45) pushes a DB→git mirror commit to the data
+repo, so the Railway server needs an SSH key with **write** access to
+`dentthefuture/dent-brain-data`.
 Use a per-deployment ed25519 key, scoped to that single repo — smaller blast
 radius than a personal access token.
 
@@ -130,7 +133,7 @@ radius than a personal access token.
    **Deploy keys** → **Add deploy key**:
    - Title: `dent-brain-server (railway)`
    - Key: contents of `/tmp/dent-brain-data-key.pub`
-   - **✅ Allow write access** — required; the server pushes commits.
+   - **✅ Allow write access** — required; the exporter pushes the nightly mirror commit.
 3. **Railway side.** In the dent-brain service → **Variables** → add a new
    variable:
    - Name: `DENT_BRAIN_DATA_DEPLOY_KEY`
@@ -143,17 +146,18 @@ radius than a personal access token.
    (0600, written by `ensureDataRepo` at boot from the env var).
 
 **On boot the server will:**
-- Materialize the key to `/tmp/dent-brain-data-deploy-key` (0600).
-- Set `GIT_SSH_COMMAND` for child git processes.
-- Clone `dent-brain-data` to `DENT_BRAIN_DATA_PATH` (or `git pull --ff-only` if
-  the path already exists across deploys).
-- Configure local git identity for commits the server makes.
-- Upsert a `sources` row (`id='dent'`) so `gbrain sync --source dent` works.
+- Materialize the key to `/tmp/dent-brain-data-deploy-key` (0600) and set
+  `GIT_SSH_COMMAND` for the exporter's git processes.
+- Clone `dent-brain-data` to `DENT_BRAIN_DATA_PATH` (or pull if the path
+  already exists across deploys). A clone/pull failure here is non-fatal —
+  the export retries at fire time.
+- Upsert the `sources` row (`id='dent'`) with `{mirror: true,
+  syncEnabled: false}` — the server never ingests from the repo.
 
 Look for these lines in the Railway deploy logs to confirm:
 ```
-[dent-brain] cloning git@github.com:dentthefuture/dent-brain-data.git → /app/dent-brain-data
-[dent-brain] data repo ready: /app/dent-brain-data @ <sha> (source=dent)
+[dent-brain] exporter: nightly DB→git export scheduled (DENT_BRAIN_EXPORT_HOUR_UTC or default 10:00 UTC)
+[dent-exporter] mirror ready: /app/dent-brain-data @ <sha> branch=main (source=dent, mirror=true)
 ```
 
 **Rotating the key:** generate a new keypair, swap the GitHub deploy key, then
