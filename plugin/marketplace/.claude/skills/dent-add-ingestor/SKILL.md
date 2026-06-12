@@ -31,7 +31,7 @@ writes_pages: false
 The brain captures observations through three input channels:
 
 1. **Cowork conversational capture** — `/dent-append-evidence`. Already wired (this is Phase 1+2 work).
-2. **Teammate hand-edits** — direct git commits to the markdown repo. Already wired (Phase 3+4 work, see TEAMMATE_GUIDE.md).
+2. **Teammate writes via brain ops** — `markdown_append_to_page`/`markdown_replace_page` (DB-direct since v0.45; the git repo is a read-only export mirror, hand-edits are not ingested).
 3. **Server-side ingestors** — what this skill is for. RegFox attendee data, Gmail threads from key contacts, Granola meeting transcripts, Dropbox-dropped notes. Each ingestor is a long-running worker that watches its source and writes through `markdown_append_to_page` when a signal lands.
 
 Channel 3 is the highest-throughput input. Until ingestors are wired, the brain only knows what someone explicitly logged via Cowork or hand-edited.

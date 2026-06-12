@@ -239,7 +239,7 @@ markdown_replace_page({
 - `updated` (today's date, ISO-8601)
 
 **Handle results:**
-- `status: "ok"` — record `commit_sha` for the user-facing summary.
+- `status: "ok"` — record `content_hash` for the user-facing summary.
 - `status: "page_changed"` — someone wrote between your read and
   write. The op returns `current_content` and `current_hash`. Re-run
   the synthesis with `current_content` as the new prior, then retry
@@ -259,7 +259,7 @@ new entity refs in the body get extracted into the links graph.
 
 Surface a one-paragraph diff to the user: which sections were updated,
 which were preserved verbatim, whether any FM-evidence discrepancies
-were flagged, and the resulting `commit_sha`.
+were flagged, and the resulting `content_hash`.
 
 If the synthesis hit any failures (FM unreachable, page contention),
 name them explicitly. Do not silently degrade.

@@ -173,7 +173,7 @@ For each confirmed entity slug from steps 1–2:
    ```
 
 4. **Handle results:**
-   - `status: "ok"` — record the `commit_sha` for the user-facing summary.
+   - `status: "ok"` — record the `content_hash` for the user-facing summary.
    - `status: "busy"` — another writer is in flight; retry once after
      a short delay, then surface to the user.
    - `error: "rate_limited"` — slow down. Tell the user the rate cap
@@ -195,7 +195,7 @@ Two protections, none of them via a content_hash table:
    `/dent-append-evidence` twice with the same observation, the second
    commit is a no-op (the bullet text is unchanged) and
    `markdown_append_to_page` short-circuits with the existing HEAD as
-   `commit_sha`.
+   `content_hash`.
 2. `add` produces no staged change if the file is byte-identical, so
    the second call returns `status: "ok"` without a real commit. Tell
    the user "I already have that observation."
@@ -208,7 +208,7 @@ entity's page, and that's a real new commit.
 
 Surface a one-paragraph summary:
 
-- The entity slugs the bullet landed on, with the `commit_sha` for each.
+- The entity slugs the bullet landed on, with the `content_hash` for each.
 - If any new stub entities were created, name them.
 - If any unknowns were dropped, name them.
 - If the FM lookup escalated to `/dent-resolve-entity`, link to that.
