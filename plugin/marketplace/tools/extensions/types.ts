@@ -10,7 +10,11 @@
  * status interface. Adding a new extension is an O(1) edit to registry.ts.
  */
 
-export type ExtensionKind = 'launchd-daemon' | 'manual' | 'cron-script';
+export type ExtensionKind = 'launchd-daemon' | 'scheduled-task' | 'manual' | 'cron-script';
+
+/** Operating systems an extension can install on. Maps to `process.platform`
+ * values. We only support the two teammates run today. */
+export type Platform = 'darwin' | 'win32';
 
 export interface Extension {
   /** Stable id (kebab-case). Used in CLI commands like `install <id>`. */
@@ -19,8 +23,17 @@ export interface Extension {
   name: string;
   /** One-paragraph blurb shown in `list` + `status`. */
   description: string;
-  /** Trigger / scope — what kind of teammate engagement it implies. */
+  /** Trigger / scope — what kind of teammate engagement it implies.
+   * `launchd-daemon` and `scheduled-task` are the macOS and Windows daemon
+   * kinds respectively; both are scheduled by the scheduler abstraction
+   * (scheduler/index.ts) — the right one is picked by `process.platform`
+   * at runtime, so a single extension can declare `launchd-daemon` and still
+   * install on Windows when `platform` includes `'win32'`. */
   kind: ExtensionKind;
+  /** OSes this extension can install on. Unset = all supported platforms.
+   * The CLI refuses `install` when `process.platform` is not in this list.
+   * Example: granola-sync is `['darwin']` (Granola.app is Mac-only). */
+  platform?: Platform[];
   /** Where this extension's source files live in the dent-brain repo
    * (relative to the repo root). */
   sourceDir: string;
@@ -30,10 +43,20 @@ export interface Extension {
   installDir?: string;
   /** Where the extension reads its config (absolute path; `~` expanded). */
   configPath?: string;
-  /** launchd label, if applicable. */
+  /** launchd label, if applicable (macOS). */
   launchdLabel?: string;
   /** launchd plist path, if applicable (absolute; `~` expanded). */
   launchdPlistPath?: string;
+  /** Windows Task Scheduler task name, if applicable. The scheduler
+   * abstraction uses this with `schtasks` (Windows analogue of launchdLabel). */
+  taskName?: string;
+  /** Windows Task Scheduler task-definition XML path (absolute; `~` expanded).
+   * Staged at install, registered at arm — the analogue of launchdPlistPath. */
+  taskXmlPath?: string;
+  /** How often the daemon runs, in seconds. Platform-neutral schedule data
+   * the scheduler renders into the plist (StartInterval) or task XML
+   * (Repetition Interval). Required for daemon-kind extensions. */
+  scheduleIntervalSeconds?: number;
   /** Path to the runtime entrypoint for `test` (absolute; `~` expanded). */
   entryScript?: string;
   /** Optional CLI args appended to `bun <entryScript>` for the test action.

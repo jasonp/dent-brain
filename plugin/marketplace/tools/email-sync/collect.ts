@@ -139,7 +139,7 @@ function discoverMcp(): { serverUrl: string; bearerToken: string } | null {
 function loadConfig(path: string): SyncConfig {
   if (!existsSync(path)) {
     console.error(`No email-sync config at ${path}.`);
-    console.error('Run the installer (`tools/email-sync/install.sh` or `/dent-extensions install email-sync`) first.');
+    console.error('Run the installer (`dent-extensions install email-sync`) first.');
     process.exit(1);
   }
   const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
@@ -295,7 +295,7 @@ async function main() {
     }
   } catch (e) {
     console.error(`[email-sync] FATAL: Gmail health probe failed: ${e instanceof Error ? e.message : String(e)}`);
-    console.error(`  If the access token was revoked, re-run tools/email-sync/install.sh to re-authorize.`);
+    console.error(`  If the access token was revoked, re-run \`dent-extensions install email-sync\` to re-authorize.`);
     process.exit(2);
   }
 

@@ -194,7 +194,7 @@ export class GoogleClient {
 export function loadTokensFromDisk(path: string): GoogleTokens {
   if (!existsSync(path)) {
     throw new Error(
-      `Google OAuth tokens not found at ${path}. Run \`tools/email-sync/install.sh\` to complete the one-time OAuth dance.`,
+      `Google OAuth tokens not found at ${path}. Run \`dent-extensions install email-sync\` to complete the one-time OAuth dance.`,
     );
   }
   return JSON.parse(readFileSync(path, 'utf-8')) as GoogleTokens;
