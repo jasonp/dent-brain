@@ -47,6 +47,7 @@ import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
 import { exportOperations } from './operations/export.ts';
+import { assembleServeOps } from './serve-ops.ts';
 import { DENT_SOURCE_ID } from './db-writer/page-io.ts';
 import { startExportCron, type ExportCronHandle } from './exporter/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
@@ -79,7 +80,7 @@ if (!DATABASE_URL) {
 // file_upload/file_list/file_url, …) are CLI-only by contract. Enforced
 // structurally by scripts/check-operations-filter-bypass.sh.
 const remoteSafeOps = operations.filter(op => !op.localOnly);
-const allOps: Operation[] = [...remoteSafeOps, ...entityDetectionOperations, ...markdownWriteOperations, ...exportOperations];
+const allOps: Operation[] = assembleServeOps(remoteSafeOps);
 const opsByName = new Map(allOps.map((o) => [o.name, o]));
 
 const engine = new PostgresEngine();
