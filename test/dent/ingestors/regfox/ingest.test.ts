@@ -1,38 +1,44 @@
 /**
- * Integration tests for the RegFox ingest orchestrator.
+ * Integration tests for the RegFox ingest orchestrator — DB-backed
+ * (single-brain Stage C rebuild of the deleted git-fixture version).
  *
- * Mocks the API client (no network), uses real PGLite + a real bare/clone
- * git fixture (same pattern as test/dent/markdown-writer/_helpers.ts) so
- * the full path — Postgres lookup + markdown_*-style writes + cursor
- * persistence — runs end-to-end.
- *
- * Three cases tested per Q1=B with name-match guard rail:
- *   1. New email + new name → creates a new stub, appends the bullet.
+ * No network, no git: ingestOne writes through the db-writer straight
+ * into PGLite (source 'dent'). Cases per Q1=B with name-match guard rail:
+ *   1. New email + new name → creates a new stub in the DB.
  *   2. Existing email match → appends to that page (no new stub).
- *   3. Existing slug, no email match → pending review file gets a row.
+ *   3. Existing slug, no email match → pending-review page gets a row.
+ *   + idempotent re-ingest, skip, discount clause, emails:-list matching.
  */
 
-import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, setDefaultTimeout } from 'bun:test';
+import { PGLiteEngine } from '../../../../src/core/pglite-engine.ts';
+import { resetPgliteState } from '../../../helpers/reset-pglite.ts';
+import { runDentMigrations } from '../../../../src/dent/migrate.ts';
 import { ingestOne } from '../../../../src/dent/ingestors/regfox/ingest.ts';
 import type { RegfoxRegistrant } from '../../../../src/dent/ingestors/regfox/types.ts';
-import { setupMarkdownWriter, type MdWriterFixture } from '../../markdown-writer/_helpers.ts';
-import { runDentMigrations } from '../../../../src/dent/migrate.ts';
-import { DENT_SOURCE_ID } from '../../../../src/dent/markdown-writer/repo.ts';
+import { DENT_SOURCE_ID, readPageMarkdown } from '../../../../src/dent/db-writer/page-io.ts';
+import { upsertDentSource } from '../../db-writer/_helpers.ts';
 
 setDefaultTimeout(30_000);
 
-let fx: MdWriterFixture;
+let engine: PGLiteEngine;
 
-beforeEach(async () => {
-  fx = await setupMarkdownWriter();
-  // Apply dent migrations (v3 already there from setup; v4 = regfox_ingest_state).
-  await runDentMigrations(fx.engine);
+beforeAll(async () => {
+  engine = new PGLiteEngine();
+  await engine.connect({});
+  await engine.initSchema();
 });
 
-afterEach(async () => {
-  await fx.cleanup();
+afterAll(async () => {
+  await engine.disconnect();
+});
+
+beforeEach(async () => {
+  await resetPgliteState(engine);
+  await upsertDentSource(engine);
+  // resetPgliteState truncates config (incl. dent_version), so the dent
+  // migrations (v4 = regfox_ingest_state) re-apply idempotently per test.
+  await runDentMigrations(engine);
 });
 
 const baseRegistrant = (overrides: Partial<RegfoxRegistrant> = {}): RegfoxRegistrant => ({
@@ -48,90 +54,101 @@ const baseRegistrant = (overrides: Partial<RegfoxRegistrant> = {}): RegfoxRegist
   ...overrides,
 });
 
-describe('ingestOne — end-to-end against real fixtures', () => {
-  test('case 1: new email + new name → creates stub, returns "created"', async () => {
-    const outcome = await ingestOne(fx.engine, baseRegistrant());
+describe('ingestOne — DB-backed end-to-end', () => {
+  test('case 1: new email + new name → creates stub on source dent, returns "created"', async () => {
+    const outcome = await ingestOne(engine, baseRegistrant());
     expect(outcome).toBe('created');
 
-    // The stub page exists in Postgres.
-    const page = await fx.engine.getPage('entities/people/alice-example');
+    // The stub page exists in the DB on source 'dent'.
+    const page = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
     expect(page).not.toBeNull();
     expect(page?.compiled_truth ?? '').toContain('Registered for Test Conf 2026');
     expect(page?.compiled_truth ?? '').toContain('$500.00 USD');
 
-    // The markdown file landed on disk.
-    const filePath = join(fx.cloneRepo, 'entities/people/alice-example.md');
-    expect(existsSync(filePath)).toBe(true);
-    const content = readFileSync(filePath, 'utf-8');
-    expect(content).toContain('email: alice@example.com');
-    expect(content).toContain('regfox_registrant_id: 12345');
-    expect(content).toContain('## Timeline');
+    // Canonical rendering carries the stub frontmatter + Timeline section.
+    const md = await readPageMarkdown(engine, 'entities/people/alice-example');
+    expect(md).not.toBeNull();
+    expect(md!.markdown).toContain('email: alice@example.com');
+    expect(md!.markdown).toContain('regfox_registrant_id: 12345');
+    expect(md!.markdown).toContain('## Timeline');
+
+    // And there is NO page on 'default' — writes are dent-scoped only.
+    expect(await engine.getPage('entities/people/alice-example', { sourceId: 'default' })).toBeNull();
   });
 
   test('case 2: existing entity matched by email → appends, returns "appended"', async () => {
     // Pre-create the entity at a NON-name-derived slug to prove the email
     // lookup wins over the name-derived slug-existence check.
-    await fx.engine.putPage('entities/people/already-here', {
+    await engine.putPage('entities/people/already-here', {
       type: 'person',
       title: 'Already Here',
       compiled_truth: '# Already Here\n\nExisting page.\n',
       frontmatter: { email: 'alice@example.com', type: 'person', title: 'Already Here' },
     }, { sourceId: DENT_SOURCE_ID });
 
-    const outcome = await ingestOne(fx.engine, baseRegistrant());
+    const outcome = await ingestOne(engine, baseRegistrant());
     expect(outcome).toBe('appended');
 
     // Append happened to the email-matched slug, NOT a new alice-example.
-    const aliceNew = await fx.engine.getPage('entities/people/alice-example');
-    expect(aliceNew).toBeNull();
-    const matched = await fx.engine.getPage('entities/people/already-here');
-    expect(matched?.compiled_truth ?? '').toContain('Registered for Test Conf 2026');
+    expect(await engine.getPage('entities/people/alice-example')).toBeNull();
+    const matched = await engine.getPage('entities/people/already-here', { sourceId: DENT_SOURCE_ID });
+    expect(`${matched?.compiled_truth ?? ''}${matched?.timeline ?? ''}`).toContain('Registered for Test Conf 2026');
+  });
+
+  test('case 2 (idempotent re-ingest): same registrant twice → second pass appends via email match, no duplicate stub', async () => {
+    expect(await ingestOne(engine, baseRegistrant())).toBe('created');
+    // The stub now carries email: alice@example.com → re-ingest email-matches
+    // and appends to the same page instead of creating a duplicate.
+    expect(await ingestOne(engine, baseRegistrant())).toBe('appended');
+
+    const pages = await engine.executeRaw<{ slug: string }>(
+      `SELECT slug FROM pages WHERE slug LIKE 'entities/people/alice-example%' AND deleted_at IS NULL`,
+    );
+    expect(pages.length).toBe(1);
   });
 
   test('case 3: name-derived slug exists with no email match → pending review', async () => {
     // Pre-create a page at the same slug Alice would land on, but with no email.
-    await fx.engine.putPage('entities/people/alice-example', {
+    await engine.putPage('entities/people/alice-example', {
       type: 'person',
       title: 'A Different Alice Example',
       compiled_truth: '# A Different Alice Example\n\nNo email on this page.\n',
       frontmatter: { type: 'person', title: 'A Different Alice Example' },
-    });
+    }, { sourceId: DENT_SOURCE_ID });
 
-    const outcome = await ingestOne(fx.engine, baseRegistrant());
+    const outcome = await ingestOne(engine, baseRegistrant());
     expect(outcome).toBe('pending_review');
 
-    // No bullet was appended to the existing page (correct — could be wrong attribution).
-    const existing = await fx.engine.getPage('entities/people/alice-example');
+    // No bullet was appended to the existing page (could be wrong attribution).
+    const existing = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
     expect(existing?.compiled_truth ?? '').not.toContain('Registered for Test Conf 2026');
 
-    // The pending-review file got a checklist row.
-    const pendingPath = join(fx.cloneRepo, '_ingest', 'pending_regfox.md');
-    expect(existsSync(pendingPath)).toBe(true);
-    const content = readFileSync(pendingPath, 'utf-8');
-    expect(content).toContain('regfox-id:12345');
-    expect(content).toContain('alice@example.com');
-    expect(content).toContain('Alice Example');
+    // The pending-review page got a checklist row, on source 'dent'.
+    const pending = await readPageMarkdown(engine, '_ingest/pending_regfox');
+    expect(pending).not.toBeNull();
+    expect(pending!.markdown).toContain('regfox-id:12345');
+    expect(pending!.markdown).toContain('alice@example.com');
+    expect(pending!.markdown).toContain('Alice Example');
   });
 
-  test('case 3 (idempotent): same registrant queued twice does not duplicate the row', async () => {
-    await fx.engine.putPage('entities/people/alice-example', {
+  test('case 3 (idempotent): same registrant queued twice does not duplicate the pending row', async () => {
+    await engine.putPage('entities/people/alice-example', {
       type: 'person',
       title: 'Other Alice',
       compiled_truth: '# Other Alice\n',
       frontmatter: { type: 'person', title: 'Other Alice' },
-    });
+    }, { sourceId: DENT_SOURCE_ID });
 
-    await ingestOne(fx.engine, baseRegistrant());
-    await ingestOne(fx.engine, baseRegistrant());
+    await ingestOne(engine, baseRegistrant());
+    await ingestOne(engine, baseRegistrant());
 
-    const pendingPath = join(fx.cloneRepo, '_ingest', 'pending_regfox.md');
-    const content = readFileSync(pendingPath, 'utf-8');
-    const rowCount = content.split('\n').filter((l) => l.includes('regfox-id:12345')).length;
+    const pending = await readPageMarkdown(engine, '_ingest/pending_regfox');
+    const rowCount = pending!.markdown.split('\n').filter((l) => l.includes('regfox-id:12345')).length;
     expect(rowCount).toBe(1);
   });
 
   test('skip: registrant with neither email nor name', async () => {
-    const outcome = await ingestOne(fx.engine, baseRegistrant({
+    const outcome = await ingestOne(engine, baseRegistrant({
       orderEmail: undefined,
       billing: {},
     }));
@@ -139,15 +156,13 @@ describe('ingestOne — end-to-end against real fixtures', () => {
   });
 
   test('case 1 with discount code: bullet includes discount clause', async () => {
-    await ingestOne(fx.engine, baseRegistrant({ fieldData: { coupon_code: 'EARLYBIRD' } }));
-    const page = await fx.engine.getPage('entities/people/alice-example');
+    await ingestOne(engine, baseRegistrant({ fieldData: { coupon_code: 'EARLYBIRD' } }));
+    const page = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
     expect(page?.compiled_truth ?? '').toContain('with discount code EARLYBIRD');
   });
 
   test('case 2 array shape: page with emails: list matches by any address in the list', async () => {
-    // Pre-create an entity with a primary email + a separate `emails:` list
-    // (the YAML pattern used during the manual backfill for multi-email people).
-    await fx.engine.putPage('entities/people/multi-email-person', {
+    await engine.putPage('entities/people/multi-email-person', {
       type: 'person',
       title: 'Multi Email Person',
       compiled_truth: '# Multi Email Person\n\nPage with multiple known emails.\n',
@@ -160,18 +175,16 @@ describe('ingestOne — end-to-end against real fixtures', () => {
     }, { sourceId: DENT_SOURCE_ID });
 
     // Registrant uses one of the SECONDARY emails — should still email-match.
-    const outcome = await ingestOne(fx.engine, baseRegistrant({ orderEmail: 'secondary@example.com' }));
+    const outcome = await ingestOne(engine, baseRegistrant({ orderEmail: 'secondary@example.com' }));
     expect(outcome).toBe('appended');
 
-    // Bullet appended to the existing page, NOT a new alice-example stub.
-    const newSlugCheck = await fx.engine.getPage('entities/people/alice-example');
-    expect(newSlugCheck).toBeNull();
-    const matched = await fx.engine.getPage('entities/people/multi-email-person');
-    expect(matched?.compiled_truth ?? '').toContain('Registered for Test Conf 2026');
+    expect(await engine.getPage('entities/people/alice-example')).toBeNull();
+    const matched = await engine.getPage('entities/people/multi-email-person', { sourceId: DENT_SOURCE_ID });
+    expect(`${matched?.compiled_truth ?? ''}${matched?.timeline ?? ''}`).toContain('Registered for Test Conf 2026');
   });
 
   test('case 2 array shape: case-insensitive within the emails: list', async () => {
-    await fx.engine.putPage('entities/people/casey-example', {
+    await engine.putPage('entities/people/casey-example', {
       type: 'person',
       title: 'Casey Example',
       compiled_truth: '# Casey Example\n',
@@ -180,10 +193,9 @@ describe('ingestOne — end-to-end against real fixtures', () => {
         title: 'Casey Example',
         emails: ['Casey@Example.com'], // mixed case in the list
       },
-    });
+    }, { sourceId: DENT_SOURCE_ID });
 
-    // Registrant uses lowercase variant.
-    const outcome = await ingestOne(fx.engine, baseRegistrant({ orderEmail: 'casey@example.com' }));
+    const outcome = await ingestOne(engine, baseRegistrant({ orderEmail: 'casey@example.com' }));
     expect(outcome).toBe('appended');
   });
 });

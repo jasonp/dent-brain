@@ -1,15 +1,15 @@
 /**
- * Slug ↔ filesystem path translation for the dent-brain-data clone.
+ * Slug ↔ filesystem path translation for the dent-brain-data export mirror.
  *
  * Default mapping is `<repo>/<slug>.md`. The slug is treated as a
  * relative path (forward-slash separated). We re-resolve against the
  * repo root and reject anything that escapes — defense against a
- * caller passing `../../etc/passwd` or `entities/../../foo`.
+ * slug row containing `../../etc/passwd` or `entities/../../foo`.
  *
- * Slug shape is already validated by the upstream `validatePageSlug`
- * allowlist (lowercase alphanumerics + hyphens + slashes), but the
- * writer is reachable via the new dent op alone, so we apply a
- * separate boundary check here rather than trust the caller.
+ * Moved from markdown-writer/paths.ts in Stage B of the single-brain
+ * conversion: the write path validates slugs structurally in
+ * db-writer/page-io.ts; this filesystem-aware variant only serves the
+ * one-way DB→git exporter now.
  */
 
 import { resolve, relative, sep } from 'path';

@@ -1,36 +1,34 @@
 /**
- * Boot-time setup for the dent-brain-data working clone.
+ * Mirror-repo setup for the one-way DB→git exporter (single-brain Stage B).
  *
- * Called from `src/dent/serve.ts` after the schema-drift guard, before
- * `Bun.serve` binds the port. If any step fails, we fail boot — writes
- * are required to function and there's no degraded mode.
+ * dent-brain-data is no longer on the write path. The server's only git
+ * involvement is a nightly export that materializes live DB pages as
+ * markdown files in this clone and pushes one commit. Accordingly:
  *
- * Responsibilities:
- *   1. Materialize the deploy key from `DENT_BRAIN_DATA_DEPLOY_KEY` env
- *      to a 0600 file and stage `GIT_SSH_COMMAND` for git children.
- *   2. Clone `DENT_BRAIN_DATA_REPO_URL` into `DENT_BRAIN_DATA_PATH`
- *      (default `/app/dent-brain-data`) if absent, else `git pull --ff-only`.
- *   3. Configure local git identity for commits the server makes.
- *   4. Upsert a `sources` row (`id='dent'`) so `performSync({sourceId: 'dent'})`
- *      reads the right local_path and tracks last_commit per-source.
+ *   - The `sources` row for 'dent' is upserted with config
+ *     `{mirror: true, syncEnabled: false}` so NOTHING ever treats the
+ *     mirror as an import source — `sync_brain` / performSync must not
+ *     pick it up. local_path is kept fresh for operability/debugging only.
+ *   - Failure to clone/pull is non-fatal at boot: the exporter cron
+ *     retries; serving never depends on the repo.
  *
- * The env vars are documented in DEPLOY.md (Phase 1 update lands alongside).
+ * Deploy-key handling (materializeDeployKey) and the clone-or-pull +
+ * git-identity logic moved here from markdown-writer/repo.ts.
  */
 
 import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
 import { dirname } from 'path';
 import { execFileSync } from 'child_process';
 import type { BrainEngine } from '../../core/engine.ts';
-import { git, tryGit } from './git-helpers.ts';
-
-export const DENT_SOURCE_ID = 'dent';
+import { DENT_SOURCE_ID } from '../db-writer/page-io.ts';
+import { git } from './git-helpers.ts';
 
 export interface DataRepoEnv {
   /** GIT_SSH_COMMAND to inject when invoking git. */
   GIT_SSH_COMMAND: string;
 }
 
-export interface EnsureDataRepoResult {
+export interface MirrorRepoContext {
   repoPath: string;
   headCommit: string;
   gitEnv: NodeJS.ProcessEnv;
@@ -43,7 +41,7 @@ function readEnv(name: string, fallback?: string): string {
   const v = process.env[name];
   if (v && v.length > 0) return v;
   if (fallback !== undefined) return fallback;
-  throw new Error(`FATAL: ${name} is required for the dent-brain-data clone but is unset.`);
+  throw new Error(`FATAL: ${name} is required for the dent-brain-data mirror but is unset.`);
 }
 
 /**
@@ -55,7 +53,7 @@ function readEnv(name: string, fallback?: string): string {
  * actual newlines or with `\n` placeholders (Railway secrets often
  * arrive flattened).
  */
-function materializeDeployKey(): DataRepoEnv {
+export function materializeDeployKey(): DataRepoEnv {
   const raw = readEnv('DENT_BRAIN_DATA_DEPLOY_KEY');
   // Accept literal `\n` escapes (some secret stores flatten newlines).
   const pem = raw.includes('\\n') && !raw.includes('\n') ? raw.replace(/\\n/g, '\n') : raw;
@@ -69,29 +67,35 @@ function materializeDeployKey(): DataRepoEnv {
 
   const knownHostsPath = '/tmp/dent-brain-data-known-hosts';
   // accept-new lets us trust github.com on first contact; subsequent
-  // sessions verify against the same file. StrictHostKeyChecking=no would
-  // be slightly looser; accept-new is the modern OpenSSH equivalent.
+  // sessions verify against the same file.
   const sshCmd = `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${knownHostsPath}`;
   return { GIT_SSH_COMMAND: sshCmd };
 }
 
 /**
- * Idempotently register the dent-brain-data repo as a `sources` row so
- * `performSync({sourceId: 'dent'})` works. ON CONFLICT DO UPDATE keeps
- * `local_path` fresh in case the runtime path changes between deploys.
+ * Idempotently mark the 'dent' source as a non-syncing export mirror.
+ * config.mirror=true + syncEnabled=false is the contract that keeps
+ * sync_brain / performSync from ever importing FROM the mirror — the DB
+ * is canonical, the repo is derived.
  */
-async function upsertDentSource(engine: BrainEngine, repoPath: string): Promise<void> {
+async function upsertMirrorSource(engine: BrainEngine, repoPath: string): Promise<void> {
   await engine.executeRaw(
     `INSERT INTO sources (id, name, local_path, config)
        VALUES ($1, $2, $3, $4::jsonb)
      ON CONFLICT (id) DO UPDATE
        SET local_path = EXCLUDED.local_path,
-           name = EXCLUDED.name`,
-    [DENT_SOURCE_ID, 'Dent Brain markdown', repoPath, JSON.stringify({ federated: true, syncEnabled: true, strategy: 'markdown' })],
+           name = EXCLUDED.name,
+           config = EXCLUDED.config`,
+    [DENT_SOURCE_ID, 'Dent Brain (export mirror)', repoPath, JSON.stringify({ mirror: true, syncEnabled: false })],
   );
 }
 
-export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRepoResult> {
+/**
+ * Clone (or pull) the dent-brain-data mirror and configure git identity.
+ * Pull failures are tolerated (continue with local state); clone failures
+ * throw — there's nothing to export into.
+ */
+export async function ensureMirrorRepo(engine: BrainEngine): Promise<MirrorRepoContext> {
   const repoUrl = readEnv('DENT_BRAIN_DATA_REPO_URL', 'git@github.com:dentthefuture/dent-brain-data.git');
   const repoPath = readEnv('DENT_BRAIN_DATA_PATH', '/app/dent-brain-data');
   const commitName = readEnv('DENT_BRAIN_GIT_NAME', 'dent-brain-server');
@@ -104,15 +108,14 @@ export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRep
   // Clone or pull.
   const dotGit = `${repoPath}/.git`;
   if (existsSync(dotGit)) {
-    console.error(`[dent-brain] data repo present at ${repoPath}; running git pull --ff-only origin ${branch}`);
     try {
       git(repoPath, ['pull', '--ff-only', 'origin', branch], { env: gitEnv });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[dent-brain] git pull failed (${msg.slice(0, 200)}). Continuing with local state — next write will retry.`);
+      console.error(`[dent-exporter] git pull failed (${msg.slice(0, 200)}). Continuing with local state — export will retry the pull.`);
     }
   } else {
-    console.error(`[dent-brain] cloning ${repoUrl} → ${repoPath}`);
+    console.error(`[dent-exporter] cloning ${repoUrl} → ${repoPath}`);
     mkdirSync(dirname(repoPath), { recursive: true });
     execFileSync('git', ['clone', repoUrl, repoPath], {
       encoding: 'utf-8',
@@ -127,38 +130,8 @@ export async function ensureDataRepo(engine: BrainEngine): Promise<EnsureDataRep
 
   const headCommit = git(repoPath, ['rev-parse', 'HEAD'], { env: gitEnv });
 
-  await upsertDentSource(engine, repoPath);
+  await upsertMirrorSource(engine, repoPath);
 
-  console.error(`[dent-brain] data repo ready: ${repoPath} @ ${headCommit.slice(0, 8)} branch=${branch} (source=${DENT_SOURCE_ID})`);
+  console.error(`[dent-exporter] mirror ready: ${repoPath} @ ${headCommit.slice(0, 8)} branch=${branch} (source=${DENT_SOURCE_ID}, mirror=true)`);
   return { repoPath, headCommit, gitEnv, branch };
-}
-
-/** Singleton holder so the writer ops can reach the resolved env without
- * threading it through every call site. Set by `ensureDataRepo` at boot. */
-let cachedRepo: EnsureDataRepoResult | null = null;
-
-export function setRepoContext(ctx: EnsureDataRepoResult): void {
-  cachedRepo = ctx;
-}
-
-export function getRepoContext(): EnsureDataRepoResult {
-  if (!cachedRepo) {
-    throw new Error('dent-brain-data repo context not initialized — ensureDataRepo() must run before any markdown_* op.');
-  }
-  return cachedRepo;
-}
-
-/** For tests: inject a synthetic context (local repo, no deploy key). */
-export function __setRepoContextForTests(ctx: EnsureDataRepoResult): void {
-  cachedRepo = ctx;
-}
-
-/** For tests: clear the cached context. */
-export function __resetRepoContextForTests(): void {
-  cachedRepo = null;
-}
-
-/** Sanity probe used by tests. */
-export function repoIsReady(repoPath: string, gitEnv: NodeJS.ProcessEnv): boolean {
-  return tryGit(repoPath, ['rev-parse', 'HEAD'], { env: gitEnv }) !== null;
 }

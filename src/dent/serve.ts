@@ -46,8 +46,10 @@ import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
 import { entityDetectionOperations } from './operations/entity-detection.ts';
 import { markdownWriteOperations } from './operations/markdown-write.ts';
-import { ensureDataRepo, setRepoContext, DENT_SOURCE_ID } from './markdown-writer/repo.ts';
-import { startScheduledPull, DEFAULT_PULL_INTERVAL_SECONDS, type ScheduledPullHandle } from './markdown-writer/cron.ts';
+import { exportOperations } from './operations/export.ts';
+import { assembleServeOps } from './serve-ops.ts';
+import { DENT_SOURCE_ID } from './db-writer/page-io.ts';
+import { startExportCron, type ExportCronHandle } from './exporter/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
 import {
   startNightlyMaintenance,
@@ -72,7 +74,13 @@ if (!DATABASE_URL) {
 
 // Merged registry: upstream first, dent appended. Order matters for
 // tools/list ordering only; dispatch lookup is name-keyed.
-const allOps: Operation[] = [...operations, ...entityDetectionOperations, ...markdownWriteOperations];
+//
+// The upstream set MUST pass through the canonical localOnly filter: this
+// is an HTTP transport (ctx.remote = true), and localOnly ops (sync_brain,
+// file_upload/file_list/file_url, …) are CLI-only by contract. Enforced
+// structurally by scripts/check-operations-filter-bypass.sh.
+const remoteSafeOps = operations.filter(op => !op.localOnly);
+const allOps: Operation[] = assembleServeOps(remoteSafeOps);
 const opsByName = new Map(allOps.map((o) => [o.name, o]));
 
 const engine = new PostgresEngine();
@@ -134,44 +142,22 @@ if (!getSql()) {
   }
 }
 
-// PLAN v2.0 Phase 1: clone-or-pull dent-brain-data and stash the SSH env
-// + repo path so markdown_append_to_page / markdown_replace_page can run.
-// Skipped when DENT_BRAIN_DATA_DEPLOY_KEY is unset (local dev / tests with
-// no write path) — markdown_* ops will fail with "context not initialized"
-// if invoked, which is the right error.
-let scheduledPull: ScheduledPullHandle | null = null;
+// Single-brain Stage B: the server no longer forks git on the write path.
+// markdown_* ops write straight to Postgres (db-writer); dent-brain-data is
+// a derived one-way export mirror, refreshed nightly by the exporter cron
+// below. No deploy key → no mirror → exports disabled, everything else runs.
+let exportCron: ExportCronHandle | null = null;
 if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
-  try {
-    const repoCtx = await ensureDataRepo(engine);
-    setRepoContext(repoCtx);
-  } catch (e) {
-    console.error(`[dent-brain] FATAL: ensureDataRepo failed: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
-  }
-
-  // PLAN v2.0 Phase 4: scheduled pull. Surfaces teammate-side hand-edits
-  // pushed to dent-brain-data master without waiting for the next agent
-  // write to trigger an internal pull. Set DENT_BRAIN_PULL_INTERVAL_SECONDS=0
-  // to disable (e.g. for staging or for debugging).
-  const pullIntervalSec = Number.parseInt(
-    process.env.DENT_BRAIN_PULL_INTERVAL_SECONDS ?? String(DEFAULT_PULL_INTERVAL_SECONDS),
-    10,
-  );
-  if (Number.isFinite(pullIntervalSec) && pullIntervalSec > 0) {
-    scheduledPull = startScheduledPull(engine, pullIntervalSec * 1000);
-    console.error(`[dent-brain] scheduled-pull: every ${pullIntervalSec}s`);
-  } else {
-    console.error('[dent-brain] scheduled-pull: disabled (DENT_BRAIN_PULL_INTERVAL_SECONDS=0)');
-  }
+  exportCron = startExportCron(engine);
+  console.error('[dent-brain] exporter: nightly DB→git export scheduled (DENT_BRAIN_EXPORT_HOUR_UTC or default 10:00 UTC)');
 } else {
-  console.error('[dent-brain] DENT_BRAIN_DATA_DEPLOY_KEY unset — markdown_* write ops will be unavailable.');
+  console.error('[dent-brain] exporter: disabled (DENT_BRAIN_DATA_DEPLOY_KEY unset) — no git mirror will be maintained.');
 }
 
-// Phase 5.1 RegFox ingestor. Starts only if API key is set AND the data repo
-// is wired (markdown writes need the repo context). Keys + form scoping are
-// configured via env vars; everything else is sensible defaults.
+// Phase 5.1 RegFox ingestor. Starts whenever the API key is set — writes are
+// DB-direct now, so the data repo / deploy key is no longer a prerequisite.
 let regfoxCron: RegfoxCronHandle | null = null;
-if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
+if (process.env.DENT_BRAIN_REGFOX_API_KEY) {
   const intervalSec = Number.parseInt(
     process.env.DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS ?? String(DEFAULT_REGFOX_POLL_INTERVAL_SECONDS),
     10,
@@ -203,16 +189,17 @@ if (process.env.DENT_BRAIN_REGFOX_API_KEY && process.env.DENT_BRAIN_DATA_DEPLOY_
   } else {
     console.error('[dent-brain] regfox-ingestor: disabled (DENT_BRAIN_REGFOX_POLL_INTERVAL_SECONDS=0)');
   }
-} else if (!process.env.DENT_BRAIN_REGFOX_API_KEY) {
+} else {
   console.error('[dent-brain] regfox-ingestor: not started (DENT_BRAIN_REGFOX_API_KEY unset)');
 }
 
 // Nightly brain maintenance — embed --stale + extract links + backlinks.
-// Once per UTC day. Requires the data repo (uses brain-dir for the
-// extract phase's filesystem walk fallback). Never starts if the data
-// repo isn't wired — there's no useful maintenance to do without it.
+// Once per UTC day. Starts unconditionally (Stage B): embed is DB-only.
+// The filesystem-walking phases (backlinks/extract) get the export mirror
+// path when the mirror is configured; with no mirror we pass null and
+// runCycle skips those phases with a per-phase 'skipped' entry.
 let nightlyCron: NightlyMaintenanceHandle | null = null;
-if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
+{
   const hourUtcRaw = process.env.DENT_BRAIN_NIGHTLY_HOUR_UTC;
   const hourUtc = hourUtcRaw !== undefined ? Number.parseInt(hourUtcRaw, 10) : DEFAULT_NIGHTLY_HOUR_UTC;
   if (Number.isFinite(hourUtc) && hourUtc >= 0 && hourUtc <= 23) {
@@ -220,8 +207,14 @@ if (process.env.DENT_BRAIN_DATA_DEPLOY_KEY) {
     const phases: CyclePhase[] = phasesRaw
       ? (phasesRaw.split(',').map((s) => s.trim()).filter(Boolean) as CyclePhase[])
       : DEFAULT_NIGHTLY_PHASES;
+    const brainDir = process.env.DENT_BRAIN_DATA_DEPLOY_KEY
+      ? (process.env.DENT_BRAIN_DATA_PATH || '/app/dent-brain-data')
+      : null;
+    if (brainDir === null) {
+      console.error('[dent-brain] nightly-maintenance: no export mirror — dir-dependent phases (backlinks/extract) will be skipped.');
+    }
     nightlyCron = startNightlyMaintenance(engine, {
-      brainDir: '/app/dent-brain-data',
+      brainDir,
       hourUtc,
       phases,
     });
@@ -377,7 +370,7 @@ function buildContext(): OperationContext {
     // invisible to reads and direct put_page calls drift onto 'default'
     // (the split-brain that stranded the v0.43 bulk imports). Overridable via
     // DENT_BRAIN_READ_SOURCE for emergency rollback without a redeploy. Reads
-    // reference the SAME DENT_SOURCE_ID constant the markdown-writer writes to,
+    // reference the SAME DENT_SOURCE_ID constant the db-writer writes to,
     // so the two can't drift apart again.
     sourceId: process.env.DENT_BRAIN_READ_SOURCE || DENT_SOURCE_ID,
   };
@@ -405,6 +398,22 @@ async function dispatch(name: string, args: Record<string, unknown>, tokenName?:
   const op = opsByName.get(name);
   if (!op) {
     return { content: [{ type: 'text', text: `Error: Unknown tool: ${name}` }], isError: true };
+  }
+  // Admin-scope gate: every caller here is a remote bearer token (local
+  // operators use the CLI / railway run, never this transport). Ops marked
+  // scope:'admin' (e.g. export_brain_now) are denied unless the token's
+  // name is allowlisted via DENT_BRAIN_ADMIN_TOKENS (comma-separated).
+  // The localOnly filter strips upstream's admin surface at registry build;
+  // this guards the dent-registered admin ops the same way.
+  if (op.scope === 'admin') {
+    const adminTokens = (process.env.DENT_BRAIN_ADMIN_TOKENS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (!tokenName || !adminTokens.includes(tokenName)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: 'permission_denied', message: `Operation '${name}' requires an admin token (DENT_BRAIN_ADMIN_TOKENS).` }, null, 2) }],
+        isError: true,
+      };
+    }
   }
   const validationError = validateParams(op, args);
   if (validationError) {
@@ -585,7 +594,7 @@ const server = Bun.serve({
 console.error(`[dent-brain] HTTP MCP server listening on :${PORT} (env=${NODE_ENV}, version=${VERSION})`);
 console.error(`[dent-brain]   GET  /health`);
 console.error(`[dent-brain]   POST /mcp  (Bearer <token> required)`);
-console.error(`[dent-brain]   ops    : ${operations.length} core + ${entityDetectionOperations.length} entity-detection + ${markdownWriteOperations.length} markdown-write = ${allOps.length}`);
+console.error(`[dent-brain]   ops    : ${remoteSafeOps.length} core (of ${operations.length}; localOnly filtered) + ${entityDetectionOperations.length} entity-detection + ${markdownWriteOperations.length} markdown-write + ${exportOperations.length} export = ${allOps.length}`);
 if (!corsAllowlist) {
   console.error('[dent-brain]   CORS : default-deny. Set GBRAIN_HTTP_CORS_ORIGIN=https://your.app to allow browser clients.');
 } else {
@@ -596,7 +605,7 @@ if (!corsAllowlist) {
 const shutdown = async (signal: string) => {
   console.error(`[dent-brain] received ${signal}, shutting down gracefully`);
   try {
-    if (scheduledPull) scheduledPull.stop();
+    if (exportCron) exportCron.stop();
     if (regfoxCron) regfoxCron.stop();
     if (nightlyCron) nightlyCron.stop();
     server.stop(false);

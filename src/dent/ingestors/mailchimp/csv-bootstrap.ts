@@ -2,7 +2,7 @@
  * Historical Mailchimp CSV bootstrap.
  *
  * One-shot importer that reads N Mailchimp audience export CSVs and lands
- * each member as Timeline bullets via the same markdown-writer batch path
+ * each member as Timeline bullets via the same db-writer batch path
  * the live cron will use. Idempotent on `[Source: mailchimp/<EUID>]`.
  *
  * Per member dedup flow (mirrors regfox):
@@ -21,7 +21,7 @@
  */
 
 import type { BrainEngine } from '../../../core/engine.ts';
-import { withBatch, type BatchHandle } from '../../markdown-writer/batch.ts';
+import { withDbBatch, type DbBatchHandle } from '../../db-writer/batch.ts';
 import { translateMember, MAILCHIMP_STUB_DIR, type TranslatorOptions } from './translator.ts';
 import { readMailchimpCsv } from './csv-parser.ts';
 import type { MailchimpMember } from './types.ts';
@@ -92,7 +92,7 @@ export async function runMailchimpBootstrap(
   const stagedEmailToSlug = new Map<string, string>();
 
   let batchError: string | undefined;
-  const batchResult = await withBatch(engine, async (batch): Promise<void> => {
+  const batchResult = await withDbBatch(engine, async (batch): Promise<void> => {
     try {
       for (const m of allMembers) {
         if (processed >= limit) break;
@@ -155,7 +155,7 @@ type IngestOutcome =
   | { kind: 'skipped_unusable' };
 
 async function ingestOneInBatch(
-  batch: BatchHandle,
+  batch: DbBatchHandle,
   engine: BrainEngine,
   m: MailchimpMember,
   stagedEmailToSlug: Map<string, string>,
@@ -171,13 +171,13 @@ async function ingestOneInBatch(
   const matchedSlug = dbMatch?.slug ?? stagedSlug;
 
   if (matchedSlug) {
-    const existing = batch.readSlug(matchedSlug) ?? '';
+    const existing = (await batch.readSlug(matchedSlug)) ?? '';
     const refs = bulletsNotYetOnPage(existing, t.bullets, t.sourceRef);
     if (refs.length === 0) {
       stagedEmailToSlug.set(t.email, matchedSlug);
       return { kind: 'skipped_duplicate' };
     }
-    const r = batch.appendToPage({
+    const r = await batch.appendToPage({
       slug: matchedSlug,
       section: '## Timeline',
       content: refs.join('\n'),
@@ -199,17 +199,17 @@ async function ingestOneInBatch(
   const peopleSlug = `entities/people/${t.proposedSlug}`;
   const audienceSlug = `${MAILCHIMP_STUB_DIR}/${t.proposedSlug}`;
   const collidedSlug =
-    batch.readSlug(peopleSlug) != null ? peopleSlug
-    : batch.readSlug(audienceSlug) != null ? audienceSlug
+    (await batch.readSlug(peopleSlug)) != null ? peopleSlug
+    : (await batch.readSlug(audienceSlug)) != null ? audienceSlug
     : null;
   if (collidedSlug != null) {
     const idTag = `mailchimp-euid:${m.euid}`;
     const pendingSlug = '_ingest/pending_mailchimp';
-    const existingPending = batch.readSlug(pendingSlug) ?? '';
+    const existingPending = (await batch.readSlug(pendingSlug)) ?? '';
     if (existingPending.includes(idTag)) return { kind: 'pending_review' };
     const reason = `slug ${collidedSlug} already exists with a different / no email — could be the same person with a new email, or two different people with the same name. Human review.`;
     const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email}> — ${reason}`;
-    const r = batch.appendToPage({ slug: pendingSlug, content: line });
+    const r = await batch.appendToPage({ slug: pendingSlug, content: line });
     if (r.status === 'error') {
       process.stderr.write(`[mailchimp-bootstrap] pending-write failed: ${r.error}\n`);
     }
@@ -222,7 +222,7 @@ async function ingestOneInBatch(
   //    later if/when the person registers for an event.
   const proposedSlug = audienceSlug;
   const fullContent = serializeFrontmatter(t.stubFrontmatter) + '\n' + t.stubBody;
-  const r = batch.replacePage({
+  const r = await batch.replacePage({
     slug: proposedSlug,
     content: fullContent,
     commitNote: `mailchimp-bootstrap: new entity from euid ${m.euid}`,
@@ -235,7 +235,7 @@ async function ingestOneInBatch(
     // Race against another writer in the same batch — unlikely with one
     // bootstrap caller, but possible if the regfox cron is alive. Fall
     // back to append against the existing page.
-    const ar = batch.appendToPage({
+    const ar = await batch.appendToPage({
       slug: proposedSlug,
       section: '## Timeline',
       content: t.bullets.join('\n'),

@@ -17,7 +17,11 @@ export type DentErrorCode =
   | 'evidence_entity_unknown'
   | 'entity_not_found'
   | 'fm_unreachable'
-  | 'rate_limited';
+  | 'rate_limited'
+  | 'page_not_found'
+  | 'content_too_large'
+  | 'invalid_slug'
+  | 'write_conflict';
 
 export class DentOperationError extends OperationError {
   constructor(

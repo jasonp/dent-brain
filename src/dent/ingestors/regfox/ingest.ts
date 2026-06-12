@@ -18,9 +18,9 @@
  */
 
 import type { BrainEngine } from '../../../core/engine.ts';
-import { appendToPage } from '../../markdown-writer/append.ts';
-import { replacePage } from '../../markdown-writer/replace.ts';
-import { withBatch, type BatchHandle } from '../../markdown-writer/batch.ts';
+import { appendToPageDb } from '../../db-writer/append.ts';
+import { replacePageDb } from '../../db-writer/replace.ts';
+import { withDbBatch, type DbBatchHandle } from '../../db-writer/batch.ts';
 import { RegfoxClient } from './api-client.ts';
 import { translateRegistrant, kebabize, type TranslatedRegistrant, type TranslatorOptions } from './translator.ts';
 import { readCursor, writeCursor, ALL_FORMS_CURSOR_KEY } from './state.ts';
@@ -87,7 +87,7 @@ export async function runIngestTick(
   // after BATCH_BUSY_RETRIES attempts so we don't tie up the tick forever.
   const BATCH_BUSY_RETRIES = 5;
   const BATCH_BUSY_BACKOFF_MS = 3000;
-  let batchResult: Awaited<ReturnType<typeof withBatch<void>>> = { status: 'busy' };
+  let batchResult: Awaited<ReturnType<typeof withDbBatch<void>>> = { status: 'busy' };
   for (let attempt = 0; attempt < BATCH_BUSY_RETRIES; attempt++) {
     batchResult = await runOneBatchAttempt();
     if (batchResult.status !== 'busy') break;
@@ -96,13 +96,13 @@ export async function runIngestTick(
     }
   }
 
-  async function runOneBatchAttempt(): Promise<Awaited<ReturnType<typeof withBatch<void>>>> {
+  async function runOneBatchAttempt(): Promise<Awaited<ReturnType<typeof withDbBatch<void>>>> {
     // Reset per-attempt state — counts accumulate across the tick, but a
     // retry that finds the lock free starts the loop fresh.
     processed = 0; created = 0; appended = 0; pendingReview = 0; skipped = 0; transientErrors = 0;
     stagedEmailToSlug.clear();
     for (const k of Object.keys(perFormCursors)) delete perFormCursors[Number(k)];
-    return withBatch(engine, async (batch): Promise<void> => {
+    return withDbBatch(engine, async (batch): Promise<void> => {
     try {
       for (const formId of formIds) {
         const cursor = await readCursor(engine, formId);
@@ -196,7 +196,7 @@ type IngestOneOutcome = 'appended' | 'created' | 'pending_review' | 'skipped' | 
  * an email merge instead of producing duplicate stubs.
  */
 async function ingestOneInBatch(
-  batch: BatchHandle,
+  batch: DbBatchHandle,
   engine: BrainEngine,
   registrant: RegfoxRegistrant,
   stagedEmailToSlug: Map<string, string>,
@@ -215,7 +215,7 @@ async function ingestOneInBatch(
     const stagedSlug = stagedEmailToSlug.get(t.email);
     const matchedSlug = dbMatch?.slug ?? stagedSlug;
     if (matchedSlug) {
-      const r = batch.appendToPage({
+      const r = await batch.appendToPage({
         slug: matchedSlug,
         section: '## Timeline',
         content: t.bullet,
@@ -230,20 +230,20 @@ async function ingestOneInBatch(
     }
   }
 
-  // 2. Name match — slug existence check via filesystem (post-pull, post-stage).
+  // 2. Name match — slug existence check via DB (sees earlier in-batch writes).
   const proposedSlug = `entities/people/${t.proposedSlug}`;
-  const existingByName = batch.readSlug(proposedSlug);
+  const existingByName = await batch.readSlug(proposedSlug);
   if (existingByName != null) {
     // Pending-review row goes through the same batch.
     const idTag = `regfox-id:${registrant.id}`;
     const pendingSlug = '_ingest/pending_regfox';
-    const existingPending = batch.readSlug(pendingSlug);
+    const existingPending = await batch.readSlug(pendingSlug);
     if (existingPending && existingPending.includes(idTag)) {
       return 'pending_review';
     }
     const reason = `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`;
     const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
-    const r = batch.appendToPage({ slug: pendingSlug, content: line });
+    const r = await batch.appendToPage({ slug: pendingSlug, content: line });
     if (r.status === 'error') {
       process.stderr.write(`[regfox-ingestor] batch pending-write failed: ${r.error}\n`);
       return 'transient_error';
@@ -253,7 +253,7 @@ async function ingestOneInBatch(
 
   // 3. Create new stub.
   const fullContent = serializeFrontmatter(t.stubFrontmatter) + '\n' + t.stubBody;
-  const r = batch.replacePage({
+  const r = await batch.replacePage({
     slug: proposedSlug,
     content: fullContent,
     commitNote: `regfox-ingestor: new entity from registrant ${registrant.id}`,
@@ -265,7 +265,7 @@ async function ingestOneInBatch(
   if (r.status === 'page_changed') {
     // Race: between our slug check and replace, another writer landed.
     // Fall back to append.
-    const ar = batch.appendToPage({
+    const ar = await batch.appendToPage({
       slug: proposedSlug,
       section: '## Timeline',
       content: t.bullet,
@@ -368,29 +368,29 @@ const BUSY_RETRY_BACKOFF_MS = 2000;
 
 async function appendWithBusyRetry(
   engine: BrainEngine,
-  args: Parameters<typeof appendToPage>[1],
-): Promise<Awaited<ReturnType<typeof appendToPage>>> {
+  args: Parameters<typeof appendToPageDb>[1],
+): Promise<Awaited<ReturnType<typeof appendToPageDb>>> {
   for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
-    const result = await appendToPage(engine, args);
+    const result = await appendToPageDb(engine, args);
     if (result.status !== 'busy') return result;
     if (attempt === BUSY_RETRY_ATTEMPTS - 1) return result;
     await new Promise((r) => setTimeout(r, BUSY_RETRY_BACKOFF_MS));
   }
   // unreachable
-  return appendToPage(engine, args);
+  return appendToPageDb(engine, args);
 }
 
 async function replaceWithBusyRetry(
   engine: BrainEngine,
-  args: Parameters<typeof replacePage>[1],
-): Promise<Awaited<ReturnType<typeof replacePage>>> {
+  args: Parameters<typeof replacePageDb>[1],
+): Promise<Awaited<ReturnType<typeof replacePageDb>>> {
   for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
-    const result = await replacePage(engine, args);
+    const result = await replacePageDb(engine, args);
     if (result.status !== 'busy') return result;
     if (attempt === BUSY_RETRY_ATTEMPTS - 1) return result;
     await new Promise((r) => setTimeout(r, BUSY_RETRY_BACKOFF_MS));
   }
-  return replacePage(engine, args);
+  return replacePageDb(engine, args);
 }
 
 interface EmailMatch {
@@ -451,14 +451,12 @@ async function writePendingReview(
   registrant: RegfoxRegistrant,
   reason: string,
 ): Promise<void> {
-  // Append a checklist line to <data-repo>/_ingest/pending_regfox.md via the
-  // markdown-writer infrastructure — gets locking + git commit + push for
-  // free, same way agent writes do.
+  // Append a checklist line to the _ingest/pending_regfox page via the
+  // db-writer infrastructure — gets per-slug locking for free, same way
+  // agent writes do.
   //
-  // Idempotency: pre-check the existing page (via Postgres index, refreshed
-  // every time the page is written via performSync inside appendToPage) for
-  // the registrant's ID tag. If already listed, skip silently. The id tag
-  // is unique per registrant.
+  // Idempotency: pre-check the existing page for the registrant's ID tag.
+  // If already listed, skip silently. The id tag is unique per registrant.
   const idTag = `regfox-id:${registrant.id}`;
   const slug = '_ingest/pending_regfox';
   const existing = await engine.getPage(slug);
@@ -466,7 +464,7 @@ async function writePendingReview(
     return;
   }
   const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
-  await appendToPage(engine, {
+  await appendToPageDb(engine, {
     slug,
     content: line,
     commitNote: `regfox-ingestor: pending review for registrant ${registrant.id}`,

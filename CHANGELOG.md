@@ -2,6 +2,50 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.45.0.0] - 2026-06-12
+
+## **One brain. Postgres is now the single store: `markdown_append_to_page` and `markdown_replace_page` write straight to the database — no git clone, no commit, no push, no re-index — and the dent-brain-data repo becomes a nightly one-way export mirror. This kills the failure mode that took down production twice: the per-write git child processes that exhausted the container's process table until nothing could fork and every write returned a generic Internal error.**
+
+The git dual-write was the fork's founding architecture: writes landed in a git repo first, then synced into Postgres. In production that meant every observation filed by an agent forked git half a dozen times — clone-state checks, pulls, commits, pushes, rebase retries — plus a 5-minute scheduled-pull cron and a per-tick ingestor doing the same. Twice now (2026-06-02 and 2026-06-10) the Railway container hit `fork failed: Resource temporarily unavailable` and every write died with a generic `Internal error` until a manual redeploy. The bug report that triggered this release blamed one oversized page; the logs showed the truth — the write *architecture* was the resource leak.
+
+v0.45 inverts it. The write ops keep their names and parameters (skills don't change), but the guts are now: read the page from Postgres, splice the fragment in memory, write back through upstream's `importFromContent` pipeline — versioned (`get_versions`/`revert_version`), chunked, scoped to the canonical `dent` source, with a 500KB size guard and structured error codes (`content_too_large`, `page_changed`, `busy`) instead of the old generic `Internal error`. Concurrent writers serialize on per-page DB locks instead of a repo-wide git lock. The regfox and mailchimp ingestors ride the same path. Zero git child processes remain on the write path.
+
+The git repo isn't gone — it's demoted to what it should have been: a human-browsable, history-keeping mirror. A nightly exporter renders every live page to `<slug>.md` and pushes one commit; `export_brain_now` (admin-gated via `DENT_BRAIN_ADMIN_TOKENS`) does it on demand. The mirror is one-way: **hand-edits pushed to the data repo are no longer ingested.** Write through the brain ops.
+
+Two long-standing split-brain bugs die with this release. `sync_brain` now threads the caller's source scope into `performSync`, so a sync can no longer silently import the whole repo into the invisible `default` source (the bug that made the 2026-06-11 page-restructure vanish from reads). And the fork's server finally filters `localOnly` operations from the remote registry — `sync_brain` and the rest of the local-admin surface are no longer callable with a bearer token, closing the path where a remote call resolved a sync repo path that pointed at a laptop.
+
+One operational step: existing brains must run the one-time reconciliation migration (`scripts/dent/migrate-v0.45-single-brain.ts`) — it converges the three historical copies of the truth (source `dent`, the stale `default` shadow, and the git repo at a pinned pre-deploy commit) onto `dent`, newest-wins, then purges the ~5,700 dead `default` rows. The nightly exporter refuses to run until the migration has landed, so a stale export can never rewrite the mirror first. Full runbook: `skills/migrations/v0.45.md`.
+
+### To take advantage of v0.45.0.0
+
+1. **Operator: run the reconciliation migration** after deploying — see `skills/migrations/v0.45.md` (dry-run → apply → purge → re-embed). The nightly exporter stays locked until it completes.
+2. **Stop hand-editing the data repo.** It is now a derived mirror; pushes to it are not ingested. File observations through `markdown_append_to_page` / `markdown_replace_page` as usual.
+3. **Set `DENT_BRAIN_ADMIN_TOKENS`** (comma-separated token names) on the server if any remote caller should trigger `export_brain_now`. Unset = admin ops denied remotely (safe default).
+4. **Delete `DENT_BRAIN_PULL_INTERVAL_SECONDS`** from the deployment env — the scheduled pull no longer exists. Keep the deploy-key vars; the exporter uses them.
+
+### Itemized changes
+
+#### Added
+- `src/dent/db-writer/` — DB-direct write path: `appendToPageDb` / `replacePageDb` / `withDbBatch` over upstream `importFromContent` (source `dent`, noEmbed, per-slug `dent-page:<slug>` DB locks, 500KB size guard, post-import canonical content hash for optimistic concurrency).
+- `src/dent/exporter/` — one-way nightly DB→git mirror: `exportBrainToGit` (atomic writes, managed-path pruning, single commit + rebase-retry push), once-per-UTC-day cron (`DENT_BRAIN_EXPORT_HOUR_UTC`, default 10), `export_brain_now` admin op, migration-gated first run.
+- `scripts/dent/migrate-v0.45-single-brain.ts` + `skills/migrations/v0.45.md` — staged one-time reconciliation (dry-run / apply / purge-default) with pinned-ref git reads, newest-wins selection, JSONL decision report, idempotent re-runs.
+- `src/dent/serve.ts` — admin-scope dispatch gate (`DENT_BRAIN_ADMIN_TOKENS`); `localOnly` operations filtered from the remote registry (pinned by `test/dent/serve-registry.test.ts` + `scripts/check-operations-filter-bypass.sh`).
+- New error codes on the write ops: `content_too_large`, `page_changed`, `busy`, `invalid_slug` — replacing generic `Internal error`.
+
+#### Changed
+- `markdown_append_to_page` / `markdown_replace_page` — same names/params, DB-direct guts; results carry `content_hash` instead of `commit_sha`; `commit_note` is advisory.
+- regfox + mailchimp ingestors write through `withDbBatch` (DB-only; no data-repo prerequisite); regfox cron needs only `DENT_BRAIN_REGFOX_API_KEY`.
+- `sync_brain` threads `ctx.sourceId` into `performSync` (upstreamable one-liner) — synced pages land in the caller's source, not `default`.
+- Nightly maintenance starts unconditionally (no deploy-key gate); filesystem phases use the mirror clone when available.
+- Plugin marketplace bundle, `llms-full.txt`/`llms.txt`, `bun.lock` regenerated to v0.45.0.0.
+
+#### Removed
+- `src/dent/markdown-writer/` (git write path, repo-wide lock, scheduled pull cron, 30s git timeouts) and its git-fixture tests; `scripts/dent/wipe-orphan-pages.ts` (obsolete orphan definition).
+- The teammate hand-edit→push→server-pull ingestion loop (replaced by the one-way mirror; see migration doc).
+
+#### Tests
+- `test/dent/db-writer/*` (28 cases: splice round-trip, OCC, size guards, lock busy, version snapshots, batch semantics), `test/dent/exporter/*` (export + prune + cron gating incl. the migration lock), rebuilt DB-backed `test/dent/ingestors/regfox/ingest.test.ts`, `test/dent/serve-registry.test.ts` (localOnly absence + op schema pins), `test/dent/migrate-v045.test.ts` (winner selection, idempotency, purge, exporter unlock).
+
 ## [0.44.0.0] - 2026-06-11
 
 ## **Catch up to upstream gbrain: thirty-one upstream commits (v0.42.9.0 → v0.42.40.0) merged in one wave. Relationship questions now get relationship answers (typed-edge retrieval), the agent learns when and what to retrieve (Retrieval Reflex), sync becomes resumable and single-flight, and source-isolation grants are enforced on every read. Only twelve conflicts — and two of them dissolved because upstream independently shipped the same fixes the fork had already made.**
