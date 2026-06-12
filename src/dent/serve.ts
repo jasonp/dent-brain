@@ -349,9 +349,14 @@ async function validateToken(authHeader: string | null): Promise<AuthResult> {
 }
 
 function logRequest(tokenName: string | null, operation: string, status: string, latencyMs: number) {
-  getSql()`INSERT INTO mcp_request_log (token_name, operation, latency_ms, status)
-      VALUES (${tokenName}, ${operation}, ${latencyMs}, ${status})`
-    .catch(() => { /* best-effort */ });
+  // try/catch as well as .catch: engine.sql is a getter that THROWS
+  // synchronously while the pool is mid-rebuild (reconnect window). A sync
+  // throw here must never 500 a request whose dispatch already succeeded.
+  try {
+    getSql()`INSERT INTO mcp_request_log (token_name, operation, latency_ms, status)
+        VALUES (${tokenName}, ${operation}, ${latencyMs}, ${status})`
+      .catch(() => { /* best-effort */ });
+  } catch { /* best-effort */ }
 }
 
 function buildContext(): OperationContext {
@@ -421,7 +426,11 @@ async function dispatch(name: string, args: Record<string, unknown>, tokenName?:
     clientId: tokenName ?? 'dent-brain-token',
     clientName: tokenName ?? 'dent-brain-token',
     scopes: [],
-    allowedSources: [process.env.DENT_BRAIN_READ_SOURCE || DENT_SOURCE_ID],
+    // Union with DENT_SOURCE_ID: if the DENT_BRAIN_READ_SOURCE emergency
+    // rollback lever is set, markdown_* writes still target 'dent' — the
+    // grant must keep 'dent' readable or written content becomes
+    // unreachable during exactly the emergency the lever exists for.
+    allowedSources: [...new Set([process.env.DENT_BRAIN_READ_SOURCE || DENT_SOURCE_ID, DENT_SOURCE_ID])],
   };
   try {
     const result = await op.handler(ctx, args);
