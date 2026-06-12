@@ -1,5 +1,11 @@
 # Releasing & contributing (gbrain)
 
+> **Fork note (dent-brain):** this doc is inherited from upstream and keeps
+> upstream conventions (`master` base branch, 3-part versions). In this fork the
+> base branch is `main`, versions are 4-part `MAJOR.MINOR.PATCH.MICRO`, and the
+> canonical release process is `docs/reference/release-ops.md` + the CLAUDE.md
+> ship sections. Where they disagree, the fork docs win.
+
 The full release + contributor process. CLAUDE.md keeps the ship-critical IRON RULES
 inline (the Version-locations table, branch=workspace, post-ship `/document-release`,
 the Privacy + Responsible-disclosure rules, PR-title-version-first, never-hand-roll-ship)

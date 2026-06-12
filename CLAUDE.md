@@ -32,7 +32,7 @@ Strong success criteria let you loop independently.
 
 - `docs/reference/runtime-conventions.md` — which Claude surface (Code Desktop vs Cowork) hosts which skill, and why
 - `docs/reference/ingestors.md` — granola-sync + email-sync quick reference
-- `docs/reference/key-files.md` — per-file change annotations (drifts fast; prefer `git log` / reading the file)
+- `docs/architecture/KEY_FILES.md` — canonical per-file index (current-state, CI-guarded). The older `docs/reference/key-files.md` is a frozen pre-v0.44 snapshot; prefer KEY_FILES.md.
 - `docs/reference/testing.md` — full testing handbook (file taxonomy, isolation lint, canonical PGLite block, `withEnv`, inventory)
 - `docs/reference/release-ops.md` — version locations, migration policy, CHANGELOG voice, GH Actions SHA pinning, community PR waves, E2E DB lifecycle, bulk progress reporting
 - `docs/reference/version-history.md` — commands added per release (CHANGELOG.md is authoritative)
@@ -156,6 +156,7 @@ You own spin-up and tear-down of `gbrain-test-pg`. Don't leave containers runnin
 
 All bulk commands stream through `src/core/progress.ts` — heartbeats within 1s. Progress writes to **stderr** only (stdout stays clean for `--json`). Phase names are stable `snake_case.dot.path`. See `docs/reference/release-ops.md` and `docs/progress-events.md`.
 
+## Pre-ship requirements
 
 Run `bun test` AND `bun run test:e2e` (full DB lifecycle). Both must pass.
 

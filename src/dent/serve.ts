@@ -81,8 +81,12 @@ await engine.connect({ database_url: DATABASE_URL!, poolSize: 10 });
 // Reuse the engine's own postgres client for auth + audit. PostgresEngine
 // already applies the pooler-mode `prepare: false` convention via
 // resolvePrepare(url) in src/core/db.ts, so we don't have to mirror it here.
-const sql = (engine as unknown as { sql: any }).sql;
-if (!sql) {
+// Accessor, not a boot-time snapshot: upstream v0.42.21/v0.42.37 widened the
+// sites where the engine tears down and rebuilds its instance pool (e.g. the
+// getConfig retry path calls reconnect()). A snapshot would leave auth,
+// /health, and the audit log querying the ended pool after the first rebuild.
+const getSql = () => (engine as unknown as { sql: any }).sql;
+if (!getSql()) {
   console.error('FATAL: PostgresEngine has no .sql client after connect.');
   process.exit(1);
 }
@@ -328,12 +332,12 @@ async function validateToken(authHeader: string | null): Promise<AuthResult> {
   const token = authHeader.slice(7);
   const hash = hashToken(token);
   try {
-    const [row] = await sql`
+    const [row] = await getSql()`
       SELECT id, name FROM access_tokens
       WHERE token_hash = ${hash} AND revoked_at IS NULL
     `;
     if (!row) return { ok: false };
-    sql`UPDATE access_tokens
+    getSql()`UPDATE access_tokens
         SET last_used_at = now()
         WHERE id = ${row.id}
           AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')`
@@ -345,7 +349,7 @@ async function validateToken(authHeader: string | null): Promise<AuthResult> {
 }
 
 function logRequest(tokenName: string | null, operation: string, status: string, latencyMs: number) {
-  sql`INSERT INTO mcp_request_log (token_name, operation, latency_ms, status)
+  getSql()`INSERT INTO mcp_request_log (token_name, operation, latency_ms, status)
       VALUES (${tokenName}, ${operation}, ${latencyMs}, ${status})`
     .catch(() => { /* best-effort */ });
 }
@@ -392,7 +396,7 @@ function validateParams(op: Operation, params: Record<string, unknown>): string 
   return null;
 }
 
-async function dispatch(name: string, args: Record<string, unknown>) {
+async function dispatch(name: string, args: Record<string, unknown>, tokenName?: string) {
   const op = opsByName.get(name);
   if (!op) {
     return { content: [{ type: 'text', text: `Error: Unknown tool: ${name}` }], isError: true };
@@ -406,6 +410,19 @@ async function dispatch(name: string, args: Record<string, unknown>) {
   }
   const ctx = buildContext();
   ctx.dryRun = !!args.dry_run;
+  // Source-isolation grant (upstream v0.42.37): with allowedSources set,
+  // resolveRequestedScope rejects an explicit out-of-grant source_id param
+  // from remote callers instead of silently honoring it. A single-element
+  // grant collapses back to the scalar scope, so in-grant calls behave
+  // exactly as before. clientId carries the bearer-token name so whoami
+  // stays truthful (legacy-token shape: name doubles as clientId).
+  ctx.auth = {
+    token: '',
+    clientId: tokenName ?? 'dent-brain-token',
+    clientName: tokenName ?? 'dent-brain-token',
+    scopes: [],
+    allowedSources: [process.env.DENT_BRAIN_READ_SOURCE || DENT_SOURCE_ID],
+  };
   try {
     const result = await op.handler(ctx, args);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -438,7 +455,7 @@ const server = Bun.serve({
 
     if (path === '/health') {
       try {
-        await sql`SELECT 1`;
+        await getSql()`SELECT 1`;
         return Response.json(
           { status: 'ok', version: VERSION, transport: 'http', service: 'dent-brain', db: 'ok' },
           { headers: corsHeaders(origin) },
@@ -539,7 +556,7 @@ const server = Bun.serve({
     if (method === 'tools/call') {
       const toolName: string = params?.name ?? 'unknown';
       const args: Record<string, unknown> = params?.arguments ?? {};
-      const result = await dispatch(toolName, args);
+      const result = await dispatch(toolName, args, auth.tokenName);
       const status = result.isError ? 'error' : 'success';
       logRequest(auth.tokenName!, `tools/call:${toolName}`, status, Date.now() - startedMs);
       return Response.json(

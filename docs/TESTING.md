@@ -1,7 +1,9 @@
 # Testing (gbrain repo)
 
 On-demand reference (see CLAUDE.md Reference map). Current behavior + invariants
-only.
+only. Fork note (dent-brain): the fork-canonical testing handbook is
+`docs/reference/testing.md`; where the two disagree on command compositions,
+`package.json` is authoritative.
 
 ### Test command tiers
 
@@ -10,12 +12,12 @@ Seven test command tiers, each with a clear scope:
 | Command | What it runs | Wallclock | When to use |
 |---|---|---|---|
 | `bun run test` | Parallel unit-test fast loop. 8-shard fan-out via `scripts/run-unit-parallel.sh`, then a serial pass over `*.serial.test.ts`. Excludes `*.slow.test.ts` and `test/e2e/*`. No pre-checks, no typecheck. | ~85s on a Mac dev box (3650+ tests) | Inner edit loop. Default. |
-| `bun run verify` | CI's authoritative pre-test gate set: `check:privacy && check:jsonb && check:progress && check:wasm && bun run typecheck`. The 4 checks `.github/workflows/test.yml` runs on shard 1 + typecheck. Single source of truth — CI literally calls `bun run verify`. | ~12s (wasm-compile dominates) | Before pushing; before `/ship`. |
+| `bun run verify` | CI's authoritative pre-test gate set — the script chain in `package.json` `verify` (privacy, jsonb, progress, wasm, plugin-version, deploy-identity, typecheck, and the rest of the chain; read `package.json` for the current list). | ~12s (wasm-compile dominates) | Before pushing; before `/ship`. |
 | `bun run test:full` | `verify && bun run test && bun run test:slow && [smart e2e]`. The local equivalent of "everything CI runs." Smart e2e: runs e2e only when `DATABASE_URL` is set; else loud skip notice to stderr. | ~3-5min depending on slow + e2e | Pre-merge sanity, before opening a PR. |
 | `bun run test:slow` | Just the `*.slow.test.ts` set (intentional cold-path correctness checks). | seconds-to-minutes | When touching slow-path code. |
 | `bun run test:serial` | Just the `*.serial.test.ts` set (cross-file-contention quarantine; runs at `--max-concurrency=1`). | ~1s per quarantined file | Debugging a specific quarantined file. |
 | `bun run test:e2e` | Real Postgres E2E. Requires Docker + `DATABASE_URL`. Sequential. | ~5-10min | Pre-ship; nightly. |
-| `bun run check:all` | All 7 historical pre-checks (privacy + jsonb + progress + no-legacy-getconnection + trailing-newline + wasm + exports-count). Superset of `verify`. | ~10s | Local-only sweep. The 4 not in `verify` are nice-to-haves. |
+| `bun run check:all` | The full pre-check sweep — every `scripts/check-*.sh` wired into the `check:all` chain in `package.json` (superset of `verify`). | ~10s | Local-only sweep. The 4 not in `verify` are nice-to-haves. |
 
 ### CI vs local: intentionally divergent file sets
 
