@@ -1,5 +1,9 @@
 # TODOS
 
+## email-sync OAuth: shared Google app / quota (filed 2026-06-14, v0.46.0.0 — DECISION NEEDED)
+
+- [ ] **P2 — Decide how to stop one teammate's Gmail burst from rate-limiting everyone.** All teammates share one "Dent Brain" Google Cloud OAuth app in *test mode*; Gmail per-user/per-project quota is shared and easy to exhaust (this is the structural cause behind the v0.46 429 lockout — the code fix makes a 429 survivable, but doesn't raise the ceiling). Three options, pick one (needs Jason's Google account): **(a)** request a Gmail API quota increase in the GCP project (GCP Console → APIs & Services → Gmail API → Quotas — check whether the limit hit is per-user or per-project first); **(b)** move the app from *test* to *production/verified* (removes the test-user list friction; verification review overhead); **(c)** issue each teammate their own OAuth client so bursts are isolated (most robust, most onboarding change — touches `dent-onboard-teammate` + install env). Filed from the v0.46 bug report §B7.
+
 ## Source convergence follow-ups (filed 2026-06-07, v0.43.0.1)
 
 - [x] **P1 — Surface `performSync` failures from the markdown writer instead of returning a bare `ok`.** Resolved structurally in v0.45: the markdown-writer (git write + post-hoc performSync import) was deleted; `markdown_append_to_page`/`markdown_replace_page` now write DB-direct via `importFromContent` — a failed import throws and surfaces as a structured op error, so the git-ok/DB-missing divergence can no longer occur. **Completed:** v0.45.0.0 (2026-06-12)
