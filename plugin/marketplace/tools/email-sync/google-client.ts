@@ -66,6 +66,42 @@ export class GoogleClientError extends Error {
     super(message);
     this.name = 'GoogleClientError';
   }
+
+  /** The ISO timestamp Gmail tells us to retry after, when this is a 429. */
+  get retryAfter(): string | null {
+    return parseRetryAfter(this.body);
+  }
+}
+
+/**
+ * Pull the retry-after timestamp out of a Gmail 429 body, e.g.
+ * `{"error":{..."message":"User-rate limit exceeded.  Retry after 2026-06-12T19:16:46.648Z"}}`.
+ * Returns the raw ISO string, or null when absent/unparseable. No network, no throw.
+ */
+export function parseRetryAfter(body: string): string | null {
+  if (!body) return null;
+  const m = body.match(/Retry after\s+(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i);
+  return m ? m[1] : null;
+}
+
+/** How a probe/health failure should be treated. */
+export type ProbeFailureKind = 'auth' | 'rate_limit' | 'config' | 'network';
+
+/**
+ * Classify a Gmail failure so callers can react correctly instead of treating
+ * every error as "tokens invalid" (the v0.45 bug). Pure — status + body in,
+ * kind out.
+ *   - auth       → 401 / invalid_grant: the refresh token is genuinely bad; re-consent.
+ *   - rate_limit → 429 / RESOURCE_EXHAUSTED: transient; DO NOT re-auth, wait it out.
+ *   - config     → 403 / access_denied: app/test-user/Desktop-app misconfiguration.
+ *   - network    → anything else, including a thrown fetch (status 0).
+ */
+export function classifyProbeFailure(status: number, body: string): ProbeFailureKind {
+  const b = (body || '').toLowerCase();
+  if (status === 401 || b.includes('invalid_grant')) return 'auth';
+  if (status === 429 || b.includes('resource_exhausted') || b.includes('ratelimitexceeded')) return 'rate_limit';
+  if (status === 403 || b.includes('access_denied')) return 'config';
+  return 'network';
 }
 
 export class GoogleClient {

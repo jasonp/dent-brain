@@ -30,7 +30,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { createInterface } from 'readline';
-import { GoogleClient } from './google-client.ts';
+import { GoogleClient, GoogleClientError, classifyProbeFailure, type ProbeFailureKind } from './google-client.ts';
 import { findExtension } from '../extensions/registry.ts';
 import { getScheduler, buildSpec } from '../extensions/scheduler/index.ts';
 
@@ -112,13 +112,45 @@ function discoverMcpUrl(): string {
 
 // ── Gmail probe (in-process; replaces the bash `bun -e` subprocess) ──────────
 
-async function probeGmail(clientId: string, clientSecret: string): Promise<string | null> {
+type ProbeResult =
+  | { ok: true; email: string }
+  | { ok: false; kind: ProbeFailureKind; status?: number; retryAfter?: string | null; message: string };
+
+/**
+ * Decide whether to re-run the OAuth dance given a probe of existing tokens.
+ * Pure + exported so the core contract is testable without spawning a browser.
+ * The v0.45 bug was re-authing on ANY non-success; the rule is now narrow:
+ * only re-auth when the tokens are genuinely bad (auth/config) or belong to the
+ * wrong account. A transient rate-limit or network blip keeps tokens untouched.
+ */
+export function shouldReauth(probe: ProbeResult, workEmail: string): boolean {
+  if (probe.ok) return probe.email !== workEmail;
+  return probe.kind === 'auth' || probe.kind === 'config';
+}
+
+/**
+ * Probe Gmail and return a DISCRIMINATED result. The v0.45 bug was collapsing
+ * every failure (including a transient 429) to `null`, which made callers
+ * re-run OAuth and overwrite a perfectly good refresh token. We now preserve
+ * the HTTP status so a rate-limit is never mistaken for an auth failure.
+ */
+async function probeGmail(clientId: string, clientSecret: string): Promise<ProbeResult> {
   try {
     const gc = new GoogleClient({ tokensPath: TOKENS_PATH, clientId, clientSecret });
     const { emailAddress } = await gc.health();
-    return emailAddress;
-  } catch {
-    return null;
+    return { ok: true, email: emailAddress };
+  } catch (e) {
+    if (e instanceof GoogleClientError) {
+      return {
+        ok: false,
+        kind: classifyProbeFailure(e.status, e.body),
+        status: e.status,
+        retryAfter: e.retryAfter,
+        message: e.message,
+      };
+    }
+    // Thrown fetch / token-load error — no HTTP status.
+    return { ok: false, kind: 'network', message: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -185,13 +217,32 @@ async function main() {
   console.log(`    wrote config: ${CONFIG_PATH} (user-only)`);
 
   // 5. OAuth dance — skip if existing tokens already match workEmail.
+  //    Crucially: a transient rate-limit (429) is NOT an auth failure. We
+  //    only re-run OAuth on a genuine auth problem or an account mismatch;
+  //    otherwise existing tokens are kept untouched. `verified` carries a
+  //    successful probe result forward so we never spend a second quota unit.
   let needOauth = true;
+  let verified: string | null = null;
   if (existsSync(TOKENS_PATH)) {
     console.log(`\n==> Found existing OAuth tokens at ${TOKENS_PATH}.`);
-    const who = await probeGmail(clientId, clientSecret);
-    if (who === workEmail) { console.log(`    Tokens valid for ${who} — skipping OAuth dance.`); needOauth = false; }
-    else if (who) console.log(`    Existing tokens are for ${who} but workEmail is ${workEmail}. Re-running OAuth flow.`);
-    else console.log(`    Existing tokens did not validate — re-running OAuth flow.`);
+    const probe = await probeGmail(clientId, clientSecret);
+    needOauth = shouldReauth(probe, workEmail);
+    if (probe.ok && probe.email === workEmail) {
+      console.log(`    Tokens valid for ${probe.email} — skipping OAuth dance.`);
+      verified = probe.email;
+    } else if (probe.ok) {
+      console.log(`    Existing tokens are for ${probe.email} but workEmail is ${workEmail}. Re-running OAuth flow.`);
+    } else if (probe.kind === 'rate_limit') {
+      // Transient. Keep tokens; do NOT re-auth. They're almost certainly fine.
+      const when = probe.retryAfter ? ` (retry after ${probe.retryAfter})` : '';
+      console.log(`    Gmail is rate-limiting this account right now (429)${when}.`);
+      console.log(`    Keeping existing tokens and skipping re-auth — a rate-limit is not an auth failure.`);
+    } else if (probe.kind === 'network') {
+      console.log(`    Couldn't reach Gmail (${probe.message}). Keeping existing tokens; skipping re-auth.`);
+    } else {
+      // 'auth' (revoked / invalid_grant) or 'config' → genuine; re-consent.
+      console.log(`    Existing tokens did not validate (${probe.kind}) — re-running OAuth flow.`);
+    }
   }
   if (needOauth) {
     console.log(`\n==> Running one-time Google OAuth dance...`);
@@ -202,17 +253,36 @@ async function main() {
     restrictToUser(TOKENS_PATH);
   }
 
-  // 6. Probe Gmail — confirms tokens work AND match workEmail.
-  console.log(`\n==> Probing Gmail with the issued token...`);
-  const who = await probeGmail(clientId, clientSecret);
-  if (!who) {
-    die(`ERROR: Gmail probe failed.\nCheck that ${workEmail} is on the Google Cloud test-user list and the OAuth client is a "Desktop app".`);
+  // 6. Probe Gmail — confirms tokens work AND match workEmail. Skipped when the
+  //    step-5 skip-check already verified (probe once, save a quota unit).
+  if (verified) {
+    console.log(`    Gmail: reachable as ${verified}`);
+  } else {
+    console.log(`\n==> Probing Gmail with the issued token...`);
+    const probe = await probeGmail(clientId, clientSecret);
+    if (probe.ok) {
+      if (probe.email !== workEmail) {
+        rmSync(TOKENS_PATH, { force: true });
+        die(`ERROR: OAuth tokens are for ${probe.email} but config.workEmail is ${workEmail}.\nYou may have authorized a different Google account. Re-run the installer.`);
+      }
+      console.log(`    Gmail: reachable as ${probe.email}`);
+    } else if (probe.kind === 'rate_limit') {
+      // SOFT SUCCESS: files copied, config written, tokens intact, schedule will
+      // stage inert below. Don't die, don't re-auth — wait out the window.
+      const when = probe.retryAfter ? ` Retry after ${probe.retryAfter}.` : '';
+      console.log(`\n⚠ Couldn't verify the live connection — Gmail is rate-limiting this account (429).${when}`);
+      console.log(`  This is transient. Do NOT re-authorize. Your tokens are intact.`);
+      console.log(`  Once the window passes, verify with: dent-extensions verify email-sync`);
+      console.log(`  Then: dent-extensions preview email-sync  →  dent-extensions arm email-sync`);
+      console.log(`  (Make no other Gmail calls before then — each call can extend the window.)`);
+    } else if (probe.kind === 'config') {
+      die(`ERROR: Gmail rejected the request (403).\nCheck that ${workEmail} is on the Google Cloud test-user list and the OAuth client is a "Desktop app".`);
+    } else if (probe.kind === 'auth') {
+      die(`ERROR: Gmail rejected the freshly-issued token (auth failure: ${probe.message}).\nThis usually means a revoked grant or a clock-skew problem — re-run the installer to re-authorize.`);
+    } else {
+      die(`ERROR: Couldn't reach Gmail to verify the token (${probe.message}).\nCheck your network and re-run; your tokens were not changed.`);
+    }
   }
-  if (who !== workEmail) {
-    rmSync(TOKENS_PATH, { force: true });
-    die(`ERROR: OAuth tokens are for ${who} but config.workEmail is ${workEmail}.\nYou may have authorized a different Google account. Re-run the installer.`);
-  }
-  console.log(`    Gmail: reachable as ${who}`);
 
   // 7. Stage the schedule definition (plist / task XML) — INERT, not registered.
   //    `dent-extensions arm email-sync` registers it after setup + preview.
@@ -252,4 +322,8 @@ async function main() {
   console.log(`      Uninstall:     dent-extensions uninstall email-sync`);
 }
 
-main().catch((e) => die(`ERROR: ${e instanceof Error ? e.stack || e.message : String(e)}`));
+// Guard the entrypoint so the module can be imported (e.g. by tests for the
+// pure `shouldReauth` decision) without launching the interactive installer.
+if (import.meta.main) {
+  main().catch((e) => die(`ERROR: ${e instanceof Error ? e.stack || e.message : String(e)}`));
+}

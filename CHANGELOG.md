@@ -2,6 +2,40 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.0.0] - 2026-06-14
+
+## **email-sync survives a Gmail rate-limit instead of self-destructing on one. A transient 429 during `/dent-update` used to be misread as "your tokens are broken" — so the installer threw away a working login, forced a browser re-consent, died with a message about the wrong thing, and every retry pushed the lockout further out. Now a 429 is recognized for what it is (transient, wait it out), your tokens are never touched, and the daemon backs off cleanly. Plus: `/dent-update` now shows you exactly how your email is connected before it ever offers to rebuild it.**
+
+The bug that motivated this: re-running the email-sync installer while Gmail was rate-limiting the account turned a self-healing condition into a multi-hour outage. `probeGmail()` collapsed every failure — including a 429 — to a bare "didn't validate," so the installer concluded the refresh token was dead, ran a full OAuth dance (overwriting the good token), then died on the next probe with "check your test-user list / Desktop-app" — advice for a problem the operator didn't have. Each probe and retry hit `users.getProfile` again, and Google pushed the retry-after window ~15 minutes further every time. A previously-working daemon ended up inert and un-armable. The operator also had no way to remember how the connection was set up (email-sync's own OAuth vs. a separate gws-cli login, which Google account, where the token lived), so re-authorizing was a blind guess that made it worse.
+
+The fix is to treat the four failure modes as different things. `classifyProbeFailure` maps a probe result to `auth` (revoked/invalid_grant — re-consent warranted), `rate_limit` (429 — transient, never re-auth), `config` (403 — the test-user/Desktop-app case, and the only place that message now appears), or `network`. The installer only re-runs OAuth on a genuine `auth`/`config` failure or a wrong-account mismatch; a 429 leaves your tokens untouched and the install soft-succeeds (files copied, schedule staged inert) with a message telling you the exact retry-after time and to NOT re-authorize. The background daemon, which fires every ~6h, now skips a run cleanly on a 429 instead of crashing and re-firing — so it stops feeding the lockout it's stuck behind.
+
+On the UX side, `dent-extensions status` now shows the connection identity — which account you're authorized as, where the token lives and when it was last refreshed, and a plain note that this is email-sync's own OAuth, separate from any gws-cli / gmail-search login for another account — all derived from local files with **zero Gmail calls**. A new `dent-extensions verify <id>` makes exactly one probe when you actually want a live check. And `/dent-update` now runs that status as a pre-flight: before it offers to re-install anything, it tells you what you already have, and it reframes re-install honestly — it reuses your existing authorization and only prompts for re-consent on a real revocation, never on a rate-limit.
+
+### To take advantage of v0.46.0.0
+
+1. **Run `/dent-update`** to get the updated skill + installer. The new installer and the `verify`/connection-aware `status` are available immediately.
+2. **The daemon's 429 back-off only takes effect after you re-install email-sync** (the running daemon at `~/.dent-brain/email-sync/` is a copy from install time). `/dent-update` will offer the re-install; accept it so the laptop daemon stops self-extending rate-limit windows.
+3. **If you ever see a Gmail rate-limit**, the rule is simple now: do nothing for the retry-after window (the message tells you when), then `dent-extensions verify email-sync`. Do not re-authorize — a 429 is not an auth problem.
+
+### Itemized changes
+
+#### Added
+- `tools/email-sync/google-client.ts` — `classifyProbeFailure(status, body)` and `parseRetryAfter(body)` (pure, exported) + a `GoogleClientError.retryAfter` getter, so callers can react to a 429 instead of discarding it.
+- `dent-extensions verify <id>` — one live Gmail probe with a kind-aware result (incl. retry-after on a 429). The only command that spends Gmail quota.
+- `dent-extensions status` connection block — account, token path + mtime, and the auth-surface note, with no network call. New `connection` field on `ExtensionStatus`.
+
+#### Fixed
+- `tools/email-sync/install.ts` — `probeGmail()` returns a discriminated result; a 429 or network blip never triggers re-auth and never overwrites the token (pinned by the pure `shouldReauth` + tests); the final probe soft-succeeds on a 429; the test-user/Desktop-app message is reserved for actual 403s; Gmail is probed once when existing tokens already verify.
+- `tools/email-sync/collect.ts` — the per-fire health probe backs off on a 429 (clean exit, no further Gmail calls, retries next scheduled fire) instead of crashing and re-arming the lockout; only a genuine auth failure is fatal.
+
+#### Changed
+- `skills/dent/update/SKILL.md` — connection-aware pre-flight before any re-install; honest re-install framing (reuses existing auth; re-prompts only on a real 401); a "don't re-authorize on 429" callout; a post-install inertness check; re-install now runs through the extensions dispatcher (`bun` for the cross-platform `.ts` installer).
+- Plugin marketplace bundle, `llms-full.txt`/`llms.txt`, and `bun.lock` regenerated to v0.46.0.0.
+
+#### Tests
+- `test/email-sync-429.test.ts` — `classifyProbeFailure` (all four kinds incl. the 403-with-rate-limit-body precedence case), `parseRetryAfter`, `shouldReauth` (429 never re-auths), and a `GoogleClient.health()` 429 path via an injected fetch (no network).
+
 ## [0.45.0.0] - 2026-06-12
 
 ## **One brain. Postgres is now the single store: `markdown_append_to_page` and `markdown_replace_page` write straight to the database — no git clone, no commit, no push, no re-index — and the dent-brain-data repo becomes a nightly one-way export mirror. This kills the failure mode that took down production twice: the per-write git child processes that exhausted the container's process table until nothing could fork and every write returned a generic Internal error.**

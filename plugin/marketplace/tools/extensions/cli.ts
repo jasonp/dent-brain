@@ -87,6 +87,32 @@ function logFileFor(ext: Extension): string | null {
   return existsSync(candidate) ? candidate : null;
 }
 
+/**
+ * Derive connection identity from the extension's config.json + the token
+ * file's mtime. Filesystem only — NO network call, so this is always free to
+ * show (the v0.45 lockout came from probing Gmail just to display status).
+ * Returns undefined for extensions that record no account/token.
+ */
+function connectionFor(ext: Extension): ExtensionStatus['connection'] {
+  const cfgPath = expand(ext.configPath);
+  if (!cfgPath || !existsSync(cfgPath)) return undefined;
+  let cfg: Record<string, unknown>;
+  try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')); } catch { return undefined; }
+  const tokenPath = typeof cfg.googleTokensPath === 'string' ? cfg.googleTokensPath : null;
+  const account = typeof cfg.workEmail === 'string' ? cfg.workEmail : null;
+  if (!tokenPath && !account) return undefined;
+  let tokenMtime: string | null = null;
+  if (tokenPath && existsSync(tokenPath)) {
+    try { tokenMtime = new Date(statSync(tokenPath).mtimeMs).toISOString(); } catch { /* best-effort */ }
+  }
+  // The auth-surface note is what untangles "which login is this?" — email-sync
+  // has its OWN OAuth, independent of any gws-cli / gmail-search auth.
+  const authVia = tokenPath
+    ? "email-sync's own Google OAuth (shared Dent Brain app) — separate from gws-cli / gmail-search auth for other accounts"
+    : null;
+  return { account, tokenPath, tokenMtime, authVia };
+}
+
 function getStatus(ext: Extension): ExtensionStatus {
   const installDir = expand(ext.installDir);
   const installed = !!installDir && existsSync(installDir);
@@ -137,6 +163,7 @@ function getStatus(ext: Extension): ExtensionStatus {
     lastRunAt,
     logBytes,
     notes,
+    connection: connectionFor(ext),
   };
 }
 
@@ -197,6 +224,15 @@ function cmdStatus(id: string | undefined) {
   if (isDaemonKind(ext)) console.log(`  running:      ${status.running ? 'yes' : 'no'}`);
   if (status.lastRunAt) console.log(`  last run:     ${rel(status.lastRunAt)} (${status.lastRunAt})`);
   if (status.logBytes != null) console.log(`  log size:     ${status.logBytes} bytes`);
+  if (status.connection && (status.connection.account || status.connection.tokenPath)) {
+    const c = status.connection;
+    console.log();
+    console.log(`  Connection (from config — no Gmail call made):`);
+    if (c.account) console.log(`    account:    ${c.account}`);
+    if (c.tokenPath) console.log(`    tokens:     ${c.tokenPath}${c.tokenMtime ? ` (updated ${rel(c.tokenMtime)})` : ' (missing)'}`);
+    if (c.authVia) console.log(`    auth via:   ${c.authVia}`);
+    console.log(`    verify live: dent-extensions verify ${ext.id}  (makes ONE Gmail call)`);
+  }
   console.log();
   console.log(`  source:       ${ext.sourceDir}`);
   if (ext.installDir) console.log(`  install dir:  ${expand(ext.installDir)}`);
@@ -216,6 +252,53 @@ function cmdStatus(id: string | undefined) {
     console.log();
     console.log(`  Tail recent log:`);
     console.log(`    tail -50 ${join(expand(ext.installDir) ?? '', 'sync.log')}`);
+  }
+}
+
+/**
+ * Make EXACTLY ONE live Gmail probe and report the result, kind-aware. This is
+ * the only command that spends Gmail quota — `status` is always free. Use it to
+ * confirm a connection is healthy without triggering a re-install.
+ */
+async function cmdVerify(id: string | undefined) {
+  if (!id) { console.error('Usage: dent-extensions verify <id>'); process.exit(1); }
+  const ext = findExtension(id);
+  if (!ext) { console.error(`Unknown extension: ${id}`); process.exit(1); }
+  const cfgPath = expand(ext.configPath);
+  if (!cfgPath || !existsSync(cfgPath)) {
+    console.error(`No config at ${cfgPath}. Run \`dent-extensions install ${id}\` first.`);
+    process.exit(1);
+  }
+  let cfg: Record<string, unknown>;
+  try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')); }
+  catch (e) { console.error(`Couldn't read ${cfgPath}: ${e instanceof Error ? e.message : String(e)}`); process.exit(1); }
+  if (!cfg.googleTokensPath || !cfg.googleClientId || !cfg.googleClientSecret) {
+    console.error(`${id} has no Google OAuth config — nothing to verify this way.`);
+    process.exit(1);
+  }
+  const { GoogleClient, GoogleClientError, classifyProbeFailure } = await import('../email-sync/google-client.ts');
+  const gc = new GoogleClient({ tokensPath: cfg.googleTokensPath, clientId: cfg.googleClientId, clientSecret: cfg.googleClientSecret });
+  console.error(`==> Verifying ${id}: one Gmail probe as ${cfg.workEmail ?? '(unknown account)'}…`);
+  try {
+    const { emailAddress } = await gc.health();
+    const matches = !cfg.workEmail || emailAddress.toLowerCase() === String(cfg.workEmail).toLowerCase();
+    console.log(`● connection OK — reachable as ${emailAddress}${matches ? '' : ` (⚠ config.workEmail is ${cfg.workEmail})`}`);
+    process.exit(matches ? 0 : 2);
+  } catch (e) {
+    const kind = e instanceof GoogleClientError ? classifyProbeFailure(e.status, e.body) : 'network';
+    if (kind === 'rate_limit') {
+      const ra = e instanceof GoogleClientError ? e.retryAfter : null;
+      console.log(`⚠ rate-limited (429)${ra ? ` — retry after ${ra}` : ''}.`);
+      console.log(`  This is transient. Do NOT re-authorize. Wait for the window, then verify again.`);
+      console.log(`  Make no other Gmail calls before then — each call can extend the window.`);
+    } else if (kind === 'auth') {
+      console.log(`✗ auth failed — the token is revoked or invalid. Re-run \`dent-extensions install ${id}\` to re-authorize.`);
+    } else if (kind === 'config') {
+      console.log(`✗ rejected (403). Check the account is on the Google test-user list and the OAuth client is a "Desktop app".`);
+    } else {
+      console.log(`✗ couldn't reach Gmail (${e instanceof Error ? e.message : String(e)}). Network issue; tokens unchanged.`);
+    }
+    process.exit(1);
   }
 }
 
@@ -432,13 +515,14 @@ function cmdUninstall(id: string | undefined) {
 
 function cmdHelp() {
   console.log(
-    `Dent Brain extensions manager\n\nLifecycle (in order):\n  dent-extensions install <id>                  Plumbing install (inert; no data flows yet)\n  dent-extensions setup <id>                    Print setup guidance; pairs with /dent-extensions skill\n  dent-extensions preview <id>                  Dry-run with your user filter; no writes\n  dent-extensions arm <id>                      Bootstrap launchd; daemon goes live\n\nInspect / manage:\n  dent-extensions list                          Show all extensions + status\n  dent-extensions status [<id>]                 Detailed status (all if no id)\n  dent-extensions configure <id>                Open config.json in $EDITOR\n  dent-extensions uninstall <id> [--keep-config]\n                                                Stop + remove the extension\n  dent-extensions help                          Show this message\n\nAliases:\n  dent-extensions test <id>                     Alias for \`preview\` (legacy)\n\nGlobal flags:\n  --json                                        Machine-readable output (where applicable)\n\nKnown extensions:\n${EXTENSIONS.map((e) => '  - ' + e.id + (e.id.length < 16 ? ' '.repeat(16 - e.id.length) : '  ') + e.name).join('\n')}\n`,
+    `Dent Brain extensions manager\n\nLifecycle (in order):\n  dent-extensions install <id>                  Plumbing install (inert; no data flows yet)\n  dent-extensions setup <id>                    Print setup guidance; pairs with /dent-extensions skill\n  dent-extensions preview <id>                  Dry-run with your user filter; no writes\n  dent-extensions arm <id>                      Bootstrap launchd; daemon goes live\n\nInspect / manage:\n  dent-extensions list                          Show all extensions + status\n  dent-extensions status [<id>]                 Detailed status + connection (all if no id; no Gmail call)\n  dent-extensions verify <id>                   One live Gmail probe to confirm the connection\n  dent-extensions configure <id>                Open config.json in $EDITOR\n  dent-extensions uninstall <id> [--keep-config]\n                                                Stop + remove the extension\n  dent-extensions help                          Show this message\n\nAliases:\n  dent-extensions test <id>                     Alias for \`preview\` (legacy)\n\nGlobal flags:\n  --json                                        Machine-readable output (where applicable)\n\nKnown extensions:\n${EXTENSIONS.map((e) => '  - ' + e.id + (e.id.length < 16 ? ' '.repeat(16 - e.id.length) : '  ') + e.name).join('\n')}\n`,
   );
 }
 
 switch (COMMAND) {
   case 'list':       cmdList(); break;
   case 'status':     cmdStatus(POSITIONAL[1]); break;
+  case 'verify':     await cmdVerify(POSITIONAL[1]); break;
   case 'install':    cmdInstall(POSITIONAL[1]); break;
   case 'configure':  cmdConfigure(POSITIONAL[1]); break;
   case 'setup':      cmdSetup(POSITIONAL[1]); break;

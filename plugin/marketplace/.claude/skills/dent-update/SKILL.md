@@ -127,35 +127,63 @@ For each entry in the registry that's currently installed at `~/.dent-brain/<id>
 
 Build a list of daemons that need re-install. If the list is empty: "All daemons current at v{version}. Nothing to do." Skip to Step 6.
 
+## Step 4.5. Pre-flight — show the EXISTING connection before offering to rebuild it
+
+Before proposing any re-install, run `dent-extensions status <id>` for each outdated
+daemon and show the teammate what they already have. This is free — `status` makes **no
+network call**. The point is to prevent the blind-re-auth trap: a teammate who can't
+remember how their email was connected should not re-authorize on a guess.
+
+For **email-sync** specifically, surface the `Connection` block from status verbatim:
+
+> Your email-sync is currently connected as **{account}** (e.g. you@example.com).
+> Tokens live at `{tokenPath}`, last refreshed {when}. Daemon is {armed/inert}, last run {when}.
+> This is email-sync's **own** Google OAuth — it is separate from any gws-cli / gmail-search
+> auth you may have for a different account. Updating email-sync cannot touch that.
+
+If the teammate is unsure whether the connection is healthy, offer the **one** safe check:
+`dent-extensions verify {id}` (exactly one Gmail probe). Do NOT run it automatically — it
+spends Gmail quota, and if Gmail is rate-limiting, every extra call extends the window.
+
+**Never recommend re-authorizing to "fix" a connection without first running `status`
+(and, if needed, one `verify`).** A 429/rate-limit is transient and is NOT an auth problem;
+re-authorizing on a 429 is exactly what caused the v0.45 lockout.
+
 ## Step 5. Lane 3 action — re-install outdated daemons
 
 Use AskUserQuestion:
 
-> {N} daemon(s) need to be brought up to date by re-running their install scripts:
+> {N} daemon(s) need to be brought up to date by re-running their installers:
 > - granola-sync: installed v0.37.0 → bundle has v0.37.3
 > - email-sync: installed v0.37.2 → bundle has v0.37.3
 >
-> Re-running `install.sh` is idempotent. It copies the new runtime files into `~/.dent-brain/<id>/`, reloads the launchd agent, and verifies the bearer token / API key / OAuth refresh token still works. If credentials are already in place, no prompts. If a key was revoked, the installer will re-prompt.
+> Re-install copies the new runtime files into `~/.dent-brain/<id>/`, reloads the launchd
+> agent, and **reuses your existing authorization** — it does NOT re-authorize. It only
+> opens an OAuth re-consent if your token is genuinely revoked (a real `401`); a transient
+> rate-limit (429) is handled gracefully and never triggers re-auth.
 
 Options:
 - A) Re-install all (recommended)
 - B) Re-install a subset (specify which)
 - C) Skip — I'll do it manually later
 
-If A or B: for each chosen daemon, run:
+If A or B: for each chosen daemon, re-install through the dispatcher (it picks the right
+runner — `bun` for the cross-platform `.ts` installers, `bash` for legacy `.sh`):
 
 ```bash
-bash $BUNDLE_DIR/tools/<id>/install.sh
+bun "$BUNDLE_DIR/tools/extensions/cli.ts" install <id>
 ```
 
 Stream stdout/stderr to the teammate so they see progress and any prompts. After install completes:
-- Write the bundle version into `~/.dent-brain/<id>/.installed-version` so future runs of /dent-update can detect drift correctly. (If install.sh doesn't already do this — newer versions should.)
+- Write the bundle version into `~/.dent-brain/<id>/.installed-version` so future runs of /dent-update can detect drift correctly. (If the installer doesn't already do this — newer versions should.)
 - Tail the first 5 lines of `~/.dent-brain/<id>/sync.log` after the post-install RunAtLoad fires (`tail -F` for ~30s, then stop) so the teammate sees the daemon actually working.
+- **Inertness check (important after a major-version jump).** Run `dent-extensions status <id>` again. If the badge is `⚠ no-filter` or `⚠ not-armed`, the daemon copied fine but is silently doing nothing — surface it loudly with the exact next commands: `dent-extensions setup <id>` (author the filter), then `dent-extensions preview <id>` → `dent-extensions arm <id>`. (Re-installing over a pre-filter-contract version, e.g. v0.38 → v0.45+, leaves the daemon inert until a filter exists.)
+- **If the installer reported a rate-limit (429) instead of a clean verify**, tell the teammate: the install succeeded and tokens are intact; do NOT re-authorize; once the retry-after window passes, run `dent-extensions verify <id>` then `preview` → `arm`.
 
 If C: print a one-liner the teammate can run later (uses the same discovery as Step 1):
 
 ```bash
-BUNDLE_DIR=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" -path '*/rpm/plugin_*/manifest.lock.json' -exec grep -l '"plugin_name": *"dent-brain"' {} + 2>/dev/null | head -1 | xargs -I {} dirname {}) && bash "$BUNDLE_DIR/tools/granola-sync/install.sh"
+BUNDLE_DIR=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" -path '*/rpm/plugin_*/manifest.lock.json' -exec grep -l '"plugin_name": *"dent-brain"' {} + 2>/dev/null | head -1 | xargs -I {} dirname {}) && bun "$BUNDLE_DIR/tools/extensions/cli.ts" install <id>
 ```
 
 ## Step 6. Summary
