@@ -30,7 +30,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import type { CollectedEmail, SyncConfig, SyncCursor, RunSummary, UserFilterModule } from './types.ts';
 import { McpClient } from './mcp-client.ts';
-import { GoogleClient, header, parseAddress, parseAddressList } from './google-client.ts';
+import { GoogleClient, GoogleClientError, classifyProbeFailure, header, parseAddress, parseAddressList } from './google-client.ts';
 import { isNoise, isSignature } from './noise-filter.ts';
 import { gmailLink } from './link-gen.ts';
 import { buildDigest, digestSlug } from './digest.ts';
@@ -294,9 +294,24 @@ async function main() {
       process.exit(2);
     }
   } catch (e) {
-    console.error(`[email-sync] FATAL: Gmail health probe failed: ${e instanceof Error ? e.message : String(e)}`);
-    console.error(`  If the access token was revoked, re-run \`dent-extensions install email-sync\` to re-authorize.`);
-    process.exit(2);
+    // A transient rate-limit must NOT be treated as a fatal auth failure. If we
+    // hard-exit and re-fire every few hours hammering getProfile, we keep the
+    // per-user 429 window alive (the v0.45 lockout). On 429: skip this run
+    // cleanly (exit 0, no further Gmail calls) and let the next scheduled fire
+    // retry. Only a genuine auth/other failure is fatal.
+    const kind = e instanceof GoogleClientError ? classifyProbeFailure(e.status, e.body) : 'network';
+    if (kind === 'rate_limit') {
+      const when = e instanceof GoogleClientError && e.retryAfter ? ` (retry after ${e.retryAfter})` : '';
+      console.error(`[email-sync] Gmail rate-limited (429)${when}; skipping this run, will retry on the next scheduled fire.`);
+      process.exit(0);
+    }
+    if (kind === 'auth') {
+      console.error(`[email-sync] FATAL: Gmail auth failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`  The access token was likely revoked — re-run \`dent-extensions install email-sync\` to re-authorize.`);
+      process.exit(2);
+    }
+    console.error(`[email-sync] Gmail health probe failed (${kind}): ${e instanceof Error ? e.message : String(e)}; skipping this run.`);
+    process.exit(1);
   }
 
   const query = buildGmailQuery(config.workEmail, sinceIso);
