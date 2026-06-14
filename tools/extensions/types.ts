@@ -90,4 +90,20 @@ export interface ExtensionStatus {
   logBytes: number | null;
   /** Free-form details for display: notes, warnings, recent errors. */
   notes: string[];
+  /** Connection identity derived from config.json + filesystem only — no
+   *  network calls. Present when the extension records an account/token in its
+   *  config. Lets `status` and /dent-update answer "how is this connected?"
+   *  before offering to rebuild it. */
+  connection?: ExtensionConnection;
+}
+
+export interface ExtensionConnection {
+  /** The account this extension is authorized as (e.g. config.workEmail). */
+  account: string | null;
+  /** Path to the credential/token file, if any. */
+  tokenPath: string | null;
+  /** Token file last-modified ISO timestamp, or null when absent. */
+  tokenMtime: string | null;
+  /** Human note about which auth surface this is (vs. other surfaces). */
+  authVia: string | null;
 }
