@@ -103,31 +103,45 @@ The dual-config rationale:
 
 Every teammate gets **dual-registration** for the MCP connector so the brain works in BOTH:
 - Claude Code (the Code mode tab in Claude Desktop + the standalone CLI). Reads `~/.claude.json`. Uses HTTP-type entry directly.
-- Cowork (in Claude Desktop) + classic Desktop chats. Reads `~/Library/Application Support/Claude/claude_desktop_config.json`. Cowork is stdio-only; uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL.
+- Cowork (in Claude Desktop) + classic Desktop chats. Reads the Claude Desktop config — `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows, `~/.config/Claude/claude_desktop_config.json` on Linux. Cowork is stdio-only; uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL (on Windows it must be spawned via `cmd /c npx`).
+
+**macOS and Windows are both supported** (Linux untested but should work). The walkthrough this skill points teammates at (`docs/dent-brain/TEAMMATE_INSTALL.md`) branches per-OS; the install script below is OS-aware so it produces the right config on whichever machine the teammate runs it.
 
 The connector is unified across surfaces with one install (this dual-write Python block does both files at once). The plugin marketplace is NOT — Claude Code and Cowork have separate plugin stores at different paths, so the plugin must be installed once per surface the teammate wants to use it in.
 
 The two config files take different value shapes and Cowork is **stdio-only** (HTTP-type entries get rejected on launch). Cowork's registration uses the `mcp-remote` npm package as a stdio bridge that proxies to the remote URL. Background: `docs/dent-brain/UPSTREAM_NOTES.md` §"Three Claude surfaces, two config files".
 
-The install command is a single Python-driven shell block. Python 3 is universally available on macOS — we don't require teammates to install the standalone Claude Code CLI. The block:
-1. Backs up both target files (timestamped, in `~/.dent-brain/backups/`).
-2. Reads each, merges the dent-brain entry, writes it back atomically.
-3. Validates JSON after each write.
-4. Prints the relaunch instruction.
+The install command is a single OS-aware Python script. Python 3 is universally available on macOS and on Windows (as `python`/`py`) — we don't require teammates to install the standalone Claude Code CLI. The script:
+1. Picks the right Claude Desktop config path and stdio-bridge command for the OS it runs on (macOS / Windows / Linux).
+2. Backs up both target files (timestamped, in `~/.dent-brain/backups/`).
+3. Reads each, merges the dent-brain entry, writes it back atomically.
+4. Validates JSON after each write.
 
-Substitute `<SERVER_URL>` (from `manifest.deploy.server_url`) and `<TOKEN>` (from Phase 3) before showing to the teammate.
+Substitute `<SERVER_URL>` (from `manifest.deploy.server_url`) and `<TOKEN>` (from Phase 3) into the invocation. The teammate's agent writes the script to `~/.dent-brain/install-connector.py` and runs it; the token is passed via env vars so it never lands in the script file. (This block is the canonical reference — the per-OS invocations and full walkthrough live in `TEAMMATE_INSTALL.md` §3c, which the teammate's agent follows.)
 
-```bash
-TOKEN="<TOKEN>"
-URL="<SERVER_URL>"
-TOKEN="$TOKEN" URL="$URL" python3 <<'PY'
-import json, os, shutil, time
+```python
+import json, os, shutil, sys, time
+
 HOME = os.path.expanduser("~")
 TOKEN = os.environ["TOKEN"]; URL = os.environ["URL"]
 
 bk_dir = os.path.join(HOME, ".dent-brain", "backups")
 os.makedirs(bk_dir, exist_ok=True)
 stamp = time.strftime("%Y%m%d-%H%M%S")
+
+# Claude Desktop's config path AND the stdio-bridge command differ per OS.
+if sys.platform == "darwin":
+    desktop_cfg = os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+    bridge = {"command": "npx", "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
+elif sys.platform == "win32":
+    appdata = os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming"))
+    desktop_cfg = os.path.join(appdata, "Claude", "claude_desktop_config.json")
+    # Windows must spawn npx through cmd /c, or Claude Desktop can't launch the bridge.
+    bridge = {"command": "cmd", "args": ["/c", "npx", "-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
+else:  # Linux (untested but supported)
+    xdg = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
+    desktop_cfg = os.path.join(xdg, "Claude", "claude_desktop_config.json")
+    bridge = {"command": "npx", "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
 
 def patch(path, entry):
     if os.path.exists(path):
@@ -144,26 +158,23 @@ def patch(path, entry):
     with open(path) as f: json.load(f)  # validate
     print(f"  wrote: {path}")
 
-# 1. Code mode + standalone CLI: ~/.claude.json (HTTP-type entry)
+# 1. Code mode + standalone CLI: ~/.claude.json (HTTP-type entry, all OSes)
 patch(
     os.path.join(HOME, ".claude.json"),
     {"type": "http", "url": URL, "headers": {"Authorization": f"Bearer {TOKEN}"}},
 )
 
 # 2. Cowork mode + classic Desktop chats: claude_desktop_config.json (stdio bridge via mcp-remote)
-patch(
-    os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-    {
-        "command": "npx",
-        "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"],
-    },
-)
+patch(desktop_cfg, bridge)
 
-print("\nDone. Backups saved to ~/.dent-brain/backups/")
-print("Next: quit Claude Desktop completely (Cmd+Q) and relaunch.")
-print("Then start a NEW Cowork session (not an existing one — tool registries cache per-chat).")
-PY
+print(f"\nDone. Backups saved to {bk_dir}")
+print("Next: quit Claude Desktop completely (Cmd+Q on macOS / Quit from the system tray on Windows) and relaunch.")
+print("Then start a NEW session (not an existing one — tool registries cache per-chat).")
 ```
+
+Run it (substitute `<TOKEN>` / `<SERVER_URL>`):
+- **macOS / Linux:** `TOKEN="<TOKEN>" URL="<SERVER_URL>" python3 ~/.dent-brain/install-connector.py`
+- **Windows (PowerShell):** `$env:TOKEN="<TOKEN>"; $env:URL="<SERVER_URL>"; python "$env:USERPROFILE\.dent-brain\install-connector.py"`
 
 ⚠️ **Why this is dual, not single.** Earlier versions of this skill (pre-2026-04-30) used `claude mcp add -s user -t http ...` only. That works for Code mode but Cowork sessions reported "I don't see any dent-brain tools" because they read a different file. The dual-registration above is the empirically verified fix.
 
@@ -270,8 +281,8 @@ Pass criteria: at least one row with `op=tools/call` from token `<handle>`. Init
 
 If no `tools/call` row appears within ~5 minutes of the teammate confirming they asked for `get_stats`:
 - **Most likely:** they continued an OLD chat instead of starting a new one. Tool registries are cached per-chat. Tell them to start a fresh chat and try again.
-- **Less likely (Cowork only):** Claude Desktop's launch popup said "entries are not valid MCP server configurations and were skipped: dent-brain." That means `mcp-remote` couldn't load — usually because Node 18+ isn't installed (`node --version`). Install via `brew install node` and relaunch. Claude Code uses the HTTP entry directly so it doesn't hit this case.
-- **Rare:** the python block in the install message wasn't pasted as a single unit. Ask them to confirm the JSON is valid: `python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json` should print without error.
+- **Less likely (Cowork only):** Claude Desktop's launch popup said "entries are not valid MCP server configurations and were skipped: dent-brain." That means `mcp-remote` couldn't load — usually because Node 18+ isn't installed (`node --version`). Install it (`brew install node` on macOS; `winget install --id OpenJS.NodeJS.LTS -e` or https://nodejs.org on Windows) and relaunch. On Windows, also confirm the Cowork entry spawns via `cmd /c npx` (the OS-aware install script handles this) — a bare `npx` command often fails to launch under Claude Desktop on Windows. Claude Code uses the HTTP entry directly so it doesn't hit this case.
+- **Rare:** the install script didn't write valid JSON. Ask them to confirm the config parses, using the OS-aware validator in `TEAMMATE_INSTALL.md` §4 (it resolves the right Claude Desktop config path per OS). On macOS that path is `~/Library/Application Support/Claude/claude_desktop_config.json`; on Windows `%APPDATA%\Claude\claude_desktop_config.json`; on Linux `~/.config/Claude/claude_desktop_config.json`.
 - **Last resort:** restore the pre-install backup from `~/.dent-brain/backups/` and re-run the install command.
 
 Once verified: tell the admin "verified — `<handle>` is live as of `<timestamp>`."
