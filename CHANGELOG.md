@@ -2,6 +2,24 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.0.1] - 2026-06-15
+
+## **Teammate onboarding is officially cross-platform. The install walkthrough and the `/dent-onboard-teammate` skill now work on Windows as well as macOS, instead of hard-stopping any non-Mac machine at the first prerequisite check.**
+
+The teammate-install walkthrough used to run `uname -s` and abort unless it saw `Darwin`, and its connector-install step was a bash-only script that wrote the macOS config path. In practice the brain is reached over an HTTPS MCP endpoint that doesn't care about the operating system, and a teammate was already running it on Windows by hand. This release makes that path official. The connector install is now an OS-aware Python script that picks the right Claude Desktop config location (`~/Library/Application Support/…` on macOS, `%APPDATA%\Claude\…` on Windows, `~/.config/Claude/…` on Linux) and the right stdio-bridge command (Windows spawns `npx` through `cmd /c`), and it runs from a file so it works in any shell. The walkthrough branches per-OS for the OS check, the Git/Node install (Homebrew vs winget), config validation, and the Claude Desktop restart. The one piece still macOS-only is the optional granola-sync extension, because Granola.app is Mac-only, and that's now called out explicitly.
+
+### To take advantage of v0.46.0.1
+
+1. **Onboarding a Windows teammate:** run `/dent-onboard-teammate` as usual. The install message points them at the walkthrough, which now detects their OS and guides them through the Windows path.
+2. **Existing Mac teammates:** nothing changes. The macOS path behaves exactly as before.
+
+### Itemized changes
+
+#### Changed
+- `docs/dent-brain/TEAMMATE_INSTALL.md` — OS-aware throughout: OS detection instead of a Mac-only hard stop; per-OS Git/Node install (Homebrew / winget); an OS-aware Python connector-install script (per-OS config path + `cmd /c npx` bridge on Windows) run from a file so it works in any shell; per-OS config validation and Claude Desktop restart; granola-sync (§7) flagged as the one macOS-only step.
+- `skills/dent/onboard-teammate/SKILL.md` — canonical install block replaced with the OS-aware script + per-OS invocations; Cowork config-path reference, restart instructions, and Node-install troubleshooting all made cross-platform.
+- Plugin marketplace bundle (including the rendered `dent-onboard-teammate` skill copy) regenerated to v0.46.0.1.
+
 ## [0.46.0.0] - 2026-06-14
 
 ## **email-sync survives a Gmail rate-limit instead of self-destructing on one. A transient 429 during `/dent-update` used to be misread as "your tokens are broken" — so the installer threw away a working login, forced a browser re-consent, died with a message about the wrong thing, and every retry pushed the lockout further out. Now a 429 is recognized for what it is (transient, wait it out), your tokens are never touched, and the daemon backs off cleanly. Plus: `/dent-update` now shows you exactly how your email is connected before it ever offers to rebuild it.**

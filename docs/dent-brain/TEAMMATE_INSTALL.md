@@ -23,11 +23,13 @@ You have a shell tool. Use it. When this doc shows a command, **run it yourself*
 Things only the user can do (these are the legitimate pause-points):
 
 - **Provide a secret** (bearer token from the admin, FileMaker password). Secrets aren't in the chat history; the user has to type them.
-- **Click a UI dialog outside Terminal**: the macOS `xcode-select --install` popup, FileMaker Pro's Manage Security window, GitHub's "Accept Invitation" button, the Claude Desktop quit/relaunch (Cmd+Q), the Customize-panel UI clicks for installing the plugin marketplace, and the new session needed to verify install (the current session caches its tool registry).
+- **Click a UI dialog outside Terminal**: the macOS `xcode-select --install` popup (or a Windows installer dialog), FileMaker Pro's Manage Security window, GitHub's "Accept Invitation" button, the Claude Desktop quit/relaunch (Cmd+Q on macOS; quit from the system tray on Windows), the Customize-panel UI clicks for installing the plugin marketplace, and the new session needed to verify install (the current session caches its tool registry).
 - **State a preference**: where to clone the data repo, what handle to use for the FileMaker MCP account, yes/no on optional sections (FM MCP, read-only mirror clone, granola-sync).
 - **Confirm an ambiguous output**: when a command's exit is non-zero or the result is unexpected, show the user and ask before guessing.
 
-Everything else — `git --version`, `brew install node`, reading and writing JSON config, running the Python install block, `git clone`, `npm install`, `curl` health checks — **you run yourself**. The user shouldn't have to copy-paste between windows unless their judgment or their hands are required.
+Everything else — `git --version`, installing Node, reading and writing JSON config, running the Python install script, `git clone`, `npm install`, health checks — **you run yourself**. The user shouldn't have to copy-paste between windows unless their judgment or their hands are required.
+
+> **macOS and Windows are both supported.** The brain is reached over an HTTPS MCP endpoint, which is OS-agnostic; only a few mechanics differ (config-file location, how Node/Git are installed, how Claude Desktop is quit). Where this doc branches, follow the path for the user's OS. Linux is untested but should work via the same Python install script. The only piece that is still macOS-only is the optional **granola-sync** extension in §7 (it depends on the Mac-only Granola.app) — everything in §1–§6 works on either OS.
 
 When you do need user input, ask one clean question and wait. Don't bundle "open Terminal AND run this AND tell me what it says" — just run it yourself and report.
 
@@ -86,18 +88,19 @@ only talk to the server via MCP.
 
 ### Agent actions
 
-1. **OS check** — run `uname -s` yourself. If it returns `Darwin`, ✅ continue. If anything else, tell the user this guide is Mac-only today and to ping the admin.
+1. **OS check** — determine the user's OS. From a POSIX shell run `uname -s` (`Darwin` = macOS, `Linux` = Linux); on Windows you'll be in PowerShell or `cmd` (run `echo %OS%` / `$env:OS` → `Windows_NT`). **macOS and Windows are both fully supported**; Linux is untested but should work. Remember which OS you're on — the Git/Node install commands, the config path in §3c, and the restart in §3d all branch on it.
 
 2. **Claude Desktop check** — ask the user: "Is Claude Desktop installed and are you signed in?" (You can't detect this from the shell reliably.) If no, point them at https://claude.ai/download and pause until they confirm.
 
 3. **Git check** — run `git --version` yourself.
    - If it prints a version number: ✅ continue silently.
-   - If `xcode-select: error: …` or `command not found`: run `xcode-select --install` yourself. This opens a macOS dialog the user must click through — tell the user "I just kicked off the Xcode Command Line Tools install. A popup should have appeared on your screen — click Install and accept the license. Tell me when it's finished." Then re-run `git --version` to confirm.
-   - If still broken after Xcode CLT: try `brew install git` yourself. If `brew` is also missing, tell the user to install Homebrew from https://brew.sh and pause.
+   - **macOS**, if `xcode-select: error: …` or `command not found`: run `xcode-select --install` yourself. This opens a macOS dialog the user must click through — tell the user "I just kicked off the Xcode Command Line Tools install. A popup should have appeared on your screen — click Install and accept the license. Tell me when it's finished." Then re-run `git --version`. If still broken: try `brew install git`; if `brew` is missing, point them at https://brew.sh and pause.
+   - **Windows**, if Git is missing: install it yourself with `winget install --id Git.Git -e` if `winget` is available; otherwise tell the user to install Git for Windows from https://git-scm.com/download/win and pause. Re-run `git --version` to confirm.
 
-4. **Node check** — run `node --version` yourself. Need Node 18+.
+4. **Node check** — run `node --version` yourself. Need Node 18+. (Why Node: the Cowork-mode MCP bridge uses `npx mcp-remote` which needs Node 18+.)
    - If 18+: ✅ continue silently.
-   - If older or missing: run `brew install node` yourself. Capture the output. If `brew` is missing, escalate to the user as above. (Why Node: the Cowork-mode MCP bridge uses `npx mcp-remote` which needs Node 18+.)
+   - **macOS**, if older or missing: run `brew install node` yourself. If `brew` is missing, escalate to the user as above.
+   - **Windows**, if older or missing: run `winget install --id OpenJS.NodeJS.LTS -e` if `winget` is available; otherwise tell the user to install the LTS build from https://nodejs.org and pause. Re-run `node --version` to confirm (a new shell may be needed for PATH to pick it up).
 
 Don't list every check in chat — run them silently and only surface results when something needs fixing.
 
@@ -178,17 +181,33 @@ Hold all three: token + server URL for §3c, marketplace URL for §5.
 
 ### 3c. Run the install yourself
 
-Don't paste the install command into chat for the user to copy. **Run it yourself** via your shell tool. Substitute `<TOKEN>` and `<SERVER_URL>` with the values the user just provided, and execute:
+Don't paste the install command into chat for the user to copy. **Run it yourself** via your shell tool. The installer is a single OS-aware Python script — write it to `~/.dent-brain/install-connector.py` (create the directory if needed), then run it. It works identically on macOS, Windows, and Linux: it picks the right Claude Desktop config path and stdio-bridge command for the OS it's running on. It reads the token and URL from environment variables, so the token never lands in the script file or your shell history's command text.
 
-```bash
-TOKEN="<TOKEN>" URL="<SERVER_URL>" python3 <<'PY'
-import json, os, shutil, time
+The script:
+
+```python
+import json, os, shutil, sys, time
+
 HOME = os.path.expanduser("~")
 TOKEN = os.environ["TOKEN"]; URL = os.environ["URL"]
 
 bk_dir = os.path.join(HOME, ".dent-brain", "backups")
 os.makedirs(bk_dir, exist_ok=True)
 stamp = time.strftime("%Y%m%d-%H%M%S")
+
+# Claude Desktop's config path AND the stdio-bridge command differ per OS.
+if sys.platform == "darwin":
+    desktop_cfg = os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+    bridge = {"command": "npx", "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
+elif sys.platform == "win32":
+    appdata = os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming"))
+    desktop_cfg = os.path.join(appdata, "Claude", "claude_desktop_config.json")
+    # Windows must spawn npx through cmd /c, or Claude Desktop can't launch the bridge.
+    bridge = {"command": "cmd", "args": ["/c", "npx", "-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
+else:  # Linux (untested but supported)
+    xdg = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
+    desktop_cfg = os.path.join(xdg, "Claude", "claude_desktop_config.json")
+    bridge = {"command": "npx", "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"]}
 
 def patch(path, entry):
     if os.path.exists(path):
@@ -202,41 +221,48 @@ def patch(path, entry):
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
-    with open(path) as f: json.load(f)
+    with open(path) as f: json.load(f)  # validate
     print(f"  wrote: {path}")
 
-# Claude Code (CLI + Desktop's Code mode tab): ~/.claude.json — HTTP-type entry
+# Claude Code (CLI + Desktop's Code mode tab): ~/.claude.json — HTTP-type entry (all OSes)
 patch(
     os.path.join(HOME, ".claude.json"),
     {"type": "http", "url": URL, "headers": {"Authorization": f"Bearer {TOKEN}"}},
 )
 
 # Cowork mode + classic Desktop chats: claude_desktop_config.json — stdio bridge
-patch(
-    os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-    {
-        "command": "npx",
-        "args": ["-y", "mcp-remote", URL, "--header", f"Authorization: Bearer {TOKEN}"],
-    },
-)
+patch(desktop_cfg, bridge)
 
-print("\nDone. Backups saved to ~/.dent-brain/backups/")
-PY
+print(f"\nDone. Backups saved to {bk_dir}")
 ```
 
-The block writes the dent-brain MCP entry into BOTH config files — `~/.claude.json` (read by Claude Code) and `~/Library/Application Support/Claude/claude_desktop_config.json` (read by Cowork). One install, both surfaces work. Backs up existing configs first (timestamped, in `~/.dent-brain/backups/`).
+Then run it, substituting `<TOKEN>` and `<SERVER_URL>` — use the invocation for the user's OS (from the §1 OS check):
+
+- **macOS / Linux** (bash/zsh):
+  ```bash
+  TOKEN="<TOKEN>" URL="<SERVER_URL>" python3 ~/.dent-brain/install-connector.py
+  ```
+- **Windows** (PowerShell):
+  ```powershell
+  $env:TOKEN="<TOKEN>"; $env:URL="<SERVER_URL>"; python "$env:USERPROFILE\.dent-brain\install-connector.py"
+  ```
+  (Use `python` on Windows; if that's not found, try `py`.)
+
+The script writes the dent-brain MCP entry into BOTH config files — `~/.claude.json` (read by Claude Code, identical on every OS) and the Claude Desktop config (read by Cowork — `~/Library/Application Support/Claude/…` on macOS, `%APPDATA%\Claude\…` on Windows, `~/.config/Claude/…` on Linux). One install, both surfaces work. Backs up existing configs first (timestamped, in `~/.dent-brain/backups/`).
 
 Capture the output. If it ends with `Done. Backups saved...`, ✅ continue. If it errors:
 - Show the user the error.
 - Reassure them the previous configs are in `~/.dent-brain/backups/` — nothing is lost.
 - Offer to restore the most recent backup, or ping the admin with the error.
 
-When the install succeeds, tell the user: **"I've registered dent-brain in your Claude Desktop config. Next, you need to quit Claude Desktop completely (Cmd+Q) and relaunch — this is something only you can do. Tell me when you've done it."**
+When the install succeeds, tell the user: **"I've registered dent-brain in your Claude Desktop config. Next, you need to quit Claude Desktop completely and relaunch — this is something only you can do. On macOS that's Cmd+Q; on Windows, right-click the Claude icon in the system tray and choose Quit (closing the window leaves it running). Tell me when you've done it."**
 
 ### 3d. Restart Claude Desktop
 
-**Cmd+Q** Claude Desktop completely. Don't just close the window — fully
-quit. Then relaunch.
+Quit Claude Desktop **completely** — don't just close the window. On
+**macOS**, press **Cmd+Q**. On **Windows**, right-click the Claude icon in
+the system tray (bottom-right) and choose **Quit** (or **Alt+F4** on the
+focused window, then confirm it's not still in the tray). Then relaunch.
 
 > ⚠️ Tool registries are cached **per-session**. After the relaunch, start a
 > brand-new chat (Code mode or Cowork). The session you were in
@@ -250,17 +276,34 @@ This step requires a fresh session (the current session's tool registry was cach
 
 ### Agent actions
 
-1. Run a JSON-validity check on the configs you just wrote:
+1. Run a JSON-validity check on the configs you just wrote. The most
+   portable way (works on every OS, no shell-quoting of the Desktop path)
+   is to reuse the same path logic as the installer:
    ```bash
-   python3 -m json.tool ~/.claude.json > /dev/null && echo "claude.json VALID ✓"
-   python3 -m json.tool ~/Library/Application\ Support/Claude/claude_desktop_config.json > /dev/null && echo "claude_desktop_config.json VALID ✓"
+   python3 - <<'PY'
+   import json, os, sys
+   HOME = os.path.expanduser("~")
+   if sys.platform == "darwin":
+       desktop = os.path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+   elif sys.platform == "win32":
+       desktop = os.path.join(os.environ.get("APPDATA", os.path.join(HOME, "AppData", "Roaming")), "Claude", "claude_desktop_config.json")
+   else:
+       desktop = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "Claude", "claude_desktop_config.json")
+   for p in (os.path.join(HOME, ".claude.json"), desktop):
+       json.load(open(p)); print(f"VALID ✓  {p}")
+   PY
    ```
-   If either fails, the install is broken — restore the matching backup from `~/.dent-brain/backups/` and surface the error to the user.
+   On **Windows** (PowerShell) the heredoc won't work — save those lines to
+   a `.py` file and run `python check.py` instead, or just re-run the
+   installer script (it validates each file after writing). If validation
+   fails, the install is broken — restore the matching backup from
+   `~/.dent-brain/backups/` and surface the error to the user.
 
 2. Ask the user: **"Open a new Claude Code session in Claude Desktop (the current session won't see dent-brain because tool registries cache per-chat). Once you're in the new session, ask: 'Use dent-brain to call get_stats and tell me what's in there.' Then come back here and tell me whether it worked or paste the error."**
 
 3. Wait for the user to confirm. If they say it worked: ✅ continue to §5. If they say it failed:
-   - "I don't see any dent-brain tools" → confirm they really started a new chat (the most common cause), confirm they Cmd+Q'd Claude Desktop (the second most common cause).
+   - "I don't see any dent-brain tools" → confirm they really started a new chat (the most common cause), confirm they fully quit Claude Desktop (Cmd+Q on macOS / Quit from the system tray on Windows — the second most common cause). On Windows, also confirm Node 18+ is installed, since the Cowork bridge spawns `npx mcp-remote`.
+   - **Windows, JSON validates but tools still don't appear** → the config was written to `%APPDATA%\Claude\` but Claude Desktop is reading a different location. This happens with sandboxed/Microsoft-Store app builds, which virtualize `%APPDATA%` into a per-package path (e.g. `%LOCALAPPDATA%\Packages\Claude…\LocalCache\Roaming\Claude\`). Easiest fix: install the standard desktop build from https://claude.ai/download (it reads `%APPDATA%\Claude\` directly). If they must keep the Store build, locate its actual config dir and re-run the install pointed there.
    - Any other error → ask them to paste it here, then route to admin.
 
 ---
@@ -308,15 +351,19 @@ the agent can verify the install via the filesystem.
 
 2. Wait for the user to confirm.
 
-3. Tell the user: **"Now Cmd+Q Claude Desktop completely and relaunch.
-   The plugin needs a fresh tool registry to load. Tell me when you're
-   back."** (Two restarts total across the whole walkthrough: one for the
-   connector in §3, one for the plugin here.)
+3. Tell the user: **"Now fully quit Claude Desktop and relaunch (Cmd+Q on
+   macOS / Quit from the system tray on Windows). The plugin needs a fresh
+   tool registry to load. Tell me when you're back."** (Two restarts total
+   across the whole walkthrough: one for the connector in §3, one for the
+   plugin here.)
 
 4. Verify the install yourself via the filesystem. Claude Code's plugin
-   store lives at `~/.claude/plugins/` — the registry is `installed_plugins.json`
-   (keyed by `<marketplace>@<plugin>`) and the unpacked content is in
-   `cache/<marketplace>/<plugin>/<version>/`.
+   store lives at `~/.claude/plugins/` on every OS — the registry is
+   `installed_plugins.json` (keyed by `<marketplace>@<plugin>`) and the
+   unpacked content is in `cache/<marketplace>/<plugin>/<version>/`. The
+   `python3 -c` snippets below use `${HOME}`; on **Windows** use `python`
+   (or `py`) and let Python expand the home dir itself —
+   `python -c "import os,json; d=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json'))); ..."`.
 
    Check the registry first:
    ```bash
@@ -429,6 +476,13 @@ and push signal into the brain automatically. The flagship today is
 public API (you'll mint an API key during install), filters for Dent
 meetings, and pushes notes + transcripts to the brain.
 
+> **macOS-only.** granola-sync depends on Granola.app, which ships for Mac
+> only, so this section applies to Mac teammates. Everything earlier in
+> this walkthrough (§1–§6) works on Windows too — only this optional
+> extension is Mac-gated. Windows teammates: skip to Section 8. (The
+> cross-platform ingestor, email-sync, is set up separately via
+> `/dent-extensions`.)
+
 ### Agent prompt
 
 Ask: **"Want to install granola-sync now? It's the daemon that auto-syncs your Granola meeting notes into Dent Brain hourly. (yes / skip)"**
@@ -531,9 +585,12 @@ Postgres re-sync end-to-end.
 
 - **Server URL** — the value the admin sent you (looks like
   `https://your-brain.example.com/mcp`). Lives at rest in your
-  `~/.claude.json` and `~/Library/Application Support/Claude/claude_desktop_config.json`
-  under the `dent-brain` `mcpServers` entry — your agent can read those
-  files to remind you what it is.
+  `~/.claude.json` and your Claude Desktop config
+  (`~/Library/Application Support/Claude/claude_desktop_config.json` on
+  macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows,
+  `~/.config/Claude/claude_desktop_config.json` on Linux) under the
+  `dent-brain` `mcpServers` entry — your agent can read those files to
+  remind you what it is.
 - **Marketplace URL** — the value the admin sent you (looks like
   `https://github.com/<org>/<repo>`). Same source as above; recorded in
   `~/.claude/plugins/known_marketplaces.json` for Claude Code, separately
