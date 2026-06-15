@@ -9,7 +9,7 @@
   "code_repo": "jasonp/dent-brain",
   "cowork_install_hint": "Ask Cowork: \"Add a custom marketplace from github:jasonp/dent-brain and install dent-brain\"",
   "code_install_command": "bash plugin/marketplace/install-local.sh",
-  "built_at": "2026-06-15T18:22:35.502Z",
+  "built_at": "2026-06-15T18:29:18.456Z",
   "skills": [
     {
       "template": "setup",
@@ -34,7 +34,7 @@
     {
       "template": "onboard-teammate",
       "installed_as": "dent-onboard-teammate",
-      "bytes": 22401
+      "bytes": 22577
     },
     {
       "template": "add-ingestor",
