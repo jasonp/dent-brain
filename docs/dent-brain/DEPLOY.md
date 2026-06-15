@@ -293,8 +293,8 @@ Don't try to roll a custom Cowork connector through claude.ai's web Connectors U
 
 **Per-teammate prerequisites** (the skill walks the admin through pre-checking these):
 - Claude Desktop installed and signed in (download: https://claude.ai/download).
-- Node 18+ on the teammate's machine (`node --version`). Install via `brew install node` if missing — required for `npx -y mcp-remote` to spawn.
-- Python 3 (universal on macOS, no install needed).
+- Node 18+ on the teammate's machine (`node --version`). Install via `brew install node` (macOS) or `winget install OpenJS.NodeJS` (Windows) if missing — required for `npx -y mcp-remote` to spawn.
+- Python 3 (preinstalled on macOS; on Windows the install script uses `py`/`python`). Used to drive the connector-install step.
 
 **Verification:** the admin polls the audit log via `./scripts/tail-mcp-audit.sh 20 | grep <teammate-handle>` after the teammate confirms they ran the install + asked Cowork to call `get_stats`. Pass criteria: a `tools/call` row from the teammate's token. `initialize` / `tools/list` rows alone don't count — they fire on connector load even without invocation.
 
