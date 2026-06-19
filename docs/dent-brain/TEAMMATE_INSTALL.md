@@ -181,6 +181,18 @@ Hold all three: token + server URL for §3c, marketplace URL for §5.
 
 ### 3c. Run the install yourself
 
+> **⚠️ Agent: run the script below verbatim. Do NOT hand-write the config.**
+> The most common install failure is an agent improvising a Claude Desktop
+> entry like `{"command": "npx", "args": ["-y", "mcp-remote", …]}`. That is
+> the **macOS/Linux** form. **On Windows it fails** — Claude Desktop can't
+> spawn `npx` directly and the server shows `failed` / *"Could not attach to
+> MCP server dent-brain / Server disconnected."* Windows must use
+> `{"command": "cmd", "args": ["/c", "npx", "-y", "mcp-remote", …]}`. The
+> script's `win32` branch already does this. Also do not fall back to
+> `claude mcp add --transport http` for the Desktop connector, and do not go
+> read the repo-root `INSTALL_FOR_AGENTS.md` (that's the self-host-from-source
+> guide, not this one). Just run the script — it gets every OS right.
+
 Don't paste the install command into chat for the user to copy. **Run it yourself** via your shell tool. The installer is a single OS-aware Python script — write it to `~/.dent-brain/install-connector.py` (create the directory if needed), then run it. It works identically on macOS, Windows, and Linux: it picks the right Claude Desktop config path and stdio-bridge command for the OS it's running on. It reads the token and URL from environment variables, so the token never lands in the script file or your shell history's command text.
 
 The script:

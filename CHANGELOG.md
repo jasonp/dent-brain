@@ -2,6 +2,27 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.0.2] - 2026-06-19
+
+## **Windows teammate onboarding stops failing with "Server disconnected." The cross-platform install script shipped in v0.46.0.1 was already correct — but an agent driving the install could skip it, hand-write the connector config in the macOS form, and strand a Windows teammate. This release adds the guardrails that keep the agent on the script.**
+
+v0.46.0.1 made the connector install OS-aware: on Windows the stdio bridge must be spawned as `cmd /c npx`, not a bare `npx` (Claude Desktop can't launch `npx` directly on Windows). The script gets this right. The failure mode we hit was upstream of the script: an assisting agent never ran it. Pointed at the repo, the agent picked the root `INSTALL_FOR_AGENTS.md` (which is the self-host-a-brain-from-source guide, not the teammate-connect guide), improvised a Claude Desktop entry with `"command": "npx"`, and Windows reported the server as `failed` / *"Could not attach to MCP server dent-brain."* Nothing was wrong with the token or the server — only the client config, written in the wrong shape for the OS.
+
+The fix is documentation guardrails at the three places an agent goes off the rails: a banner at the top of `INSTALL_FOR_AGENTS.md` that redirects any teammate (anyone handed a token + server URL) to the right walkthrough; a callout in `TEAMMATE_INSTALL.md` §3c that says run the script verbatim, names the bare-`npx`-on-Windows failure and its symptom, and tells the agent not to wander into the self-host guide; and a scrub of the stale "one-paste `claude mcp add` command" framing from the `/dent-onboard-teammate` skill (that path was retired pre-2026-04-30 — it broke Cowork and fails on Windows).
+
+### To take advantage of v0.46.0.2
+
+1. **Onboarding anyone (especially on Windows):** run `/dent-onboard-teammate` as usual and send the walkthrough. The agent guardrails live in the docs the teammate's agent reads, so they apply automatically.
+2. **A teammate already stuck on "Server disconnected":** have their agent re-run the §3c install script (don't hand-edit). On Windows the connector entry must use `cmd /c npx`; the script writes that form.
+
+### Itemized changes
+
+#### Changed
+- `INSTALL_FOR_AGENTS.md` — redirect banner at the top: a teammate handed a token + server URL is joining an existing brain and should follow `docs/dent-brain/TEAMMATE_INSTALL.md`, not this self-host-from-source guide.
+- `docs/dent-brain/TEAMMATE_INSTALL.md` — §3c guardrail: run the OS-aware install script verbatim; do not hand-write `"command": "npx"` (the macOS/Linux form, which fails on Windows where the bridge needs `cmd /c npx`), do not fall back to `claude mcp add --transport http` for the Desktop connector, and do not switch to the root self-host guide.
+- `skills/dent/onboard-teammate/SKILL.md` — description + contract scrubbed of the retired `claude mcp add` framing; both now describe the three-value bundle + OS-aware §3c script flow.
+- Plugin marketplace bundle (including the rendered `dent-onboard-teammate` skill copy) regenerated to v0.46.0.2.
+
 ## [0.46.0.1] - 2026-06-15
 
 ## **Teammate onboarding is officially cross-platform. The install walkthrough and the `/dent-onboard-teammate` skill now work on Windows as well as macOS, instead of hard-stopping any non-Mac machine at the first prerequisite check.**
