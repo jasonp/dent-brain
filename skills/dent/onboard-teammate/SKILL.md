@@ -1,6 +1,6 @@
 ---
 name: {{prefix}}-onboard-teammate
-description: Admin-side flow to onboard a new teammate to dent-brain. Generates a bearer token, produces a one-paste `claude mcp add` install command for the teammate, and verifies registration via the audit log. **Runtime: Claude Code Desktop only** (writes to local config files, runs shell commands). See `docs/reference/runtime-conventions.md`.
+description: Admin-side flow to onboard a new teammate to dent-brain. Generates a bearer token, produces the install bundle + an OS-aware install script the teammate's agent runs (NOT `claude mcp add` — that was retired; it broke Cowork and fails on Windows where the connector needs `cmd /c npx`), and verifies registration via the audit log. **Runtime: Claude Code Desktop only** (writes to local config files, runs shell commands). See `docs/reference/runtime-conventions.md`.
 triggers:
   - "onboard teammate"
   - "onboard new user"
@@ -20,7 +20,7 @@ mutating: true
 
 This skill guarantees:
 - A new bearer token is issued in `access_tokens` with `name = <teammate-username>`, so `mcp_request_log` is per-user-attributable.
-- The teammate receives a single copy-paste `claude mcp add` command. No manual JSON editing, no token pasting into config files.
+- The teammate receives a three-value install bundle (token + server + marketplace) and follows `TEAMMATE_INSTALL.md`; their agent runs the OS-aware install script in §3c. No hand-edited JSON, no improvised `npx` command (which fails on Windows — it needs `cmd /c npx`).
 - The token name matches a real human handle (e.g. `steve`, `jeff`, `robin`) — never a generic name like `claude-desktop` or `team-shared`. Per-user audit depends on this.
 - Registration is verified end-to-end via `mcp_request_log` before onboarding is declared complete.
 

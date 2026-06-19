@@ -1,5 +1,16 @@
 # GBrain Installation Guide for AI Agents
 
+> **⚠️ Connecting a teammate to an EXISTING dent-brain? This is the wrong file.**
+> If the user was handed a **bearer token** (`gbrain_…`), a **server URL**
+> (`https://…/mcp`), and a **marketplace URL**, they are joining an
+> already-running brain — they do NOT build one from source. Stop here and
+> follow **`docs/dent-brain/TEAMMATE_INSTALL.md`** instead. Run its §3c
+> OS-aware install script; do not hand-edit Claude config or improvise an
+> `npx` command (on Windows the connector must be spawned via `cmd /c npx`,
+> which the script handles). This file below is for **self-hosting a new
+> brain from scratch** (Bun, Postgres/PGLite, embeddings) — not for teammate
+> access.
+
 Read this entire file, then follow the steps. Ask the user for API keys when needed.
 Target: ~30 minutes to a fully working brain.
 
