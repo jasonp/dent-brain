@@ -13,15 +13,20 @@ import type { Note, FilterResult } from '../types.ts';
 
 export const RECIPE_VERSION = 1;
 
+// REQUIRED: Granola folder NAMES the daemon pulls each run (the capture set).
+export const includeFolders = ['Dent'];
+
 export function filter(note: Note): FilterResult {
-  // ... your logic
+  // ... your narrowing logic
   return { keep: true, reason: 'why' };
   // or
   return { keep: false, reason: 'why' };
 }
 ```
 
-The daemon imports this module at startup. The filter is called once per Granola note (after cursor + dedup, before any MCP writes). `keep: true` files the meeting into the **shared** brain — visible to every teammate who can read it. `keep: false` drops it silently.
+The daemon reconciles the **include folders** each run: it lists their notes from the last `GRANOLA_SYNC_LOOKBACK_HOURS` (default 48h) server-side, skips any already in the brain, and fetches + files the rest. This is why late filing self-heals — file a meeting into an include folder anytime within the window and the next run picks it up. There is no local cursor; the brain is the source of truth for "already ingested."
+
+`includeFolders` controls **what is fetched**. `filter(note)` then runs as a per-note **narrowing gate** on each fetched note (after the brain-existence check, before any MCP write). `keep: true` files the meeting into the **shared** brain — visible to every teammate who can read it. `keep: false` drops it silently. Since the daemon only fetches notes already in an include folder, `filter` is for EXCLUDING within that set (e.g. a private attendee); a folder-only filter just returns `keep: true` for everything it sees.
 
 `reason` is logged in dry-run and verbose runs so the teammate can audit decisions. Write reasons humans can read at a glance — "folder:Dent", "title kw 'dent'", "excluded by therapist domain". They are not seen by the brain.
 

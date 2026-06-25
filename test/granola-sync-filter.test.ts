@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { filter } from '../tools/granola-sync/recipe/filter.example.ts';
+import { filter, includeFolders } from '../tools/granola-sync/recipe/filter.example.ts';
 import type { Note } from '../tools/granola-sync/types.ts';
 
 /**
@@ -32,6 +32,12 @@ function makeNote(overrides: Partial<Note> = {}): Note {
 }
 
 describe('granola-sync example filter — v0.39 default behavior', () => {
+  test('exports includeFolders (the reconcile capture set) as a non-empty string[]', () => {
+    expect(Array.isArray(includeFolders)).toBe(true);
+    expect(includeFolders.length).toBeGreaterThan(0);
+    expect(includeFolders.every((f) => typeof f === 'string' && f.length > 0)).toBe(true);
+  });
+
   test('drops note with no signal whatsoever', () => {
     const r = filter(makeNote({ title: 'Lunch' }));
     expect(r.keep).toBe(false);
