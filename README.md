@@ -36,7 +36,7 @@ itself never holds raw inboxes.
 
 | Extension | Source | Schedule | What it does |
 |---|---|---|---|
-| `granola-sync` | Granola public API | Hourly (launchd) | Pulls Granola meeting notes + transcripts via the public API (key in macOS keychain); each teammate's `user/filter.ts` decides which meetings reach the brain; pushes kept meetings into `meetings/`. |
+| `granola-sync` | Granola public API | Hourly (launchd) | Reconciles each teammate's `includeFolders` against the brain (windowed, no local cursor — see [`docs/reference/ingestors.md`](docs/reference/ingestors.md)): lists recent notes server-side, skips ones already ingested via identity dedup on `granola_document_id`, and files the gaps. `user/filter.ts` declares the capture folders + a per-note narrowing gate; pushes kept meetings + transcripts into `meetings/`. |
 | `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only). Canonical noise-filter drops bulk-promo first; each teammate's `user/filter.ts` then decides keep/drop with noise + signature hints. Writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
 | `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
