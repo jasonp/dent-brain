@@ -75,24 +75,11 @@ export interface ListFoldersOutput {
   cursor: string | null;
 }
 
-export interface SyncCursor {
-  /** ISO timestamp of the most-recent `created_at` we've successfully synced. */
-  lastSyncedCreatedAt: string;
-  /** Note IDs (Granola `not_…` format) we've already pushed to the brain. */
-  syncedDocumentIds: string[];
-  /** When this cursor was last written. */
-  cursorUpdatedAt: string;
-  /** Version of the sync tool that wrote this cursor. */
-  syncVersion: string;
-}
-
 export interface SyncConfig {
   /** Production MCP endpoint. Discovered from `~/.claude.json` by default. */
   serverUrl: string;
   /** Teammate's personal bearer token. Discovered from `~/.claude.json` by default. */
   bearerToken: string;
-  /** Path to the cursor JSON. Defaults to `~/.dent-brain/granola-sync/cursor.json`. */
-  cursorPath: string;
 }
 
 /**
@@ -117,4 +104,15 @@ export interface UserFilterModule {
   RECIPE_VERSION: number;
   /** Required. Decides keep/skip per note. */
   filter: (note: Note) => FilterResult;
+  /**
+   * Granola folder NAMES whose notes the sync should consider (e.g. `['Dent']`).
+   * The reconcile loop pulls only these folders' notes CREATED in the recent
+   * look-back window — server-side — each run, then ingests any the brain
+   * doesn't already have. Late filing self-heals as long as the note was
+   * *created* within that window (the scan filters on creation time): file a
+   * recently-recorded meeting into an include folder and the next run picks it
+   * up. An older note needs a `--since` backfill. Required for the daemon to do
+   * anything; `filter()` still runs as a per-note narrowing gate on top.
+   */
+  includeFolders: string[];
 }

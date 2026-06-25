@@ -19,7 +19,7 @@
  *   GET /v1/folders?cursor=&page_size=
  */
 
-import type { Note, NoteSummary, ListNotesOutput, ListFoldersOutput } from './types.ts';
+import type { Note, NoteSummary, ListNotesOutput, ListFoldersOutput, Folder } from './types.ts';
 
 const BASE_URL = 'https://public-api.granola.ai/v1';
 const KEYCHAIN_SERVICE = 'dent-brain.granola-sync';
@@ -86,11 +86,14 @@ export class GranolaApi {
   }
 
   /**
-   * List note summaries. Iterates pages internally; yields one note at a time
-   * so the caller can stop early (e.g. hit `--limit`) without fetching all
-   * pages. Use `createdAfter` to advance from the cursor.
+   * List note summaries. Iterates pages internally (advancing the API's own
+   * page `cursor`); yields one note at a time so the caller can stop early
+   * (e.g. hit `--limit`) without fetching all pages. `createdAfter` bounds the
+   * window server-side to notes created after that timestamp — it is the
+   * window start, not a resumable sync cursor (there is no local cursor; the
+   * brain is the source of truth for "already ingested").
    */
-  async *iterNotes(opts: { createdAfter?: string; updatedAfter?: string; pageSize?: number } = {}): AsyncGenerator<NoteSummary> {
+  async *iterNotes(opts: { createdAfter?: string; updatedAfter?: string; folderId?: string; pageSize?: number } = {}): AsyncGenerator<NoteSummary> {
     const pageSize = opts.pageSize ?? 30;
     let cursor: string | null = null;
     let pageCount = 0;
@@ -98,6 +101,9 @@ export class GranolaApi {
       const params = new URLSearchParams({ page_size: String(pageSize) });
       if (opts.createdAfter) params.set('created_after', opts.createdAfter);
       if (opts.updatedAfter) params.set('updated_after', opts.updatedAfter);
+      // Server-side folder filter (verified: returns only that folder's notes).
+      // Lets the reconcile loop pull just the include-folder window cheaply.
+      if (opts.folderId) params.set('folder_id', opts.folderId);
       if (cursor) params.set('cursor', cursor);
       const page = await this.fetchJson<ListNotesOutput>(`/notes?${params.toString()}`);
       pageCount++;
@@ -107,6 +113,25 @@ export class GranolaApi {
       // Hard guard against an API bug that loops forever.
       if (pageCount > 1000) throw new Error('Granola API: refused to fetch past 1000 pages of /notes');
     }
+  }
+
+  /** All folders, paginated. Used to resolve the user filter's include-folder
+   *  names to the `fol_…` ids the `/notes?folder_id=` filter wants. */
+  async listFolders(pageSize = 30): Promise<Folder[]> {
+    const out: Folder[] = [];
+    let cursor: string | null = null;
+    let pageCount = 0;
+    while (true) {
+      const params = new URLSearchParams({ page_size: String(pageSize) });
+      if (cursor) params.set('cursor', cursor);
+      const page = await this.fetchJson<ListFoldersOutput>(`/folders?${params.toString()}`);
+      pageCount++;
+      out.push(...page.folders);
+      if (!page.hasMore || !page.cursor) break;
+      cursor = page.cursor;
+      if (pageCount > 1000) throw new Error('Granola API: refused to fetch past 1000 pages of /folders');
+    }
+    return out;
   }
 
   /** Fetch one note in full. Pass `includeTranscript: true` to get the diarized transcript. */

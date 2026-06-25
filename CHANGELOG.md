@@ -2,6 +2,38 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.1.0] - 2026-06-25
+
+## **Granola-sync stops forking duplicate meeting pages when Granola renames a meeting, and a sync killed mid-enrichment now finishes on the next run instead of leaving a half-filed page forever. Meetings are deduped by who they ARE, not what they're titled.**
+
+The granola-sync ingestor decided "do I already have this meeting?" by deriving a slug from the meeting's title and checking whether that page existed. Granola regenerates titles, so a rename produced a new slug, the existence check missed, and a second page got written while the original was orphaned. It also had a thinner failure mode: if a run was killed after the meeting page was written but before the per-attendee bullets and the entity-detection block landed, the next run saw the page already existed and skipped it — the enrichment never finished.
+
+Both come down to keying on the wrong thing. This release keys dedup on the stable `granola_document_id` the ingestor already stamps into every meeting's frontmatter, via a new brain read op, `get_page_by_identity`. Existence is now "is there a page whose `granola_document_id` equals this note's id," independent of the title — so a rename can't fork a duplicate, and when a match exists the ingestor reuses that page's slug and updates it in place. Enrichment became idempotent and resumable: the meeting's `## Mentioned` block is written last and doubles as a completion marker, so a half-finished page is recognized as incomplete and finished on the next pass; attendee timeline bullets dedup on the per-note source tag, so re-runs never double up. Because the identity field was already in every existing meeting's frontmatter, this works retroactively with no backfill.
+
+The new `get_page_by_identity` op is general: it looks up a page by any stable frontmatter field, source-scoped, with the same takes/facts privacy boundary as `get_page`. Future ingestors get the same rename-safe dedup for free.
+
+### To take advantage of v0.46.1.0
+
+1. **If you run the granola-sync daemon:** your `user/filter.ts` must export `includeFolders: string[]` or the daemon refuses to start. Regenerate it with `/dent-extensions setup granola-sync`, or add the export by hand (see `tools/granola-sync/recipe/filter.example.ts`). Full steps: `skills/migrations/v0.46.1.0.md`. No backfill needed — existing meetings are already keyed by their document id.
+2. **Everyone else:** nothing to do. The new op is additive and read-only.
+
+### Itemized changes
+
+#### Added
+- `get_page_by_identity` MCP read op (`src/core/operations.ts`): look up a single page by a stable frontmatter field (`key`/`value`), independent of its slug, optionally constrained to a page `type` (so a meeting and its transcript sharing one id disambiguate deterministically). Fails closed on empty key/value. Source-scoped via `sourceScopeOpts`; strips the takes/facts fences for untrusted remote readers exactly like `get_page`. Returns `{ exists: false }` or `{ exists, slug, frontmatter, compiled_truth }`.
+- `getPageByIdentity` engine method in both `src/core/postgres-engine.ts` and `src/core/pglite-engine.ts` (engine parity), pinned by a new case in `test/e2e/engine-parity.test.ts` (match, source isolation, deleted-hidden, miss). Unit coverage for the op in `test/get-page-by-identity-op.test.ts`.
+
+#### Changed
+- granola-sync existence check keys on `granola_document_id` (identity) instead of the title-derived slug; an identity match reuses the existing page's slug so a Granola rename updates in place. `translateMeeting` takes an optional `canonicalSlug` that cascades to the transcript slug, frontmatter, and attendee bullet link.
+- granola-sync enrichment is idempotent and resumable: the `## Mentioned` block is written last and ends with a private sentinel that marks "enrichment finished" (a sentinel, not the heading itself, so a meeting whose own notes contain a `## Mentioned` heading can't falsely mark itself done); attendee bullets dedup on the `granola/<doc-id>` source tag; a transient entity-detection or identity-lookup failure skips/retries the note next run instead of filing it half-done or forking it.
+- granola-sync filter contract: `user/filter.ts` must export `includeFolders: string[]` (the daemon fatal-exits without it). `recipe/filter.example.ts` collapses the `ORG_FOLDERS` alias into a single `includeFolders` constant.
+- Docs/wording corrected to match the new behavior: identity dedup (not slug) in `docs/reference/ingestors.md`; "late filing self-heals" clarified as keyed on note *creation* time across `sync.ts`, `types.ts`, `granola-api.ts`, `recipe/filter.example.ts`; stale cursor docstrings reworded.
+
+#### Fixed
+- A Granola title rename no longer forks a second meeting page and orphans the original.
+- A sync run killed mid-enrichment no longer leaves a permanently half-filed page; the next run detects the missing completion marker and finishes.
+- Steady-state runs no longer re-fetch already-filed notes wastefully — the identity pre-check short-circuits an enriched meeting before the expensive Granola fetch.
+
 ## [0.46.0.2] - 2026-06-19
 
 ## **Windows teammate onboarding stops failing with "Server disconnected." The cross-platform install script shipped in v0.46.0.1 was already correct — but an agent driving the install could skip it, hand-write the connector config in the macOS form, and strand a Windows teammate. This release adds the guardrails that keep the agent on the script.**

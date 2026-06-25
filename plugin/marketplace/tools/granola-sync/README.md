@@ -15,35 +15,30 @@ friend, family logistics calls, etc.) ever touch the shared brain.
 **Privacy guarantee.** The daemon only syncs meetings that pass the Dent-related
 filter. Everything else stays local in Granola.
 
-## Filter rules
+## What gets synced (the reconcile model)
 
-A meeting is considered org-related if ANY of these hit (whole-word match,
-case-insensitive — so "Dent" in "Dent dinner" matches but "President" /
-"evident" / "dental" don't):
+Each run, the daemon pulls the notes in your **include folders** created in the
+last `GRANOLA_SYNC_LOOKBACK_HOURS` (default 48h) — filtered server-side by
+Granola, so it only fetches those folders — skips any already in the brain, and
+files the rest. Two teammate-authored exports in `user/filter.ts` drive it:
 
-1. The doc is filed in a **Granola folder** whose name matches one of the
-   configured `orgFolders` (default: `["Dent"]`). Strongest signal — you
-   curated it yourself.
-2. The meeting **title** contains one of the configured `orgKeywords`
-   (default: `["dent"]`).
-3. The meeting **body or transcript** mentions one of the `orgKeywords`.
-   Catches meetings where the org came up substantively but isn't in the
-   title.
-4. ANY attendee email is from a configured `orgDomains` entry (default:
-   `["dentthefuture.com"]`).
+1. **`includeFolders: string[]`** — the Granola folder NAMES to pull (default
+   `["Dent"]`). This is the capture set. Filing a meeting into one of these
+   folders is how it reaches the brain — and because every run reconciles the
+   whole recent window, **filing it late still works**: drop it in the folder
+   anytime within the window and the next run ingests it.
+2. **`filter(note)`** — a per-note narrowing gate run on each fetched note. Use
+   it to EXCLUDE within the captured folders (e.g. a private attendee). A
+   folder-only filter just returns `keep: true` for everything it sees.
 
-Plus a `fileAll: true` config option that bypasses everything and files
-every meeting. Off by default — turning it on for a cross-org user (e.g.
-someone with Dent + TK + Reclaim Curiosity meetings in the same Granola)
-leaks the other orgs' content into this brain.
+There is no local cursor — the brain is the source of truth for "already
+ingested" (slug existence, `created_via: granola-sync`). To retarget at a
+different set of folders, edit `includeFolders`. See `recipe/RECIPE.md` for the
+full contract.
 
-To retarget the daemon at a different organization, drop a `config.json`
-overriding `orgKeywords`, `orgFolders`, and `orgDomains`. See
-`config.example.json`.
-
-Meetings that miss every signal are skipped. Settle delay (45 min on the
-last update) keeps in-flight Granola post-processing from being mistaken
-for an empty meeting; those docs come back as candidates on the next run.
+The Granola API only returns notes that already have a summary + transcript, so
+in-flight meetings simply don't appear yet (they return 404 and are picked up on
+a later run once ready — no settle delay needed).
 
 ## What lands in the brain
 
@@ -124,7 +119,7 @@ bun ~/.dent-brain/granola-sync/sync.ts --dry-run --verbose
 # Sync a specific meeting by Granola document id (find it in Granola's URL bar)
 bun ~/.dent-brain/granola-sync/sync.ts --doc-id <granola-uuid>
 
-# Re-sync from a specific date (overrides the cursor)
+# Widen the reconcile window back to a specific date (backfill)
 bun ~/.dent-brain/granola-sync/sync.ts --since 2026-04-01
 
 # Cap how many meetings get processed in one run
@@ -142,7 +137,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.dent.granola-sync.plis
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.dent.granola-sync.plist
 rm ~/Library/LaunchAgents/com.dent.granola-sync.plist
-rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes cursor + log (dent-brain token stays in ~/.claude.json)
+rm -rf ~/.dent-brain/granola-sync   # WARNING: wipes user/filter.ts + log (dent-brain token stays in ~/.claude.json)
 security delete-generic-password -s dent-brain.granola-sync -a "$USER"  # remove the Granola API key
 ```
 
@@ -151,7 +146,7 @@ security delete-generic-password -s dent-brain.granola-sync -a "$USER"  # remove
 | Path | Purpose |
 |---|---|
 | `~/.dent-brain/granola-sync/config.json` | OPTIONAL. Only created if you need to override defaults (additional Dent domains, etc.). NO tokens — dent-brain token is read from `~/.claude.json`; Granola API key is read from the macOS keychain. |
-| `~/.dent-brain/granola-sync/cursor.json` | Last-synced timestamp + recent note IDs (for dedup). |
+| `~/.dent-brain/granola-sync/user/filter.ts` | Teammate-authored. Exports `includeFolders` (folders to pull) + `filter()` (narrowing gate). |
 | `~/.dent-brain/granola-sync/sync.log` | Stdout/stderr from each scheduled run. |
 | `~/.dent-brain/granola-sync/sync.ts` (+ deps) | The runtime. Updated when you re-run `install.sh`. |
 | `~/Library/LaunchAgents/com.dent.granola-sync.plist` | The hourly schedule. |
@@ -183,5 +178,6 @@ both a summary and a transcript. If a recent meeting hasn't shown up yet,
 Granola is still processing it — it'll appear on the next run. Notes the API
 hasn't finished processing return 404 and are silently retried.
 
-**Need to re-sync everything:** delete `cursor.json` (or pass `--since 1970-01-01`)
-and re-run. Slug-based idempotency in the brain prevents duplicate writes.
+**Need to backfill older meetings:** pass `--since <date>` to widen the reconcile
+window (e.g. `--since 2026-01-01`) and re-run. The brain-existence check skips
+everything already filed, so only the gaps are fetched and written — no duplicates.
