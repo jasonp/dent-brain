@@ -6,15 +6,18 @@
  * skill rewrite it from scratch based on your Granola folders and the
  * org/keyword signals you care about.
  *
- * Contract: see RECIPE.md and ../types.ts. In short, `filter(note)` must
- * return `{ keep, reason }`. `keep: true` means the meeting will be filed
- * into the shared brain. Anything ambiguous should `keep: false` — the
- * privacy bias is "exclude unless I'm sure."
- *
- * This example reproduces the v0.38-and-earlier hardcoded Dent defaults:
- * folder-membership / title-keyword / body-keyword / attendee-domain signals.
- * Customize by adding excludes (excludeFolders, excludeDomains,
- * excludeKeywords) — exclusion wins over inclusion.
+ * Contract: see RECIPE.md and ../types.ts. Two exports:
+ *   - `includeFolders`: Granola folder NAMES the daemon pulls each run (the
+ *     capture set). The sync fetches these folders server-side, so filing a
+ *     meeting into one is how it reaches the brain — and filing it late still
+ *     works as long as the note was *created* within the recent look-back
+ *     window (the scan filters on creation time; an older note needs `--since`).
+ *   - `filter(note)`: a per-note narrowing gate run on top. Returns
+ *     `{ keep, reason }`; the privacy bias is "exclude unless I'm sure." Use it
+ *     to drop notes WITHIN the captured folders (e.g. an attendee you never want
+ *     filed). Since the daemon only fetches notes already in an include folder,
+ *     the keyword/domain INCLUDE branches below are redundant with the folder
+ *     capture — they're kept as a template for teammates who narrow.
  */
 
 import type { Note, FilterResult } from '../types.ts';
@@ -23,14 +26,16 @@ export const RECIPE_VERSION = 1;
 
 // ─── Customize these ────────────────────────────────────────────────────────
 
+/** Granola folder NAMES the daemon pulls each run (the capture set). The daemon
+ *  reads this to decide what to fetch; filter() below also reuses it as a
+ *  redundant include signal. One list, one name — no alias. */
+export const includeFolders = ['Dent'];
+
 /** Keywords identifying your org. Whole-word matched against title and body. */
 const ORG_KEYWORDS = ['dent'];
 
 /** Email domains for your team. Matched against attendee emails. */
 const ORG_DOMAINS = ['dentthefuture.com'];
-
-/** Granola folder names treated as auto-include (case-insensitive). */
-const ORG_FOLDERS = ['Dent'];
 
 /** Granola folders that ALWAYS exclude — wins over any include signal. */
 const EXCLUDE_FOLDERS: string[] = [];
@@ -110,7 +115,7 @@ export function filter(note: Note): FilterResult {
 
   // Inclusions — any signal wins.
   const folderHits = folders.filter((f) =>
-    ORG_FOLDERS.some((of) => f.toLowerCase() === of.toLowerCase()),
+    includeFolders.some((of) => f.toLowerCase() === of.toLowerCase()),
   );
   if (folderHits.length > 0) {
     return { keep: true, reason: `Granola folder: ${folderHits.join(', ')}` };

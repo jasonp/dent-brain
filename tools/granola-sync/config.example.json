@@ -1,4 +1,3 @@
 {
-  "_comment": "config.json is OPTIONAL for granola-sync as of v0.39. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json and reads the Granola API key from the macOS keychain (service: dent-brain.granola-sync). All filter behavior lives in user/filter.ts (authored via /dent-extensions setup granola-sync) — there are no filter fields here anymore. Override the cursor path only if you have a reason to.",
-  "cursorPath": "${HOME}/.dent-brain/granola-sync/cursor.json"
+  "_comment": "config.json is OPTIONAL for granola-sync. The daemon auto-discovers serverUrl + bearerToken from ~/.claude.json and reads the Granola API key from the macOS keychain (service: dent-brain.granola-sync). All sync behavior lives in user/filter.ts (authored via /dent-extensions setup granola-sync): includeFolders declares which Granola folders to pull, filter() narrows. There are no tunables here — the reconcile window is GRANOLA_SYNC_LOOKBACK_HOURS (env, default 48). Override serverUrl/bearerToken here only if auto-discovery can't find them."
 }

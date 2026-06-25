@@ -311,6 +311,63 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pglitePage!.title).toBe('V2');
   });
 
+  test('v0.46.1.0 getPageByIdentity parity (match + source isolation + deleted-hidden + not-found)', async () => {
+    const srcSql = `INSERT INTO sources (id, name, config) VALUES ($1, $1, '{}'::jsonb) ON CONFLICT DO NOTHING`;
+    const seed = (slug: string, gid: string) => ({
+      type: 'meeting' as const,
+      title: 't',
+      compiled_truth: 'b',
+      timeline: '',
+      frontmatter: { granola_document_id: gid },
+    });
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.executeRaw(srcSql, ['ident-src-a']);
+      await eng.executeRaw(srcSql, ['ident-src-b']);
+      // Two DIFFERENT pages share the same external id G1 across sources. A
+      // scoped lookup must never cross the source boundary (a missed scope is
+      // exactly the cross-source read leak sourceScopeOpts exists to stop).
+      await eng.putPage('meetings/2026-06-01-alpha', seed('meetings/2026-06-01-alpha', 'G1'), { sourceId: 'ident-src-a' });
+      await eng.putPage('meetings/2026-06-01-beta', seed('meetings/2026-06-01-beta', 'G1'), { sourceId: 'ident-src-b' });
+      // A soft-deleted page with id G2 in src-a.
+      await eng.putPage('meetings/2026-06-02-gamma', seed('meetings/2026-06-02-gamma', 'G2'), { sourceId: 'ident-src-a' });
+      await eng.executeRaw(
+        `UPDATE pages SET deleted_at = now() WHERE source_id = 'ident-src-a' AND slug = 'meetings/2026-06-02-gamma'`,
+        [],
+      );
+      // A meeting + its transcript in src-a SHARE id G3 — the type filter must
+      // disambiguate identically on both engines (the granola dup-key case).
+      await eng.putPage('meetings/2026-06-03-delta', seed('meetings/2026-06-03-delta', 'G3'), { sourceId: 'ident-src-a' });
+      await eng.putPage('meetings/transcripts/2026-06-03-delta', {
+        type: 'transcript' as const, title: 't', compiled_truth: 'b', timeline: '', frontmatter: { granola_document_id: 'G3' },
+      }, { sourceId: 'ident-src-a' });
+    }
+
+    const idSlug = async (eng: BrainEngine, gid: string, opts: { sourceId?: string; sourceIds?: string[]; includeDeleted?: boolean; type?: string }) =>
+      (await eng.getPageByIdentity('granola_document_id', gid, opts))?.slug ?? null;
+
+    // Scalar scope src-a → alpha (NOT beta); src-b → beta. Same on both engines.
+    expect(await idSlug(pgEngine, 'G1', { sourceId: 'ident-src-a' })).toBe('meetings/2026-06-01-alpha');
+    expect(await idSlug(pgliteEngine, 'G1', { sourceId: 'ident-src-a' })).toBe('meetings/2026-06-01-alpha');
+    expect(await idSlug(pgEngine, 'G1', { sourceId: 'ident-src-b' })).toBe('meetings/2026-06-01-beta');
+    expect(await idSlug(pgliteEngine, 'G1', { sourceId: 'ident-src-b' })).toBe('meetings/2026-06-01-beta');
+
+    // Soft-deleted G2 hidden by default, surfaced with includeDeleted. Parity.
+    expect(await idSlug(pgEngine, 'G2', { sourceId: 'ident-src-a' })).toBeNull();
+    expect(await idSlug(pgliteEngine, 'G2', { sourceId: 'ident-src-a' })).toBeNull();
+    expect(await idSlug(pgEngine, 'G2', { sourceId: 'ident-src-a', includeDeleted: true })).toBe('meetings/2026-06-02-gamma');
+    expect(await idSlug(pgliteEngine, 'G2', { sourceId: 'ident-src-a', includeDeleted: true })).toBe('meetings/2026-06-02-gamma');
+
+    // Unknown id → null on both engines.
+    expect(await idSlug(pgEngine, 'G-nope', { sourceId: 'ident-src-a' })).toBeNull();
+    expect(await idSlug(pgliteEngine, 'G-nope', { sourceId: 'ident-src-a' })).toBeNull();
+
+    // type filter disambiguates the shared-id meeting/transcript pair. Parity.
+    expect(await idSlug(pgEngine, 'G3', { sourceId: 'ident-src-a', type: 'meeting' })).toBe('meetings/2026-06-03-delta');
+    expect(await idSlug(pgliteEngine, 'G3', { sourceId: 'ident-src-a', type: 'meeting' })).toBe('meetings/2026-06-03-delta');
+    expect(await idSlug(pgEngine, 'G3', { sourceId: 'ident-src-a', type: 'transcript' })).toBe('meetings/transcripts/2026-06-03-delta');
+    expect(await idSlug(pgliteEngine, 'G3', { sourceId: 'ident-src-a', type: 'transcript' })).toBe('meetings/transcripts/2026-06-03-delta');
+  });
+
   test('v0.41.19.0 deletePages parity: both engines return same confirmed-deleted slugs', async () => {
     const realSlugs = ['wiki/dpp-1', 'wiki/dpp-2', 'wiki/dpp-3'];
     for (const slug of realSlugs) {

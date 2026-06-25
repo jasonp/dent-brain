@@ -1019,7 +1019,7 @@ Claude Code with `/<name>`:
 
 | Skill | What it does |
 |---|---|
-| `/dent-onboard-teammate` | Generates a bearer token for a new teammate, prints a one-paste `claude mcp add` command, verifies registration. |
+| `/dent-onboard-teammate` | Generates a bearer token for a new teammate, prints the install bundle + OS-aware connector script (works on macOS and Windows), verifies registration. |
 | `/dent-extensions` | Manage local ingestors — list, install, setup (author `user/filter.ts`), preview (dry-run), arm, uninstall. |
 | `/dent-tell-me-about` | Token-efficient summary of any entity (people, companies, projects, events). Routes through hybrid search + chunked retrieval + timeline rather than dumping the full page. |
 | `/dent-append-evidence` | Capture an observation as a timeline bullet on the right entity. Detects which entities the observation is about, links new people to FileMaker, applies the A5 escalation rule. |

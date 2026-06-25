@@ -8,14 +8,14 @@ As of v0.39, both ingestors use the **recipe model**: the plugin ships canonical
 
 - **Where:** `tools/granola-sync/`, installed to `~/.dent-brain/granola-sync/`
 - **Schedule:** hourly (launchd `StartInterval=3600`)
-- **Pulls from:** Granola public REST API at `https://public-api.granola.ai/v1/` — `GET /notes` (paginated) + `GET /notes/{id}?include=transcript`
+- **Model: windowed folder reconcile.** Each run lists the filter's `includeFolders` notes from the last `GRANOLA_SYNC_LOOKBACK_HOURS` (default 48h) **server-side** (`GET /notes?folder_id=&created_after=`), skips any already in the brain via an **identity lookup** (`get_page_by_identity` on the stable `granola_document_id` — NOT a title-derived slug, so a Granola rename can't fork a duplicate), and `GET /notes/{id}?include=transcript` + files only the gaps. No local cursor — the brain is the source of truth. **Late filing self-heals** as long as the note was *created* within the window (the scan filters on creation time): file a recently-recorded meeting into an include folder and the next run ingests it. An older note needs a `--since` backfill.
 - **Auth:** per-teammate API key in macOS keychain (service `dent-brain.granola-sync`, account `$USER`)
-- **Filter:** `~/.dent-brain/granola-sync/user/filter.ts` (teammate-authored). The daemon dynamic-imports it at startup; fatal-exits if missing. Contract lives in `tools/granola-sync/recipe/RECIPE.md`.
+- **Filter:** `~/.dent-brain/granola-sync/user/filter.ts` (teammate-authored). Must export `includeFolders: string[]` (the capture set the daemon pulls) and `filter(note)` (a per-note narrowing gate). The daemon dynamic-imports it at startup; fatal-exits if missing or if `includeFolders` is empty. Contract lives in `tools/granola-sync/recipe/RECIPE.md`.
 - **Writes to brain:**
   - `meetings/<YYYY-MM-DD>-<title-slug>.md` (summary, notes, attendees, transcript link)
   - `meetings/transcripts/<YYYY-MM-DD>-<title-slug>.md` (diarized log)
   - `entities/people/<slug>.md` (timeline bullet on each attendee's page; creates stubs for unknown attendees)
-- **Idempotency:** `[Source: granola/<note-id>]` tag + slug-based dedup. Cursor at `~/.dent-brain/granola-sync/cursor.json`.
+- **Idempotency:** identity dedup on the stable `granola_document_id` (`get_page_by_identity`). The pre-check skips a note only once its meeting page carries the `## Mentioned` completion marker (written last), so a run killed mid-enrichment finishes next time; attendee bullets dedup on `[Source: granola/<note-id>]`. A Granola rename reuses the existing page's slug instead of forking. `--doc-id <not_…>` force-imports one note (bypasses the folder/window scan) for operator recovery.
 
 ## email-sync (Layer 1 — collection)
 

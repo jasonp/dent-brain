@@ -669,6 +669,35 @@ export interface BrainEngine {
    */
   getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
   /**
+   * v0.46.1.0 — fetch a page by a stable frontmatter identity field.
+   *
+   * Returns the first page whose `frontmatter->>$key = $value`, scoped to the
+   * caller's source(s), or null. Soft-deleted rows are hidden unless
+   * `opts.includeDeleted`. `ORDER BY id` makes the result deterministic
+   * (oldest wins) when several rows share the value.
+   *
+   * Powers the `get_page_by_identity` MCP op so ingestors (granola-sync,
+   * future dropbox-sync) can dedup on a stable external id they stamped into
+   * frontmatter (e.g. `granola_document_id`) instead of a title-derived slug.
+   * Title-derived dedup forks a second page whenever the upstream tool renames
+   * the item; identity dedup does not.
+   *
+   * `opts.type` constrains the match to one page type. This disambiguates when
+   * several pages legitimately share an identity value — e.g. granola-sync
+   * stamps the same `granola_document_id` on BOTH a meeting page and its
+   * transcript page, so a caller wanting "the meeting" must pass `type: 'meeting'`
+   * rather than rely on insertion-order luck.
+   *
+   * Source scoping mirrors getPage: federated `sourceIds[]` wins over scalar
+   * `sourceId`; unscoped only for internal callers. A missed scope is a
+   * cross-source read leak, so the op layer always threads `sourceScopeOpts`.
+   */
+  getPageByIdentity(
+    key: string,
+    value: string,
+    opts?: { sourceId?: string; sourceIds?: string[]; includeDeleted?: boolean; type?: string },
+  ): Promise<Page | null>;
+  /**
    * Insert or update a page. When `opts.sourceId` is omitted, the row is
    * written under the schema DEFAULT ('default'). When provided, `source_id`
    * is included in the INSERT column list so ON CONFLICT (source_id, slug)

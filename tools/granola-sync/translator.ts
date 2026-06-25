@@ -83,18 +83,38 @@ function speakerTag(seg: { speaker: { source: string; diarization_label?: string
   return `(${seg.speaker.source ?? '?'})`;
 }
 
-export function translateMeeting(note: Note): TranslatedMeeting {
-  const ev = note.calendar_event;
+/** Derives the FALLBACK meeting slug for a brand-new note — the write target
+ *  used by translateMeeting when no canonicalSlug is supplied (i.e. the note has
+ *  no existing page to reuse). Dedup itself is identity-based (get_page_by_identity
+ *  on granola_document_id), not slug-based, so this is no longer a pre-check key —
+ *  just the slug a first-time ingest lands at. Accepts a bare NoteSummary too (no
+ *  calendar_event → falls back to title + created_at). */
+export function meetingSlugOf(
+  note: Pick<Note, 'id' | 'title' | 'created_at'> & { calendar_event?: Note['calendar_event'] },
+): string {
+  const ev = note.calendar_event ?? null;
   const eventStart = ev?.scheduled_start_time ?? null;
   const isoDate = isoDateOf(eventStart ?? note.created_at);
   const eventTitle = note.title || ev?.event_title || `Untitled meeting (Granola ${note.id.slice(4, 12)})`;
   const titleSlug = kebab(eventTitle || `granola-${note.id.slice(4, 12)}`);
-  const meetingSlug = `meetings/${isoDate}-${titleSlug}`;
+  return `meetings/${isoDate}-${titleSlug}`;
+}
+
+export function translateMeeting(note: Note, opts?: { canonicalSlug?: string }): TranslatedMeeting {
+  const ev = note.calendar_event;
+  const eventStart = ev?.scheduled_start_time ?? null;
+  const isoDate = isoDateOf(eventStart ?? note.created_at);
+  const eventTitle = note.title || ev?.event_title || `Untitled meeting (Granola ${note.id.slice(4, 12)})`;
+  // Prefer the caller-supplied canonical slug (the existing page's slug, when
+  // the note is already in the brain) so a Granola rename updates in place
+  // instead of forking a new page. Everything downstream — transcript slug,
+  // frontmatter, bullet links — derives from this, so the override cascades.
+  const meetingSlug = opts?.canonicalSlug ?? meetingSlugOf(note);
   // Transcripts go into a dedicated sub-namespace so the path-derived slug
   // matches the frontmatter slug (gbrain's slugifySegment collapses consecutive
   // hyphens — a `--transcript` suffix would SLUG_MISMATCH on re-import).
   const transcriptSlug = note.transcript && note.transcript.length > 0
-    ? `meetings/transcripts/${isoDate}-${titleSlug}`
+    ? meetingSlug.replace(/^meetings\//, 'meetings/transcripts/')
     : null;
   const sourceRef = `granola/${note.id}`;
   const { emails, names } = attendeeList(note);
