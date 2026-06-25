@@ -693,6 +693,51 @@ const get_page: Operation = {
   cliHints: { name: 'get', positional: ['slug'] },
 };
 
+const get_page_by_identity: Operation = {
+  name: 'get_page_by_identity',
+  description: 'v0.46.1.0 — look up a single page by a stable frontmatter identity field (e.g. `granola_document_id`), independent of its slug. Built for ingestors that need to dedup on an external id they stamped into frontmatter: a title-slug existence check forks a second page whenever the upstream tool (Granola, Dropbox, …) renames the item, but the identity stays constant. Pass `type` to disambiguate when several pages share the value (e.g. a meeting and its transcript both stamped with the same id). Returns `{ exists: false }` when nothing matches, else `{ exists: true, slug, frontmatter, compiled_truth }` so the caller can both confirm existence and reuse the canonical slug for its next write. Source-scoped; respects allowedSources. For a slug-keyed read use `get_page`.',
+  params: {
+    key: { type: 'string', required: true, description: 'Frontmatter field name to match exactly (e.g. granola_document_id)' },
+    value: { type: 'string', required: true, description: 'Value the frontmatter field must equal' },
+    type: { type: 'string', description: 'Constrain the match to one page type (e.g. "meeting") when several pages share the identity value' },
+    include_deleted: { type: 'boolean', description: 'Surface soft-deleted matches with deleted_at populated (default: false)' },
+  },
+  handler: async (ctx, p) => {
+    const key = ((p.key as string) ?? '').trim();
+    const value = ((p.value as string) ?? '').trim();
+    const type = (p.type as string | undefined) || undefined;
+    const includeDeleted = (p.include_deleted as boolean) === true;
+    // Fail closed on empty identity inputs: `frontmatter->>'' = ''` is a valid
+    // query that would match arbitrary rows. An empty key/value almost always
+    // means the caller's id was undefined/empty upstream — returning a page
+    // here would let an ingestor dedup against the wrong page. Reject instead.
+    if (!key || !value) {
+      throw new OperationError('invalid_input', 'get_page_by_identity requires non-empty key and value');
+    }
+    // Same precedence ladder as get_page (federated array > scalar > nothing).
+    // A missed scope is a cross-source read leak; never hand-roll source filtering.
+    const sourceOpts = sourceScopeOpts(ctx);
+    const page = await ctx.engine.getPageByIdentity(key, value, { includeDeleted, type, ...sourceOpts });
+    if (!page) return { exists: false };
+
+    // Same takes/facts fence privacy boundary as get_page (see its comment):
+    // an untrusted remote reader must not recover fence rows via this read op
+    // any more than via get_page. Strip before returning the body.
+    const isUntrustedReader = ctx.remote === true;
+    const compiled_truth = isUntrustedReader
+      ? stripFactsFence(stripTakesFence(page.compiled_truth), { keepVisibility: ['world'] })
+      : page.compiled_truth;
+    return {
+      exists: true,
+      slug: page.slug,
+      frontmatter: page.frontmatter,
+      compiled_truth,
+      ...(page.deleted_at ? { deleted_at: page.deleted_at } : {}),
+    };
+  },
+  scope: 'read',
+};
+
 const put_page: Operation = {
   name: 'put_page',
   description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
@@ -4810,7 +4855,7 @@ const run_skillopt: Operation = {
 
 export const operations: Operation[] = [
   // Page CRUD
-  get_page, put_page, delete_page, list_pages,
+  get_page, get_page_by_identity, put_page, delete_page, list_pages,
   // v0.26.5 destructive-guard ops (page-level soft-delete + recovery + admin purge)
   restore_page, purge_deleted_pages,
   // Search

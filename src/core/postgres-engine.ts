@@ -925,6 +925,49 @@ export class PostgresEngine implements BrainEngine {
   }
 
   /**
+   * v0.46.1.0 — fetch a page by a stable frontmatter identity field.
+   * See `BrainEngine.getPageByIdentity` for the contract.
+   */
+  async getPageByIdentity(
+    key: string,
+    value: string,
+    opts?: { sourceId?: string; sourceIds?: string[]; includeDeleted?: boolean; type?: string },
+  ): Promise<Page | null> {
+    const sql = this.sql;
+    const includeDeleted = opts?.includeDeleted === true;
+    const sourceId = opts?.sourceId;
+    const sourceIds = opts?.sourceIds;
+    // Federated grant (sourceIds[]) wins over scalar sourceId — same precedence
+    // as getPage so identity reads honor allowedSources, not just one source.
+    const sourceCondition =
+      sourceIds && sourceIds.length > 0
+        ? sql`AND source_id = ANY(${sourceIds}::text[])`
+        : sourceId
+          ? sql`AND source_id = ${sourceId}`
+          : sql``;
+    // Optional type filter disambiguates pages that legitimately share the
+    // identity value (e.g. a meeting page and its transcript both stamped with
+    // the same granola_document_id) — without it, ORDER BY id picks by
+    // insertion luck.
+    const typeCondition = opts?.type ? sql`AND type = ${opts.type}` : sql``;
+    const deletedCondition = includeDeleted ? sql`` : sql`AND deleted_at IS NULL`;
+    // `frontmatter->>${key}` binds key as the text operand of ->> (not SQL
+    // interpolation) — no JSONB encoding, no injection surface. ORDER BY id
+    // returns the oldest match so a pre-existing duplicate can't shadow the
+    // original.
+    const rows = await sql`
+      SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at,
+             source_kind, source_uri, ingested_via, ingested_at
+      FROM pages
+      WHERE frontmatter->>${key} = ${value} ${sourceCondition} ${typeCondition} ${deletedCondition}
+      ORDER BY id
+      LIMIT 1
+    `;
+    if (rows.length === 0) return null;
+    return rowToPage(rows[0]);
+  }
+
+  /**
    * v0.41.13 (#1309) — identity-based dedup pre-check.
    * See `BrainEngine.findDuplicatePage` for the contract.
    */

@@ -860,6 +860,49 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   /**
+   * v0.46.1.0 — fetch a page by a stable frontmatter identity field.
+   * See `BrainEngine.getPageByIdentity` for the contract.
+   */
+  async getPageByIdentity(
+    key: string,
+    value: string,
+    opts?: { sourceId?: string; sourceIds?: string[]; includeDeleted?: boolean; type?: string },
+  ): Promise<Page | null> {
+    const includeDeleted = opts?.includeDeleted === true;
+    const sourceId = opts?.sourceId;
+    const sourceIds = opts?.sourceIds;
+    // `frontmatter->>$1` binds key as the text operand of ->> — no JSONB
+    // encoding, no injection surface.
+    const where: string[] = ['frontmatter->>$1 = $2'];
+    const params: unknown[] = [key, value];
+    // Federated grant (sourceIds[]) wins over scalar sourceId, matching getPage.
+    if (sourceIds && sourceIds.length > 0) {
+      params.push(sourceIds);
+      where.push(`source_id = ANY($${params.length}::text[])`);
+    } else if (sourceId) {
+      params.push(sourceId);
+      where.push(`source_id = $${params.length}`);
+    }
+    // Optional type filter disambiguates pages sharing the identity value
+    // (e.g. a meeting and its transcript both carry granola_document_id).
+    if (opts?.type) {
+      params.push(opts.type);
+      where.push(`type = $${params.length}`);
+    }
+    if (!includeDeleted) {
+      where.push('deleted_at IS NULL');
+    }
+    const { rows } = await this.db.query(
+      `SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at,
+              source_kind, source_uri, ingested_via, ingested_at
+       FROM pages WHERE ${where.join(' AND ')} ORDER BY id LIMIT 1`,
+      params
+    );
+    if (rows.length === 0) return null;
+    return rowToPage(rows[0] as Record<string, unknown>);
+  }
+
+  /**
    * v0.41.13 (#1309) — identity-based dedup pre-check.
    * See `BrainEngine.findDuplicatePage` for the contract.
    */
