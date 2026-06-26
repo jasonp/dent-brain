@@ -341,9 +341,12 @@ function meetingBodyForDetection(note: Note): string {
  * (atomically, in a single append) even when no entities are detected (a
  * placeholder), guaranteeing the sentinel lands.
  *
- * Idempotent: when the page already carries the sentinel (`alreadyHasMentioned`)
- * we skip — never a second section. The `## Mentioned` heading is created by the
- * `section:` splice param, so the block body carries NO heading of its own.
+ * Idempotent two ways: when the page already carries the sentinel
+ * (`alreadyHasMentioned`) we skip the detection + write entirely; and the write
+ * itself uses `replace_section` so it collapses ANY pre-existing `## Mentioned`
+ * (including a duplicate left by an older daemon) into one clean block. The
+ * `## Mentioned` heading is created by the `section:` splice param, so the block
+ * body carries NO heading of its own.
  *
  * Robustness exception: a TRANSIENT detect_entities failure returns `error`
  * WITHOUT writing the marker, so the next run re-fetches and retries detection
@@ -416,7 +419,10 @@ async function appendMentionedToMeeting(
   // human-plausible heading) is what signals "our enrichment finished."
   const lines = matches.length > 0
     ? ['People, companies, and projects mentioned in this meeting (auto-detected from notes + transcript):', '',
-       ...matches.map((m) => `- [[${m.slug}]] (${m.title})`)]
+       // Collapse any whitespace in the title so a title can never inject a
+       // newline + `## …` heading into the section (replace_section assumes the
+       // fragment carries no headings of its own).
+       ...matches.map((m) => `- [[${m.slug}]] (${m.title.replace(/\s+/g, ' ').trim()})`)]
     : ['_No entities auto-detected._'];
   lines.push('', ENRICHED_SENTINEL);
   const block = lines.join('\n') + '\n';
@@ -428,6 +434,9 @@ async function appendMentionedToMeeting(
       slug: meetingSlug,
       section: MENTIONED_SECTION,
       content: block,
+      // Replace, don't append: collapses any pre-existing/duplicate `## Mentioned`
+      // (e.g. left by an older daemon) into one clean block. Idempotent.
+      replace_section: true,
     });
   } catch (e) {
     // Marker write failed — report error so the caller doesn't count it as done.
