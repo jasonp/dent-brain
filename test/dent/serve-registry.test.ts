@@ -56,7 +56,8 @@ describe('dent serve registry', () => {
 
   test('markdown_append_to_page param schema is unchanged', () => {
     const op = byName.get('markdown_append_to_page')!;
-    expect(Object.keys(op.params).sort()).toEqual(['commit_note', 'content', 'section', 'slug']);
+    // v0.46.1.1 added replace_section (idempotent section replace / duplicate collapse).
+    expect(Object.keys(op.params).sort()).toEqual(['commit_note', 'content', 'replace_section', 'section', 'slug']);
     expect(op.params.slug.required).toBe(true);
     expect(op.params.slug.type).toBe('string');
     expect(op.params.content.required).toBe(true);

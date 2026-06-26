@@ -2,6 +2,33 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.1.1] - 2026-06-26
+
+## **Follow-up to v0.46.1.0: granola-sync no longer leaves a meeting page with two `## Mentioned` sections, and a one-time cleanup collapses any that an older daemon already created.**
+
+v0.46.1.0 made the granola-sync enrichment write append its `## Mentioned` block. When the page already had a `## Mentioned` section from an older daemon (which itself wrote a duplicate heading), the append stacked a second block instead of replacing the first — leaving a meeting with two Mentioned sections. The fix gives the write path a real "replace this section" mode and points the daemon at it, so the section is always exactly one block. A bundled script heals pages that already have the duplicate.
+
+`markdown_append_to_page` now accepts `replace_section: true`: when set, every occurrence of the named `## …` heading is removed and one fresh section is written. Default is unchanged (append), so every existing caller behaves exactly as before. This is a general capability — any writer that wants an idempotent, single-instance section can use it.
+
+### To take advantage of v0.46.1.1
+
+1. **If you run granola-sync:** re-install so the daemon uses the replace path — `bash tools/granola-sync/install.sh`, then re-arm. New and re-touched meetings get one clean `## Mentioned` block.
+2. **Heal already-duplicated meetings (one-time):** preview first, then apply:
+   ```bash
+   bun scripts/dent/collapse-duplicate-mentioned.ts --dry-run
+   bun scripts/dent/collapse-duplicate-mentioned.ts
+   ```
+   It only touches granola-authored meeting pages, collapses duplicate `## Mentioned` blocks to one (keeping the richest), and is reversible via `get_versions` / page revert.
+
+### Itemized changes
+
+#### Added
+- `markdown_append_to_page` gains `replace_section` (default false): replace every occurrence of the section with one fresh block instead of appending. Backed by a `replace` mode in `spliceFragment` (`src/dent/db-writer/append.ts`), pinned by new cases in `test/dent/markdown-writer/splice.test.ts`.
+- `scripts/dent/collapse-duplicate-mentioned.ts` — one-time cleanup that collapses duplicate `## Mentioned` sections on granola meeting pages (dry-run by default-safe; reversible).
+
+#### Fixed
+- granola-sync writes its `## Mentioned` block via `replace_section`, so a meeting can no longer accumulate two Mentioned sections across daemon generations. Entity titles are whitespace-collapsed so a title can never inject a stray heading.
+
 ## [0.46.1.0] - 2026-06-25
 
 ## **Granola-sync stops forking duplicate meeting pages when Granola renames a meeting, and a sync killed mid-enrichment now finishes on the next run instead of leaving a half-filed page forever. Meetings are deduped by who they ARE, not what they're titled.**

@@ -89,3 +89,43 @@ describe('spliceFragment — section append', () => {
     expect(r.body).toContain('## Notes\n');
   });
 });
+
+describe('spliceFragment — replace mode (idempotent section + duplicate collapse)', () => {
+  test('replaces an existing single section in place of appending', () => {
+    const body = `# T\n\n## Mentioned\n- old\n`;
+    const r = spliceFragment(body, '- new', 'Mentioned', true);
+    expect(r.sectionCreated).toBe(false); // existed → replaced
+    // Exactly one heading; old content gone, new content present.
+    expect((r.body.match(/^## Mentioned$/gm) ?? []).length).toBe(1);
+    expect(r.body).toContain('- new');
+    expect(r.body).not.toContain('- old');
+  });
+
+  test('collapses DUPLICATE sections into one (the transition-bug shape)', () => {
+    // Two `## Mentioned` blocks, like an older daemon left behind.
+    const body = `# T\n\nintro\n\n## Mentioned\n- a1\n- a2\n\n## Mentioned\n- b1\n`;
+    const r = spliceFragment(body, '- fresh', 'Mentioned', true);
+    expect((r.body.match(/^## Mentioned$/gm) ?? []).length).toBe(1);
+    expect(r.body).toContain('- fresh');
+    expect(r.body).not.toContain('- a1');
+    expect(r.body).not.toContain('- b1');
+    expect(r.body).toContain('intro'); // surrounding content preserved
+  });
+
+  test('creates the section when none exists (sectionCreated true)', () => {
+    const body = `# T\n\nintro\n`;
+    const r = spliceFragment(body, '- first', 'Mentioned', true);
+    expect(r.sectionCreated).toBe(true);
+    expect((r.body.match(/^## Mentioned$/gm) ?? []).length).toBe(1);
+    expect(r.body).toContain('- first');
+  });
+
+  test('replace preserves OTHER sections', () => {
+    const body = `# T\n\n## Notes\n- keep\n\n## Mentioned\n- drop\n`;
+    const r = spliceFragment(body, '- new', 'Mentioned', true);
+    expect(r.body).toContain('## Notes');
+    expect(r.body).toContain('- keep');
+    expect(r.body).not.toContain('- drop');
+    expect(r.body).toContain('- new');
+  });
+});
