@@ -33,6 +33,11 @@ export interface AppendArgs {
   section?: string;
   /** The fragment to splice in. Trailing newline normalized internally. */
   content: string;
+  /** When true (and `section` is set): REPLACE the section instead of appending
+   *  under it — every existing occurrence of the heading is removed and ONE
+   *  fresh section is written with `content`. Makes a section write idempotent
+   *  and collapses accidental duplicates (e.g. a meeting's `## Mentioned`). */
+  replace?: boolean;
   /** Advisory note. Accepted for caller compat (the old path put it in the
    *  git commit message); there is no commit anymore, so it is not persisted. */
   commitNote?: string;
@@ -52,6 +57,9 @@ export type AppendResult =
  *   - Append the fragment just before the next `## `, the next `# `,
  *     or EOF — whichever comes first.
  *   - If the section is missing, create it at EOF and append under it.
+ *   - When `replace` is true: every existing occurrence of the section is
+ *     removed and ONE fresh section is written at EOF with the fragment. This
+ *     makes the write idempotent and collapses accidental duplicate sections.
  *
  * If `section` is null:
  *   - Append the fragment at EOF.
@@ -63,6 +71,7 @@ export function spliceFragment(
   body: string,
   fragment: string,
   section?: string,
+  replace = false,
 ): { body: string; sectionCreated: boolean } {
   const fragNormalized = fragment.endsWith('\n') ? fragment : fragment + '\n';
 
@@ -74,6 +83,28 @@ export function spliceFragment(
   const headingText = section.replace(/^#+\s*/, '').trim();
   const lines = body.split('\n');
   const sectionRe = new RegExp(`^##\\s+${headingText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i');
+
+  if (replace) {
+    // Strip EVERY occurrence of the section (heading through the line before the
+    // next `##`/`#` heading or EOF), then write one fresh section at EOF. This
+    // is idempotent and collapses duplicates that an append-only path created.
+    const kept: string[] = [];
+    let i = 0;
+    let removedAny = false;
+    while (i < lines.length) {
+      if (sectionRe.test(lines[i])) {
+        removedAny = true;
+        i++; // drop the heading
+        while (i < lines.length && !/^#{1,2}\s/.test(lines[i])) i++; // drop its body
+      } else {
+        kept.push(lines[i]);
+        i++;
+      }
+    }
+    const cleaned = kept.join('\n').replace(/\n+$/, '');
+    const sep = cleaned.length === 0 ? '' : '\n\n';
+    return { body: cleaned + sep + `## ${headingText}\n\n` + fragNormalized, sectionCreated: !removedAny };
+  }
 
   let sectionStart = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -155,7 +186,7 @@ export async function appendToPageDb(
     const prior = await readPageMarkdown(engine, args.slug);
     const created = prior == null;
     const priorBody = prior?.markdown ?? bootstrapBody(args.slug);
-    const spliced = spliceFragment(priorBody, args.content, args.section);
+    const spliced = spliceFragment(priorBody, args.content, args.section, args.replace === true);
     guardPageSize(spliced.body);
 
     const pack = activePack ?? await loadActivePackBestEffort();

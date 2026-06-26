@@ -99,6 +99,10 @@ const markdown_append_to_page: Operation = {
       type: 'string',
       description: 'Optional `## …` heading to append under. Created at EOF if missing. Omit to append at EOF.',
     },
+    replace_section: {
+      type: 'boolean',
+      description: 'When true (requires `section`): replace the section instead of appending — every existing occurrence of the heading is removed and ONE fresh section is written. Idempotent; collapses accidental duplicate sections.',
+    },
     commit_note: {
       type: 'string',
       description: 'Optional advisory note about the write. Accepted for compatibility; not persisted.',
@@ -109,6 +113,7 @@ const markdown_append_to_page: Operation = {
     const slug = requireString(p.slug, 'slug');
     const content = requireString(p.content, 'content');
     const section = (p.section as string | undefined) ?? undefined;
+    const replace = (p.replace_section as boolean | undefined) === true;
     const commitNote = (p.commit_note as string | undefined) ?? undefined;
 
     if (!checkWriteRate(tokenKeyFor(ctx as { tokenName?: string }))) {
@@ -122,7 +127,7 @@ const markdown_append_to_page: Operation = {
       return { dry_run: true, action: 'markdown_append_to_page', slug, section };
     }
 
-    const result = await appendToPageDb(ctx.engine, { slug, content, section, commitNote });
+    const result = await appendToPageDb(ctx.engine, { slug, content, section, replace, commitNote });
     if (result.status === 'busy') {
       throw new DentOperationError(
         'rate_limited',
