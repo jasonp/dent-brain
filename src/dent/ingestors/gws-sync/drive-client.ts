@@ -30,9 +30,11 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
-/** Minimal Drive `files` field mask we depend on. */
+/** Minimal Drive `files` field mask we depend on. `shared`/`ownedByMe`/
+ *  `permissions` feed the share-scope filter (readable under metadata.readonly
+ *  for files whose sharing the user can see; absent otherwise). */
 const FILE_FIELDS =
-  'id,name,mimeType,parents,owners(emailAddress,displayName),modifiedTime,webViewLink,driveId,trashed';
+  'id,name,mimeType,parents,owners(emailAddress,displayName),modifiedTime,webViewLink,driveId,trashed,shared,ownedByMe,permissions(emailAddress,type,deleted,expirationTime)';
 
 /** Hard runaway cap on total pages walked in one call. */
 const MAX_PAGES = 200;
@@ -92,6 +94,14 @@ export class DriveClient {
       console.error(`[gws-sync] WARN: listAllDocsAndSheets hit MAX_PAGES (${MAX_PAGES}) cap with more pages pending — result is partial (${all.length} files).`);
     }
     return all;
+  }
+
+  /** The email of the authenticated identity (for the share-scope self set). */
+  async getAuthedEmail(): Promise<string | undefined> {
+    const url = new URL(`${DRIVE_BASE}/about`);
+    url.searchParams.set('fields', 'user(emailAddress)');
+    const json = await this.getJson<{ user?: { emailAddress?: string } }>(url.toString());
+    return json.user?.emailAddress;
   }
 
   /** Seed a changes cursor covering the user's whole corpus. */

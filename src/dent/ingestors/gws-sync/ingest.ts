@@ -24,6 +24,7 @@ import { buildCard } from './card-builder.ts';
 import { resolvePath } from './path-resolver.ts';
 import { classifyChange } from './delta-classifier.ts';
 import { readGwsState, writeChangesToken, writeFullWalkDone } from './state.ts';
+import { shareScopeActive, shouldIncludeByShareScope, type ShareScopeConfig } from './share-scope.ts';
 import {
   IDENTITY_KEY,
   cardTypeForMime,
@@ -43,6 +44,32 @@ export interface GwsSyncOptions {
   now: () => string;
   /** Cap on folder-metadata fetches per tick for path resolution (default 500). */
   maxFolderLookups?: number;
+  /** Share-scope filter. When absent/empty, every file is carded (default). */
+  shareScope?: ShareScopeConfig;
+}
+
+/** Card a file only if it passes the share-scope filter (filter off → always). */
+function included(file: DriveFile, opts: GwsSyncOptions): boolean {
+  if (!shareScopeActive(opts.shareScope)) return true;
+  return shouldIncludeByShareScope(file, opts.shareScope, Date.parse(opts.now()));
+}
+
+/**
+ * Always treat the crawl identity itself as "self", regardless of config. A typo
+ * in GWS_SYNC_SELF_EMAILS would otherwise leave the founder's own email
+ * unsubtracted, turning the filter into include-everything. Best-effort: if we
+ * can't resolve our own identity, the configured self set still applies.
+ */
+async function ensureSelfIdentity(opts: GwsSyncOptions): Promise<void> {
+  if (!shareScopeActive(opts.shareScope)) return;
+  const getAuthed = (opts.client as { getAuthedEmail?: () => Promise<string | undefined> }).getAuthedEmail;
+  if (typeof getAuthed !== 'function') return;
+  try {
+    const email = await getAuthed.call(opts.client);
+    if (email) opts.shareScope.selfEmails.add(email.toLowerCase());
+  } catch {
+    /* best-effort */
+  }
 }
 
 export interface GwsSyncOutcome {
@@ -58,6 +85,7 @@ export interface GwsSyncOutcome {
 
 export async function runGwsSyncTick(engine: BrainEngine, opts: GwsSyncOptions): Promise<GwsSyncOutcome> {
   try {
+    await ensureSelfIdentity(opts);
     const state = await readGwsState(engine);
     if (state.changesPageToken == null) {
       return await seedFullWalk(engine, opts);
@@ -79,13 +107,21 @@ async function seedFullWalk(engine: BrainEngine, opts: GwsSyncOptions): Promise<
   const folders = new FolderCache(opts.client, opts.maxFolderLookups);
   let upserted = 0;
   let skipped = 0;
+  let tombstoned = 0;
   let errors = 0;
   let i = 0;
   for (const file of files) {
     try {
-      const action = await writeCard(engine, opts, file, folders, true /* allowSkip: cheap re-walk after a crash */);
-      if (action === 'upserted') upserted++;
-      else skipped++;
+      if (included(file, opts)) {
+        const action = await writeCard(engine, opts, file, folders, true /* allowSkip: cheap re-walk after a crash */);
+        if (action === 'upserted') upserted++;
+        else skipped++;
+      } else if (await tombstone(engine, file.id)) {
+        // Share-scope excludes this file. The seed sees the FULL list, so it
+        // also removes a card written before the filter (or before the file
+        // was un-shared) — this is what makes a re-seed self-pruning.
+        tombstoned++;
+      }
     } catch {
       errors++;
     }
@@ -97,7 +133,7 @@ async function seedFullWalk(engine: BrainEngine, opts: GwsSyncOptions): Promise<
   }
 
   await writeFullWalkDone(engine, startToken);
-  return { ok: true, mode: 'seed', scanned: files.length, upserted, skipped, tombstoned: 0, errors };
+  return { ok: true, mode: 'seed', scanned: files.length, upserted, skipped, tombstoned, errors };
 }
 
 async function processDeltas(engine: BrainEngine, opts: GwsSyncOptions, token: string): Promise<GwsSyncOutcome> {
@@ -115,12 +151,18 @@ async function processDeltas(engine: BrainEngine, opts: GwsSyncOptions, token: s
         const fileId = change.fileId ?? change.file?.id;
         if (fileId && (await tombstone(engine, fileId))) tombstoned++;
       } else if (action === 'upsert' && change.file) {
-        // Never skip on delta: the changes feed only fires on a REAL change
-        // (incl. a folder move, which leaves modifiedTime untouched), so a
-        // modifiedTime-skip here would strand drive_path. Always refresh.
-        const result = await writeCard(engine, opts, change.file, folders, false);
-        if (result === 'upserted') upserted++;
-        else skipped++;
+        if (!included(change.file, opts)) {
+          // A file that became private / you+excluded-only / restricted loses
+          // its card on the delta that reports the sharing change.
+          if (await tombstone(engine, change.file.id)) tombstoned++;
+        } else {
+          // Never skip on delta: the changes feed only fires on a REAL change
+          // (incl. a folder move, which leaves modifiedTime untouched), so a
+          // modifiedTime-skip here would strand drive_path. Always refresh.
+          const result = await writeCard(engine, opts, change.file, folders, false);
+          if (result === 'upserted') upserted++;
+          else skipped++;
+        }
       }
     } catch {
       errors++;

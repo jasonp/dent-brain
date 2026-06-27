@@ -239,3 +239,69 @@ describe('negative paths', () => {
     expect(out).toMatchObject({ mode: 'delta', tombstoned: 0, errors: 0 });
   });
 });
+
+describe('share-scope filter', () => {
+  const shareScope = {
+    selfEmails: new Set(['jason@dentthefuture.com']),
+    excludePairEmails: new Set(['steve@dentthefuture.com']),
+  };
+  const perm = (email: string) => ({ emailAddress: email, type: 'user' });
+  const jasonOwns = [{ emailAddress: 'jason@dentthefuture.com' }];
+
+  test('seed cards shared files, excludes private + you+Steve-only', async () => {
+    const priv = doc({ id: 'PRIV', name: 'Private', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com')] });
+    const steveOnly = doc({ id: 'STV', name: 'Founder', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com'), perm('steve@dentthefuture.com')] });
+    const shared = doc({ id: 'SHD', name: 'Team doc', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com'), perm('jeff@dentthefuture.com')] });
+    const out = await runGwsSyncTick(engine, { client: fakeClient({ files: [priv, steveOnly, shared] }), now, shareScope });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 1 });
+    expect(await identity('SHD', 'gdrive-doc')).not.toBeNull();
+    expect(await identity('PRIV', 'gdrive-doc')).toBeNull();
+    expect(await identity('STV', 'gdrive-doc')).toBeNull();
+  });
+
+  test('a file that becomes private is tombstoned on the delta', async () => {
+    const shared = doc({ id: 'D2', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com'), perm('jeff@dentthefuture.com')] });
+    await runGwsSyncTick(engine, { client: fakeClient({ files: [shared] }), now, shareScope }); // seed → carded
+    expect(await identity('D2', 'gdrive-doc')).not.toBeNull();
+    const nowPrivate = doc({ id: 'D2', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com')], modifiedTime: '2026-06-29T00:00:00.000Z' });
+    const out = await runGwsSyncTick(engine, {
+      client: fakeClient({ changes: { changes: [{ fileId: 'D2', file: nowPrivate }], newStartPageToken: 't2' } }),
+      now,
+      shareScope,
+    });
+    expect(out).toMatchObject({ mode: 'delta', tombstoned: 1 });
+    expect(await identity('D2', 'gdrive-doc')).toBeNull();
+  });
+
+  test('a re-seed prunes a card whose file is now excluded (the cleanup path)', async () => {
+    const f = doc({ id: 'D3', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com')] }); // private
+    await runGwsSyncTick(engine, { client: fakeClient({ files: [f] }), now }); // no filter → carded
+    expect(await identity('D3', 'gdrive-doc')).not.toBeNull();
+    // Clear the cursor (what GWS_SYNC_RESEED does) to force a re-seed, now with the filter.
+    await engine.executeRaw('UPDATE gws_sync_state SET changes_page_token = NULL WHERE id = 1', []);
+    const out = await runGwsSyncTick(engine, { client: fakeClient({ files: [f] }), now, shareScope });
+    expect(out).toMatchObject({ mode: 'seed', tombstoned: 1, upserted: 0 });
+    expect(await identity('D3', 'gdrive-doc')).toBeNull();
+  });
+
+  test('auto-includes the crawl identity in self, so a self-email typo cannot leak', async () => {
+    const priv = doc({ id: 'AUTOSELF', owners: jasonOwns, permissions: [perm('jason@dentthefuture.com')] });
+    const client = {
+      getAuthedEmail: async () => 'jason@dentthefuture.com',
+      getStartPageToken: async () => 't0',
+      listAllDocsAndSheets: async () => [priv],
+      listChanges: async () => ({ changes: [], newStartPageToken: 't1' }),
+      getFolder: async (id: string) => ({ id, name: 'F', parents: undefined }),
+      getSpreadsheetSchema: async () => ({ tabs: [], dimensions: {} }),
+    } as unknown as DriveClient;
+    // selfEmails holds only a TYPO — without auto-self the founder's own private
+    // doc would leak. ensureSelfIdentity must add the real identity.
+    const out = await runGwsSyncTick(engine, {
+      client,
+      now,
+      shareScope: { selfEmails: new Set(['typo@dentthefuture.com']), excludePairEmails: new Set() },
+    });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 0 });
+    expect(await identity('AUTOSELF', 'gdrive-doc')).toBeNull(); // excluded — identity auto-added to self
+  });
+});
