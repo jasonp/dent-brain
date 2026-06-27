@@ -170,7 +170,7 @@ Strong success criteria let you loop independently.
 ## Reference map (read on demand)
 
 - `docs/reference/runtime-conventions.md` — which Claude surface (Code Desktop vs Cowork) hosts which skill, and why
-- `docs/reference/ingestors.md` — granola-sync + email-sync quick reference
+- `docs/reference/ingestors.md` — granola-sync + email-sync (laptop daemons) + gws-sync (server-side, metadata-only) quick reference
 - `docs/architecture/KEY_FILES.md` — canonical per-file index (current-state, CI-guarded). The older `docs/reference/key-files.md` is a frozen pre-v0.44 snapshot; prefer KEY_FILES.md.
 - `docs/reference/testing.md` — full testing handbook (file taxonomy, isolation lint, canonical PGLite block, `withEnv`, inventory)
 - `docs/reference/release-ops.md` — version locations, migration policy, CHANGELOG voice, GH Actions SHA pinning, community PR waves, E2E DB lifecycle, bulk progress reporting
@@ -982,6 +982,7 @@ itself never holds raw inboxes.
 | `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only). Canonical noise-filter drops bulk-promo first; each teammate's `user/filter.ts` then decides keep/drop with noise + signature hints. Writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
 | `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
+| `gws-sync` | Google Drive/Sheets metadata | Hourly (server-side) | Opt-in, off unless `GWS_SYNC_GOOGLE_*` secrets are set. Crawls your Google Workspace **metadata only** (`drive.metadata.readonly`, sheets structure — never document body or cell values) and files one pointer-card per Doc/Sheet so agents can find the right file and read it live. See [`docs/reference/ingestors.md`](docs/reference/ingestors.md). |
 
 Manage these via the [`/dent-extensions`](skills/dent/dent-extensions/SKILL.md)
 skill — list, install, **setup** (author your `user/filter.ts`),
