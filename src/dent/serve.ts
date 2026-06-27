@@ -53,6 +53,7 @@ import { startExportCron, type ExportCronHandle } from './exporter/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
 import { startGwsSyncCron, DEFAULT_GWS_SYNC_INTERVAL_SECONDS, type GwsSyncCronHandle } from './ingestors/gws-sync/cron.ts';
 import { DriveClient } from './ingestors/gws-sync/drive-client.ts';
+import { parseEmailSet } from './ingestors/gws-sync/share-scope.ts';
 import {
   startNightlyMaintenance,
   DEFAULT_NIGHTLY_HOUR_UTC,
@@ -212,16 +213,33 @@ let gwsSyncCron: GwsSyncCronHandle | null = null;
     if (Number.isFinite(intervalSec) && intervalSec > 0) {
       const client = new DriveClient({ clientId, clientSecret, refreshToken });
       const maxFolderLookupsRaw = Number.parseInt(process.env.GWS_SYNC_MAX_FOLDER_LOOKUPS ?? '', 10);
+      // Share-scope filter: a file gets a card only if shared beyond you (and
+      // beyond a configured set of confidential pairings). Emails come from env
+      // (real PII — never committed). Filter is off when GWS_SYNC_SELF_EMAILS is unset.
+      const selfEmails = parseEmailSet(process.env.GWS_SYNC_SELF_EMAILS);
+      const shareScope = selfEmails.size > 0
+        ? { selfEmails, excludePairEmails: parseEmailSet(process.env.GWS_SYNC_EXCLUDE_PAIR_EMAILS) }
+        : undefined;
+      // One-shot: GWS_SYNC_RESEED forces a full re-walk on next tick by clearing
+      // the cursor — the re-seed is self-pruning, so it removes cards now excluded
+      // by the filter. Unset the var after it runs once.
+      if (process.env.GWS_SYNC_RESEED) {
+        void engine
+          .executeRaw('UPDATE gws_sync_state SET changes_page_token = NULL WHERE id = 1', [])
+          .then(() => console.error('[dent-brain] gws-sync: RESEED requested — cursor cleared, next tick re-walks (unset GWS_SYNC_RESEED after)'))
+          .catch((e: unknown) => console.error(`[dent-brain] gws-sync: reseed reset failed: ${e instanceof Error ? e.message : String(e)}`));
+      }
       gwsSyncCron = startGwsSyncCron(
         engine,
         {
           client,
           now: () => new Date().toISOString(),
           maxFolderLookups: Number.isFinite(maxFolderLookupsRaw) && maxFolderLookupsRaw > 0 ? maxFolderLookupsRaw : undefined,
+          shareScope,
         },
         intervalSec * 1000,
       );
-      console.error(`[dent-brain] gws-sync: every ${intervalSec}s (Docs/Sheets pointer-cards)`);
+      console.error(`[dent-brain] gws-sync: every ${intervalSec}s (Docs/Sheets pointer-cards)${shareScope ? `, share-scope filter on (${selfEmails.size} self, ${shareScope.excludePairEmails.size} excluded-pairs)` : ''}`);
     } else {
       console.error('[dent-brain] gws-sync: disabled (GWS_SYNC_INTERVAL_SECONDS=0)');
     }

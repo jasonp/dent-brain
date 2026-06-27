@@ -29,6 +29,12 @@ export interface DriveFile {
   /** Set when the file lives in a shared drive. */
   driveId?: string;
   trashed?: boolean;
+  /** Whether the file is shared with anyone (My Drive only; absent on shared drives). */
+  shared?: boolean;
+  ownedByMe?: boolean;
+  /** Grantee list, for the share-scope filter. Absent when sharing isn't readable.
+   *  `deleted`/`expirationTime` let the filter ignore grants that confer no live access. */
+  permissions?: Array<{ emailAddress?: string; type?: string; deleted?: boolean; expirationTime?: string }>;
 }
 
 /** Folder node for path resolution (id → name + parents). */

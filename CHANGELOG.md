@@ -2,6 +2,28 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.47.1.0] - 2026-06-26
+
+## **gws-sync now files a pointer-card only for documents that are actually shared with someone else. Anything private to you — or shared only between you and a single confidential collaborator — is left out, so the team-readable brain never points at your private or founder-only material.**
+
+The v0.47.0.0 crawler carded every Doc/Sheet the connected account could see. Because that account is a superset identity, that included material meant for an audience of one. This release adds a share-scope filter: a file earns a card only if it's on a shared drive, shared with a group/domain, or shared with at least one real other person. Excluded: private-to-you, you-and-your-own-other-accounts, you-and-a-single-configured-confidential-contact, and any file whose sharing the crawler can't read (fail closed). It stays metadata-only end to end — the filter reads who a file is shared with, never its contents.
+
+It's self-maintaining. The seed walk sees the full file list, so a re-seed both adds newly-eligible cards and removes cards for files now out of scope; on the hourly delta, a file that gets un-shared loses its card on the same tick. The share decision ignores grants that confer no live access (deleted accounts, expired shares), an unknown permission type can never force a file in, and the crawl identity is always treated as "you" regardless of config — so a misconfigured allowlist can't accidentally publish private docs.
+
+### To take advantage of v0.47.1.0
+
+1. **Most installs: nothing to do.** The filter is off unless `GWS_SYNC_SELF_EMAILS` is set; gws-sync itself stays gated on the `GWS_SYNC_GOOGLE_*` secrets.
+2. **To turn it on:** set `GWS_SYNC_SELF_EMAILS` to your own account(s) and, optionally, `GWS_SYNC_EXCLUDE_PAIR_EMAILS` to any contact whose two-person docs with you should stay private. To prune cards written before the filter, set `GWS_SYNC_RESEED=1` for one boot (the re-seed is self-pruning), then unset it.
+
+### Itemized changes
+
+#### Added
+- `src/dent/ingestors/gws-sync/share-scope.ts` — pure predicate deciding which files earn a pointer-card, configured via `GWS_SYNC_SELF_EMAILS` + `GWS_SYNC_EXCLUDE_PAIR_EMAILS` (env-only; no real identifiers in source). 16 new tests covering the include/exclude table plus deleted/expired/unknown-type hardening and the auto-self guard.
+- `GWS_SYNC_RESEED` one-shot env that clears the cursor on boot to force a self-pruning re-walk.
+
+#### Changed
+- The gws-sync seed and delta paths gate card writes on the share-scope filter; the seed tombstones cards for files that fall out of scope (un-shared, made private). The Drive field mask now reads `shared`/`ownedByMe`/`permissions` — still metadata-only (permissions reveal *who*, never content). The crawl identity is auto-added to the "self" set, and deleted/expired grants plus unknown permission types are handled safe-by-default (they can never force a private doc to be carded).
+
 ## [0.47.0.0] - 2026-06-26
 
 ## **The brain can now point your agents at the right Google Docs and Sheets. A new opt-in ingestor crawls your Workspace and files one lightweight "pointer-card" per document — title, owner, path, link, and (for sheets) tab/column shape — so "what do we know about X" surfaces the doc, and the agent reads the live file. It's a router, not a copy: no document body or cell value ever enters the brain.**

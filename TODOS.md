@@ -29,6 +29,17 @@ Decided 2026-06-26: start metadata-only; do not put LLM summaries on the cards y
   the current `supportsAllDrives`/`includeItemsFromAllDrives` flags, else shared-drive cards go
   stale after the seed.
 
+- [x] **P2.1 — Share-scope filter for the crawler.** A file earns a pointer-card only if shared
+  beyond you (shared drive / group-domain / ≥1 real other person). Excludes private-to-you,
+  you+own-alt-accounts, you+a-configured-confidential-contact, and files whose sharing we can't
+  read (fail closed). Self-pruning seed + delta tombstone-on-unshare. Hardened (ship adversarial
+  review): ignores deleted/expired grants, unknown permission types can't force-include, crawl
+  identity auto-added to "self" so a config typo can't leak. Env: `GWS_SYNC_SELF_EMAILS`,
+  `GWS_SYNC_EXCLUDE_PAIR_EMAILS`, one-shot `GWS_SYNC_RESEED`. **Completed:** v0.47.1.0 (2026-06-26).
+  Reconcile-later (non-blocking): the delta path trusts the changes-feed's embedded `permissions`
+  snapshot; if that ever proves stale, re-fetch authoritative permissions via `files.get` before
+  the include decision on a delta upsert.
+
 - [ ] **P3 — Local-model summarization pass for smarter routing (future, free).** Once
   metadata-only is in and we know where titles under-route, add a script that uses the 35B
   local model on Jason's Mac Mini (zero API cost) to generate *very* basic summaries —
