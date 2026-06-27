@@ -1,5 +1,44 @@
 # TODOS
 
+## Google Workspace knowledge-graph router (filed 2026-06-26 — MVP shipped v0.47.0.0)
+
+Goal: make the dent brain a **router** over Dent's Google Docs/Sheets, not a content
+mirror. The brain holds a lightweight **pointer-card** per document (title, path, owner,
+last-modified, Google Doc ID, mimeType, explicit in-doc links) — *not* the full content.
+Agents query the brain to find the best documents for a question, then read the live
+content via the GWS CLI. This dodges the two killers of full-content ingestion: it barely
+touches the ACL boundary (a card leaks ~a title, not the body) and it sidesteps staleness
+(pointers stay valid as docs change; content is re-resolved live). We are NOT copying the
+granola/email-sync content pipeline — only the cursor/checkpoint resumability idea applies.
+Decided 2026-06-26: start metadata-only; do not put LLM summaries on the cards yet.
+
+- [x] **P2 — Build the metadata-only Drive crawler (MVP).** Shipped as the `gws-sync`
+  ingestor (`src/dent/ingestors/gws-sync/`): server-side hourly crawler, seed full-walk +
+  Drive changes-feed deltas, one metadata-only pointer-card per Doc/Sheet, dedup/rename-safety
+  via `get_page_by_identity` on `gdrive_file_id`, cursor in the new `gws_sync_state` table
+  (survives redeploys), `drive.metadata.readonly` + sheets `properties`-only masks enforce the
+  no-content line. Sheets carry tab names + dimensions (column-header *text* deferred to P3 —
+  needs a cell read). Edges landed as frontmatter (owner/path); doc→doc explicit-link edges
+  deferred to P3 (need body access). Router stays complementary to live Drive search. Gated on
+  `GWS_SYNC_GOOGLE_*` secrets. **Completed:** v0.47.0.0 (2026-06-26).
+
+  Reconcile-later (from the ship adversarial review, all non-blocking): (a) the seed full-walk
+  banks "done" even if `listAllDocsAndSheets` truncated at `MAX_PAGES` (only bites a >200k-doc
+  Workspace; logged a WARN) — decide whether to refuse to bank a truncated seed; (b) verify
+  Drive `changes.getStartPageToken` + `changes.list` actually surface shared-drive deltas with
+  the current `supportsAllDrives`/`includeItemsFromAllDrives` flags, else shared-drive cards go
+  stale after the seed.
+
+- [ ] **P3 — Local-model summarization pass for smarter routing (future, free).** Once
+  metadata-only is in and we know where titles under-route, add a script that uses the 35B
+  local model on Jason's Mac Mini (zero API cost) to generate *very* basic summaries —
+  "memories", just enough routing signal, not full abstracts — and attach them to the
+  pointer-cards. Gate every summarization on `content_hash` so it only re-runs when a doc
+  materially changed. Set the summary length/detail deliberately: more summary = better
+  recall but more ACL surface on the card, so keep it minimal. This is the natural place to
+  also layer the costly semantic edges (doc→entity via `detect_entities`, doc→doc via shared
+  entities) since they need the same per-doc LLM pass.
+
 ## email-sync OAuth: shared Google app / quota (filed 2026-06-14, v0.46.0.0 — DECISION NEEDED)
 
 - [ ] **P2 — Decide how to stop one teammate's Gmail burst from rate-limiting everyone.** All teammates share one "Dent Brain" Google Cloud OAuth app in *test mode*; Gmail per-user/per-project quota is shared and easy to exhaust (this is the structural cause behind the v0.46 429 lockout — the code fix makes a 429 survivable, but doesn't raise the ceiling). Three options, pick one (needs Jason's Google account): **(a)** request a Gmail API quota increase in the GCP project (GCP Console → APIs & Services → Gmail API → Quotas — check whether the limit hit is per-user or per-project first); **(b)** move the app from *test* to *production/verified* (removes the test-user list friction; verification review overhead); **(c)** issue each teammate their own OAuth client so bursts are isolated (most robust, most onboarding change — touches `dent-onboard-teammate` + install env). Filed from the v0.46 bug report §B7.

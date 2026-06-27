@@ -2,6 +2,34 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.47.0.0] - 2026-06-26
+
+## **The brain can now point your agents at the right Google Docs and Sheets. A new opt-in ingestor crawls your Workspace and files one lightweight "pointer-card" per document — title, owner, path, link, and (for sheets) tab/column shape — so "what do we know about X" surfaces the doc, and the agent reads the live file. It's a router, not a copy: no document body or cell value ever enters the brain.**
+
+Google Drive's own search is weak keyword matching, so an agent that doesn't already know a doc exists never finds it. Mirroring the content into the brain would solve discovery but creates two problems we didn't want: it copies content past Google's permission boundary, and it goes stale the moment someone edits the doc. This release takes the third path. The brain holds a metadata-only card per Doc/Sheet and stays a *router* — it narrows thousands of files to the few that matter, and the agent opens the live source through the Google Workspace CLI. Discovery and freshness without the copy.
+
+The no-content guarantee is built in, not promised. Drive is read with the `drive.metadata.readonly` scope, which physically cannot read file bodies. Sheets carry structure only (tab names + row/column counts) via a narrow field mask — never cell values. Cards are deduped on the stable Drive file id, so a rename in Drive updates the card in place instead of forking a second one; a trashed file tombstones its card and an un-trash brings it back. The crawler runs server-side as an hourly job: a one-time full walk seeds the map, then it rides Drive's changes feed for deltas, with the cursor banked in the database so it survives redeploys. A folder move refreshes the card's path even though Google leaves the modified-time untouched.
+
+This is **off by default**. A brain with no Google credentials configured does nothing differently — the job is a silent no-op unless three `GWS_SYNC_GOOGLE_*` secrets are present.
+
+### To take advantage of v0.47.0.0
+
+1. **Most installs: nothing to do.** The crawler is gated on `GWS_SYNC_GOOGLE_*` secrets. With them unset, the new background job never starts and the new `gws_sync_state` table sits empty. Existing brains are unaffected on upgrade.
+2. **To map your own Workspace:** run the one-time consent helper to mint a read-only Drive+Sheets refresh token and set the three secrets on your server —
+   ```bash
+   bun run scripts/dent/gws-sync-oauth.ts --set-railway
+   ```
+   Sign in as the Workspace account whose Docs/Sheets you want mapped, then redeploy. The first hourly tick logs a corpus report (how many Docs/Sheets it can see); cards become searchable after the nightly `embed --stale` pass embeds them.
+
+### Itemized changes
+
+#### Added
+- **`gws-sync` ingestor** (`src/dent/ingestors/gws-sync/`) — server-side hourly crawler that writes one metadata-only pointer-card brain page per Google Doc/Sheet. Modeled on the existing regfox ingestor (pure `card-builder`/`path-resolver`/`delta-classifier` modules, `drive-client`, `ingest` orchestrator, `cron`). Seed full-walk then Drive changes-feed deltas; dedup + rename-safety via `get_page_by_identity` on `gdrive_file_id`; trashed files tombstone, un-trashed files resurrect; all reads/writes source-scoped to `dent`. 37 tests (pure + mocked-client + DB-backed integration).
+- **`drive-client.ts`** — self-contained Drive + Sheets REST client with in-process OAuth refresh. Drive uses `drive.metadata.readonly` (no body access at the scope level); Sheets uses a `properties`-only field mask with `includeGridData=false` (structure, never cell values). Paginated with a `MAX_PAGES` runaway cap that warns on truncation.
+- **Dent migration v5 `gws_sync_state`** (`src/dent/migrate.ts`) — singleton cursor table holding the Drive changes page token, so the crawl resumes across server redeploys. Engine-parity clean (same DDL on Postgres + PGLite).
+- **`scripts/dent/gws-sync-oauth.ts`** — one-time local OAuth helper that mints the read-only refresh token and optionally sets the `GWS_SYNC_GOOGLE_*` secrets directly (`--set-railway`), so the token never lands in shell history or chat.
+- **serve.ts wiring** — the hourly cron starts only when all three `GWS_SYNC_GOOGLE_*` secrets are present; a silent no-op otherwise. Tunable via `GWS_SYNC_INTERVAL_SECONDS` and `GWS_SYNC_MAX_FOLDER_LOOKUPS`.
+
 ## [0.46.1.1] - 2026-06-26
 
 ## **Follow-up to v0.46.1.0: granola-sync no longer leaves a meeting page with two `## Mentioned` sections, and a one-time cleanup collapses any that an older daemon already created.**
