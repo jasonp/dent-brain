@@ -51,6 +51,8 @@ import { assembleServeOps } from './serve-ops.ts';
 import { DENT_SOURCE_ID } from './db-writer/page-io.ts';
 import { startExportCron, type ExportCronHandle } from './exporter/cron.ts';
 import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronHandle } from './ingestors/regfox/cron.ts';
+import { startGwsSyncCron, DEFAULT_GWS_SYNC_INTERVAL_SECONDS, type GwsSyncCronHandle } from './ingestors/gws-sync/cron.ts';
+import { DriveClient } from './ingestors/gws-sync/drive-client.ts';
 import {
   startNightlyMaintenance,
   DEFAULT_NIGHTLY_HOUR_UTC,
@@ -191,6 +193,41 @@ if (process.env.DENT_BRAIN_REGFOX_API_KEY) {
   }
 } else {
   console.error('[dent-brain] regfox-ingestor: not started (DENT_BRAIN_REGFOX_API_KEY unset)');
+}
+
+// Google Workspace knowledge-graph router (gws-sync). Hourly metadata-only
+// crawl of Docs/Sheets → pointer-cards. Gated on the dentthefuture.com OAuth
+// secrets; a silent no-op when any is unset (installs without Google creds run
+// unaffected). Cursor lives in gws_sync_state (survives Railway redeploys).
+let gwsSyncCron: GwsSyncCronHandle | null = null;
+{
+  const clientId = process.env.GWS_SYNC_GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GWS_SYNC_GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GWS_SYNC_GOOGLE_REFRESH_TOKEN;
+  if (clientId && clientSecret && refreshToken) {
+    const intervalSec = Number.parseInt(
+      process.env.GWS_SYNC_INTERVAL_SECONDS ?? String(DEFAULT_GWS_SYNC_INTERVAL_SECONDS),
+      10,
+    );
+    if (Number.isFinite(intervalSec) && intervalSec > 0) {
+      const client = new DriveClient({ clientId, clientSecret, refreshToken });
+      const maxFolderLookupsRaw = Number.parseInt(process.env.GWS_SYNC_MAX_FOLDER_LOOKUPS ?? '', 10);
+      gwsSyncCron = startGwsSyncCron(
+        engine,
+        {
+          client,
+          now: () => new Date().toISOString(),
+          maxFolderLookups: Number.isFinite(maxFolderLookupsRaw) && maxFolderLookupsRaw > 0 ? maxFolderLookupsRaw : undefined,
+        },
+        intervalSec * 1000,
+      );
+      console.error(`[dent-brain] gws-sync: every ${intervalSec}s (Docs/Sheets pointer-cards)`);
+    } else {
+      console.error('[dent-brain] gws-sync: disabled (GWS_SYNC_INTERVAL_SECONDS=0)');
+    }
+  } else {
+    console.error('[dent-brain] gws-sync: not started (GWS_SYNC_GOOGLE_* secrets unset)');
+  }
 }
 
 // Nightly brain maintenance — embed --stale + extract links + backlinks.
@@ -607,6 +644,7 @@ const shutdown = async (signal: string) => {
   try {
     if (exportCron) exportCron.stop();
     if (regfoxCron) regfoxCron.stop();
+    if (gwsSyncCron) gwsSyncCron.stop();
     if (nightlyCron) nightlyCron.stop();
     server.stop(false);
     await engine.disconnect();
