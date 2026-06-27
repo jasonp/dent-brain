@@ -31,7 +31,7 @@ Strong success criteria let you loop independently.
 ## Reference map (read on demand)
 
 - `docs/reference/runtime-conventions.md` — which Claude surface (Code Desktop vs Cowork) hosts which skill, and why
-- `docs/reference/ingestors.md` — granola-sync + email-sync quick reference
+- `docs/reference/ingestors.md` — granola-sync + email-sync (laptop daemons) + gws-sync (server-side, metadata-only) quick reference
 - `docs/architecture/KEY_FILES.md` — canonical per-file index (current-state, CI-guarded). The older `docs/reference/key-files.md` is a frozen pre-v0.44 snapshot; prefer KEY_FILES.md.
 - `docs/reference/testing.md` — full testing handbook (file taxonomy, isolation lint, canonical PGLite block, `withEnv`, inventory)
 - `docs/reference/release-ops.md` — version locations, migration policy, CHANGELOG voice, GH Actions SHA pinning, community PR waves, E2E DB lifecycle, bulk progress reporting

@@ -40,6 +40,7 @@ itself never holds raw inboxes.
 | `email-sync` | Gmail (direct OAuth) | Every 6h (launchd) | Pulls Gmail in a strict scope (the configured `workEmail` only). Canonical noise-filter drops bulk-promo first; each teammate's `user/filter.ts` then decides keep/drop with noise + signature hints. Writes one digest page per UTC day to `inbox/<email-slug>/<date>`. |
 | `mailchimp-ingestor` | Mailchimp audience CSV | Manual + cron | Files audience contacts under `audience/` for ad-hoc lookups. |
 | `regfox-ingestor` | RegFox webhook → server | Real-time | Server-side ingestor that creates/appends entity pages on registration events (Dent conference, etc.). |
+| `gws-sync` | Google Drive/Sheets metadata | Hourly (server-side) | Opt-in, off unless `GWS_SYNC_GOOGLE_*` secrets are set. Crawls your Google Workspace **metadata only** (`drive.metadata.readonly`, sheets structure — never document body or cell values) and files one pointer-card per Doc/Sheet so agents can find the right file and read it live. See [`docs/reference/ingestors.md`](docs/reference/ingestors.md). |
 
 Manage these via the [`/dent-extensions`](skills/dent/dent-extensions/SKILL.md)
 skill — list, install, **setup** (author your `user/filter.ts`),

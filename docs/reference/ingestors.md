@@ -26,9 +26,21 @@ As of v0.39, both ingestors use the **recipe model**: the plugin ships canonical
 - **Filter pipeline:** canonical `noise-filter.ts` (drops bulk-promo senders) → `user/filter.ts` (teammate-authored, runs after noise classification, receives `isNoise` + `isSignature` flags as hints, decides keep/drop) → digest. Daemon fatal-exits without a `user/filter.ts`. Contract: `tools/email-sync/recipe/RECIPE.md`.
 - **Writes to brain:** `inbox/<email-slug>/<YYYY-MM-DD>.md` via `put_page` (db-only, no git commit — pages age out as Layer 2 stamps them `processed: true`)
 
+## gws-sync (server-side, metadata-only)
+
+Unlike granola-sync and email-sync, this one is **not** a per-teammate laptop daemon and has no `user/filter.ts`. It runs server-side inside the brain process and is **off unless three `GWS_SYNC_GOOGLE_*` secrets are set** — a brain without them does nothing differently.
+
+- **Where:** `src/dent/ingestors/gws-sync/` (pure `card-builder`/`path-resolver`/`delta-classifier`, `drive-client`, `ingest` orchestrator, `cron`). One-time consent helper: `scripts/dent/gws-sync-oauth.ts`.
+- **Schedule:** hourly cron wired in `src/dent/serve.ts`, started only when all three `GWS_SYNC_GOOGLE_*` secrets are present (silent no-op otherwise). Tunable via `GWS_SYNC_INTERVAL_SECONDS` and `GWS_SYNC_MAX_FOLDER_LOOKUPS`.
+- **Model: metadata-only router, never content.** A one-time full walk seeds the map, then it rides Drive's changes feed for deltas. The cursor (Drive changes page token) banks in the dent migration v5 `gws_sync_state` table, so the crawl resumes across server redeploys.
+- **No-content guarantee (built in, not promised):** Drive is read with the `drive.metadata.readonly` scope, which can't read file bodies. Sheets carry structure only (tab names + row/column counts) via a `properties`-only field mask with `includeGridData=false` — never cell values.
+- **Auth:** a read-only Drive+Sheets refresh token minted by `scripts/dent/gws-sync-oauth.ts --set-railway`, which can set the `GWS_SYNC_GOOGLE_*` secrets directly so the token never lands in shell history or chat.
+- **Writes to brain:** one metadata-only **pointer-card** page per Google Doc/Sheet (title, owner, path, link; for sheets, tab/column shape). All reads/writes source-scoped to `dent`.
+- **Idempotency:** dedup + rename-safety via `get_page_by_identity` on `gdrive_file_id` (a Drive rename updates the card in place; a folder move refreshes its path). A trashed file tombstones its card; an un-trash resurrects it.
+
 ## Lifecycle (recipe model, v0.39+)
 
-Both ingestors share the same four-step lifecycle:
+This lifecycle applies to the per-teammate laptop daemons (granola-sync, email-sync), not the server-side gws-sync. Both share the same four-step lifecycle:
 
 ```
 install   → plumbing copies to ~/.dent-brain/<id>/. Daemon is inert (no user/filter.ts).
