@@ -118,6 +118,23 @@ export const DENT_MIGRATIONS: DentMigration[] = [
       );
     `,
   },
+  {
+    version: 5,
+    name: 'gws_sync_state',
+    sql: `
+      -- Google Workspace knowledge-graph router (gws-sync) cursor. Single-row
+      -- table: the Drive changes-feed pageToken survives Railway redeploys
+      -- (ephemeral FS rules out a local cursor file). Seed full-walk runs once
+      -- when changes_page_token IS NULL; afterwards only deltas are processed.
+      CREATE TABLE IF NOT EXISTS gws_sync_state (
+        id                 INTEGER     PRIMARY KEY DEFAULT 1,
+        changes_page_token TEXT,
+        last_full_walk_at  TIMESTAMPTZ,
+        last_polled_at     TIMESTAMPTZ,
+        CONSTRAINT gws_sync_state_singleton CHECK (id = 1)
+      );
+    `,
+  },
 ];
 
 export const DENT_LATEST_VERSION = DENT_MIGRATIONS.length > 0
