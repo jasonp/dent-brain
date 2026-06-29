@@ -18,11 +18,13 @@
  */
 
 import type { BrainEngine } from '../../../core/engine.ts';
-import { appendToPageDb } from '../../db-writer/append.ts';
+import { appendToPageDb, spliceFragment } from '../../db-writer/append.ts';
 import { replacePageDb } from '../../db-writer/replace.ts';
+import { readPageMarkdown } from '../../db-writer/page-io.ts';
 import { withDbBatch, type DbBatchHandle } from '../../db-writer/batch.ts';
 import { RegfoxClient } from './api-client.ts';
 import { translateRegistrant, kebabize, type TranslatedRegistrant, type TranslatorOptions } from './translator.ts';
+import { classifyNameMatch, emailsFromMarkdown, mergeEmailIntoFrontmatter } from './identity-match.ts';
 import { readCursor, writeCursor, ALL_FORMS_CURSOR_KEY } from './state.ts';
 import type { RegfoxRegistrant } from './types.ts';
 
@@ -230,18 +232,42 @@ async function ingestOneInBatch(
     }
   }
 
-  // 2. Name match — slug existence check via DB (sees earlier in-batch writes).
+  // 2. Name-slug exists but no email match. Try to confidently resolve it to
+  //    the SAME person (high-precision signals) — append the bullet AND record
+  //    the new email so the next registration matches directly. Else, pending.
   const proposedSlug = `entities/people/${t.proposedSlug}`;
   const existingByName = await batch.readSlug(proposedSlug);
   if (existingByName != null) {
-    // Pending-review row goes through the same batch.
+    const verdict = classifyNameMatch({
+      registrantEmail: t.email,
+      firstName: t.firstName,
+      lastName: t.lastName,
+      candidateEmails: emailsFromMarkdown(existingByName),
+      hasVariants: await hasNameVariants(engine, proposedSlug),
+    });
+    if (verdict.decision === 'append') {
+      const withEmail = t.email ? mergeEmailIntoFrontmatter(existingByName, t.email) : existingByName;
+      const merged = spliceFragment(withEmail, t.bullet, '## Timeline').body;
+      const r = await batch.replacePage({
+        slug: proposedSlug,
+        content: merged,
+        commitNote: `regfox-ingestor: name-match (${verdict.signal}) registrant ${registrant.id}`,
+      });
+      if (r.status !== 'ok') {
+        process.stderr.write(`[regfox-ingestor] batch name-match replace ${proposedSlug} failed: ${r.status === 'error' ? r.error : r.status}\n`);
+        return 'transient_error';
+      }
+      if (t.email) stagedEmailToSlug.set(t.email, proposedSlug);
+      return 'appended';
+    }
+    // Ambiguous — checklist row for human review (same batch).
     const idTag = `regfox-id:${registrant.id}`;
     const pendingSlug = '_ingest/pending_regfox';
     const existingPending = await batch.readSlug(pendingSlug);
     if (existingPending && existingPending.includes(idTag)) {
       return 'pending_review';
     }
-    const reason = `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`;
+    const reason = `slug ${proposedSlug} already exists, no confident email/name signal (${verdict.signal}) — same person with a new email, or two different people sharing a name. Human review.`;
     const line = `- [ ] ${idTag} — ${t.fullName ?? '(no name)'} <${t.email ?? '(no email)'}> — ${reason}`;
     const r = await batch.appendToPage({ slug: pendingSlug, content: line });
     if (r.status === 'error') {
@@ -320,14 +346,32 @@ export async function ingestOne(
     }
   }
 
-  // 2. Name match (slug exists at the proposed slug). Ambiguous — pending review.
+  // 2. Name-slug exists but no email match. Confidently resolve to the same
+  //    person where the signals are strong (and record the new email); else
+  //    defer to human review.
   const proposedSlug = `entities/people/${t.proposedSlug}`;
-  const existingByName = await engine.getPage(proposedSlug);
-  if (existingByName != null) {
-    // The slug exists, but we got here because no email match took us in case 1.
-    // Could be: same person registered with new email, OR two different people
-    // with same kebab-cased name. Defer to human review.
-    await writePendingReview(engine, t, registrant, `slug ${proposedSlug} already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.`);
+  const existingMd = await readPageMarkdown(engine, proposedSlug);
+  if (existingMd != null) {
+    const verdict = classifyNameMatch({
+      registrantEmail: t.email,
+      firstName: t.firstName,
+      lastName: t.lastName,
+      candidateEmails: emailsFromMarkdown(existingMd.markdown),
+      hasVariants: await hasNameVariants(engine, proposedSlug),
+    });
+    if (verdict.decision === 'append') {
+      const withEmail = t.email ? mergeEmailIntoFrontmatter(existingMd.markdown, t.email) : existingMd.markdown;
+      const merged = spliceFragment(withEmail, t.bullet, '## Timeline').body;
+      const result = await replaceWithBusyRetry(engine, {
+        slug: proposedSlug,
+        content: merged,
+        commitNote: `regfox-ingestor: name-match (${verdict.signal}) registrant ${registrant.id}`,
+      });
+      if (result.status === 'ok') return 'appended';
+      process.stderr.write(`[regfox-ingestor] name-match replace ${proposedSlug} failed: ${result.status === 'error' ? result.error : result.status}\n`);
+      return 'transient_error';
+    }
+    await writePendingReview(engine, t, registrant, `slug ${proposedSlug} already exists, no confident email/name signal (${verdict.signal}) — same person with a new email, or two different people sharing a name. Human review.`);
     return 'pending_review';
   }
 
@@ -391,6 +435,20 @@ async function replaceWithBusyRetry(
     await new Promise((r) => setTimeout(r, BUSY_RETRY_BACKOFF_MS));
   }
   return replacePageDb(engine, args);
+}
+
+/**
+ * True iff a disambiguated same-name page (`<baseSlug>-<N>`) already exists —
+ * a KNOWN name collision (e.g. two real "Everett Harper"s). When set, the
+ * name-based (Tier B) match signals are no longer safe to auto-merge, because
+ * a name-only signal can't say WHICH same-named person it is.
+ */
+async function hasNameVariants(engine: BrainEngine, baseSlug: string): Promise<boolean> {
+  const rows = await engine.executeRaw<{ slug: string }>(
+    `SELECT slug FROM pages WHERE deleted_at IS NULL AND slug LIKE $1`,
+    [`${baseSlug}-%`],
+  );
+  return rows.some((r) => /^-[0-9]+$/.test(r.slug.slice(baseSlug.length)));
 }
 
 interface EmailMatch {

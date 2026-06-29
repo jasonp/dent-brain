@@ -2,6 +2,32 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.48.0.0] - 2026-06-28
+
+## **Two reliability fixes for ingestion: freshly-ingested pages can't silently fall out of search anymore, and a returning attendee who registers with a new email lands on their existing page instead of a review pile.**
+
+Embedding used to run only as one phase of the once-a-day maintenance cycle. A transient hiccup in that slot left newly-ingested pages un-embedded — present in the database but invisible to search — until the next night, and when the hiccup recurred the backlog just grew. This release gives embedding its own dedicated cron on a short interval; because the embed pass is idempotent and resumable, a failure now self-heals within an interval instead of stranding data for a day-plus. The maintenance cycle also names which phase failed and why, instead of logging a bare failure count, so the next stall is diagnosable from the logs alone.
+
+The RegFox ingestor stops sending returning attendees to manual review. It used to match registrants by exact email only, so anyone who registered with a new address (changed jobs, used a personal email) failed the match, collided with their existing name page, and got parked in a pending-review file. A high-precision identity matcher now resolves those: it confidently merges when the new email is tied to the existing page (shared custom domain, or the same handle across providers) or clearly to the person (a personal domain named after the surname, or the full name inside the address), records the new address so the next registration matches directly, and leaves only genuinely ambiguous cases for review. Freemail, reserved, and role addresses never count as a signal, and a known same-name split suppresses name-only matches so two different people who share a name are never merged.
+
+### To take advantage of v0.48.0.0
+
+1. **Most installs: nothing to do.** The embed cron starts automatically and polls every 90 minutes by default. Set `DENT_BRAIN_EMBED_POLL_INTERVAL_SECONDS` to tune the interval, or `0` to disable it.
+2. **If search has been missing recently-ingested pages,** the embed cron picks them up on its next tick after upgrade — no manual backfill required.
+
+### Itemized changes
+
+#### Added
+- `src/dent/embed-cron.ts` — dedicated `embed --stale` cron, decoupled from the once-daily maintenance cycle so a transient embed failure self-heals within an interval instead of stranding newly-ingested chunks (invisible to vector search) until the next night. Re-entrancy guard, boundary error-catching, env `DENT_BRAIN_EMBED_POLL_INTERVAL_SECONDS` (default `5400`; `0` disables). Tests in `test/dent/embed-cron.test.ts`.
+- `src/dent/ingestors/regfox/identity-match.ts` — pure, high-precision name-collision classifier. Tier A (shared custom domain, shared local-part across providers) ties the new email to the existing page; Tier B (surname-as-domain, full-name / initial-surname in the local-part) ties it to the name and is suppressed when same-name `<slug>-N` variants exist. Records the matched email into frontmatter `emails[]` so the next registration matches directly. Tests in `test/dent/ingestors/regfox/identity-match.test.ts` plus new integration cases in `ingest.test.ts`.
+
+#### Changed
+- The RegFox ingestor's name-collision step (both the batch and non-batch paths) now confidently auto-merges returning attendees and records their new email, instead of always deferring to `_ingest/pending_regfox`. Freemail / reserved (`example.com`) / role (`contact@`) addresses never produce a signal; genuinely ambiguous registrations still go to pending. `translateRegistrant` now exposes `firstName` / `lastName`.
+- `src/dent/nightly-maintenance.ts` logs each failed phase's name and `class/code: message` instead of only a `failed=N/M` count.
+
+#### Fixed
+- Embedding no longer stalls silently when a single maintenance run fails: the dedicated cron retries on its own interval, so newly-ingested pages stay searchable within an interval or two.
+
 ## [0.47.1.0] - 2026-06-26
 
 ## **gws-sync now files a pointer-card only for documents that are actually shared with someone else. Anything private to you — or shared only between you and a single confidential collaborator — is left out, so the team-readable brain never points at your private or founder-only material.**

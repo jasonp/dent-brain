@@ -198,4 +198,60 @@ describe('ingestOne — DB-backed end-to-end', () => {
     const outcome = await ingestOne(engine, baseRegistrant({ orderEmail: 'casey@example.com' }));
     expect(outcome).toBe('appended');
   });
+
+  // ── Broadened name-collision resolution (v2): confidently merge returning
+  // attendees whose new email didn't exact-match, and RECORD the new email.
+  test('name-match: shared custom domain → appended + new email recorded', async () => {
+    await engine.putPage('entities/people/dana-corey', {
+      type: 'person', title: 'Dana Corey',
+      compiled_truth: '# Dana Corey\n\n## Timeline\n\n- **2020-01-01** | prior.\n',
+      frontmatter: { type: 'person', title: 'Dana Corey', email: 'dana@acme-eng.io' },
+    }, { sourceId: DENT_SOURCE_ID });
+
+    // New registration with a DIFFERENT address on the SAME custom domain.
+    const outcome = await ingestOne(engine, baseRegistrant({
+      orderEmail: 'd.corey@acme-eng.io',
+      billing: { firstName: 'Dana', lastName: 'Corey' },
+    }));
+    expect(outcome).toBe('appended');
+
+    const md = await readPageMarkdown(engine, 'entities/people/dana-corey');
+    expect(md!.markdown).toContain('Registered for Test Conf 2026'); // bullet landed
+    expect(md!.markdown).toContain('d.corey@acme-eng.io');           // email recorded → next time email-matches
+    // No stray name-derived stub was created.
+    expect(await engine.getPage('entities/people/dana-corey-1')).toBeNull();
+  });
+
+  test('name-match: surname-as-domain → appended', async () => {
+    await engine.putPage('entities/people/pat-quillfeather', {
+      type: 'person', title: 'Pat Quillfeather',
+      compiled_truth: '# Pat Quillfeather\n\n## Timeline\n\n- **2020-01-01** | prior.\n',
+      frontmatter: { type: 'person', title: 'Pat Quillfeather' }, // no email on file
+    }, { sourceId: DENT_SOURCE_ID });
+
+    const outcome = await ingestOne(engine, baseRegistrant({
+      orderEmail: 'pat@quillfeather.io',
+      billing: { firstName: 'Pat', lastName: 'Quillfeather' },
+    }));
+    expect(outcome).toBe('appended');
+  });
+
+  test('name-match: a known same-name variant (-2) suppresses the name signal → pending', async () => {
+    await engine.putPage('entities/people/pat-quillfeather', {
+      type: 'person', title: 'Pat Quillfeather',
+      compiled_truth: '# Pat Quillfeather\n',
+      frontmatter: { type: 'person', title: 'Pat Quillfeather' },
+    }, { sourceId: DENT_SOURCE_ID });
+    await engine.putPage('entities/people/pat-quillfeather-2', {
+      type: 'person', title: 'Pat Quillfeather',
+      compiled_truth: '# Pat Quillfeather (2)\n',
+      frontmatter: { type: 'person', title: 'Pat Quillfeather' },
+    }, { sourceId: DENT_SOURCE_ID });
+
+    const outcome = await ingestOne(engine, baseRegistrant({
+      orderEmail: 'pat@quillfeather.io',
+      billing: { firstName: 'Pat', lastName: 'Quillfeather' },
+    }));
+    expect(outcome).toBe('pending_review');
+  });
 });

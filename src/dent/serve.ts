@@ -60,6 +60,7 @@ import {
   DEFAULT_NIGHTLY_PHASES,
   type NightlyMaintenanceHandle,
 } from './nightly-maintenance.ts';
+import { startEmbedCron, DEFAULT_EMBED_POLL_INTERVAL_SECONDS, type EmbedCronHandle } from './embed-cron.ts';
 import type { CyclePhase } from '../core/cycle.ts';
 import { runMigrations, LATEST_VERSION as UPSTREAM_LATEST_VERSION } from '../core/migrate.ts';
 import { runDentMigrations, DENT_LATEST_VERSION } from './migrate.ts';
@@ -278,6 +279,24 @@ let nightlyCron: NightlyMaintenanceHandle | null = null;
     );
   } else {
     console.error('[dent-brain] nightly-maintenance: disabled (DENT_BRAIN_NIGHTLY_HOUR_UTC out of range)');
+  }
+}
+
+// Dedicated embed-stale cron. Decoupled from the once-daily nightly cycle so a
+// transient embed failure self-heals within an interval instead of stranding
+// newly-ingested chunks (invisible to vector search) until the next daily run.
+// See embed-cron.ts for the 2026-06-27 incident this prevents.
+let embedCron: EmbedCronHandle | null = null;
+{
+  const embedIntervalRaw = process.env.DENT_BRAIN_EMBED_POLL_INTERVAL_SECONDS;
+  const embedIntervalSec = embedIntervalRaw !== undefined
+    ? Number.parseInt(embedIntervalRaw, 10)
+    : DEFAULT_EMBED_POLL_INTERVAL_SECONDS;
+  if (Number.isFinite(embedIntervalSec) && embedIntervalSec > 0) {
+    embedCron = startEmbedCron(engine, embedIntervalSec * 1000);
+    console.error(`[dent-brain] embed-cron: every ${embedIntervalSec}s (embed --stale)`);
+  } else {
+    console.error('[dent-brain] embed-cron: disabled (DENT_BRAIN_EMBED_POLL_INTERVAL_SECONDS=0)');
   }
 }
 
@@ -664,6 +683,7 @@ const shutdown = async (signal: string) => {
     if (regfoxCron) regfoxCron.stop();
     if (gwsSyncCron) gwsSyncCron.stop();
     if (nightlyCron) nightlyCron.stop();
+    if (embedCron) embedCron.stop();
     server.stop(false);
     await engine.disconnect();
     console.error('[dent-brain] shutdown complete');
