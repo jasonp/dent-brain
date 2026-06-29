@@ -104,10 +104,19 @@ export async function nightlyTick(
       // on the maintenance path should ever pull/import from it.
       pull: false,
     });
-    const failed = report.phases.filter((p) => p.status === 'fail').length;
+    const failedPhases = report.phases.filter((p) => p.status === 'fail');
     console.error(
-      `[dent-brain] nightly-maintenance: done (status=${report.status}, ${report.duration_ms}ms, failed=${failed}/${report.phases.length})`,
+      `[dent-brain] nightly-maintenance: done (status=${report.status}, ${report.duration_ms}ms, failed=${failedPhases.length}/${report.phases.length})`,
     );
+    // Surface WHICH phase failed and WHY. Logging only the count (the prior
+    // behavior) is what left the 2026-06-27 embed stall undiagnosable — the
+    // error scrolled past the buffer with no phase name attached.
+    for (const p of failedPhases) {
+      const errMsg = p.error
+        ? `${p.error.class}/${p.error.code}: ${p.error.message}`
+        : p.summary;
+      console.error(`[dent-brain] nightly-maintenance: phase '${p.phase}' FAILED: ${errMsg.slice(0, 500)}`);
+    }
     return 'fired';
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
