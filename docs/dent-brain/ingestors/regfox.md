@@ -13,12 +13,25 @@ Every tick (default 300s) the ingestor:
    - **Email match** (an existing brain page has `email: <orderEmail>`
      in frontmatter) → append a date-anchored bullet under that page's
      `## Timeline`.
-   - **Name match without email match** (page exists at
-     `entities/people/<kebab-name>` but no email match) → AMBIGUOUS.
-     Could be the same person registering with a new email, or two
-     different people with the same name. The ingestor refuses to
-     guess; writes a checklist row to `_ingest/pending_regfox.md` in
-     the data repo for human review.
+   - **Name-slug exists, no email match** → run the identity matcher
+     (`identity-match.ts`, `classifyNameMatch`). It's the same person
+     registering with a new email far more often than it's a namesake,
+     so the ingestor confidently merges on high-precision signals:
+     - *Tier A* — the new email is tied to the existing page: it shares
+       a custom (non-freemail) domain with a recorded address, or the
+       same local-part across providers. Fires even when same-name
+       variants exist.
+     - *Tier B* — the new email is tied to the name: a personal domain
+       named after the surname, or the full name / initial+surname in
+       the local-part. Suppressed when a `<slug>-N` variant already
+       exists (a known same-name split).
+     On a confident match it appends the bullet AND records the new
+     address into the page's `emails[]` frontmatter, so the *next*
+     registration from that address matches directly. Freemail (gmail),
+     reserved (`example.com`), and role (`contact@`) addresses never
+     count as a signal. Anything without a confident signal stays
+     AMBIGUOUS → a checklist row in `_ingest/pending_regfox` for human
+     review.
    - **No match** → creates a new stub page with rich frontmatter
      (email, regfox_registrant_id, regfox_form_id, etc.) and the
      bullet as the first Timeline entry.
@@ -95,19 +108,25 @@ commits.
 
 ## Pending review
 
-`<data-repo>/_ingest/pending_regfox.md` accumulates rows for registrants
-the ingestor couldn't auto-place. Sample row:
+`_ingest/pending_regfox` accumulates rows for registrants the matcher
+couldn't confidently place. Since v0.48 the identity matcher auto-merges
+the high-precision cases, so this is a small trickle — only registrations
+with an unrelated personal email (no name/domain signal) or a known
+same-name split land here. Sample row:
 
 ```
-- [ ] regfox-id:12345 — Alice Example <alice@example.com> — slug entities/people/alice-example already exists with a different / no email — could be the same person registering with a new email, or two different people with the same name. Human review.
+- [ ] regfox-id:12345 — Alice Example <alice@example.com> — slug entities/people/alice-example already exists, no confident email/name signal (weak_signal) — same person with a new email, or two different people sharing a name. Human review.
 ```
 
 Review and resolve manually:
-- Tick the box and edit the right entity page (or create a new one with
-  a disambiguated slug like `alice-example-2`).
+- Tick the box and edit the right entity page. **Add the registrant's
+  email to that page's `emails[]`** so future registrations from it match
+  directly (this is how the matcher learns).
+- Or create a new page with a disambiguated slug (`alice-example-2`) when
+  it's genuinely a different person.
 - Or delete the line if the registrant should be ignored.
 
-The ingestor skips already-listed registrants on subsequent ticks
+The matcher skips already-listed registrants on subsequent ticks
 (idempotent on `regfox-id:<id>` substring match).
 
 ## Rate limits
