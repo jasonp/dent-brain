@@ -13,6 +13,9 @@ export interface TranslatedRegistrant {
   email: string | null;
   /** Trimmed full name for slug derivation + name-match dedup. */
   fullName: string | null;
+  /** Billing first / last name (for identity matching). Fallback-split from fullName. */
+  firstName: string | null;
+  lastName: string | null;
   /** Kebab-case slug derived from full name (preferred) or email local part. */
   proposedSlug: string;
   /** ISO date (YYYY-MM-DD) of dateCreated, used in the bullet. */
@@ -46,6 +49,7 @@ export function translateRegistrant(
 ): TranslatedRegistrant {
   const email = normalizeEmail(r.orderEmail);
   const fullName = deriveFullName(r);
+  const { firstName, lastName } = deriveNameParts(r, fullName);
   const proposedSlug = deriveSlug(fullName, email);
   const isoDate = isoDateOf(r.dateCreated);
 
@@ -71,7 +75,19 @@ export function translateRegistrant(
 
   const stubBody = `# ${stubFrontmatter.title}\n\nStub created by the RegFox ingestor on ${isoDate}. Run \`/dent-enrich\` after the page accumulates more observations to flesh it out.\n\n## Timeline\n\n${bullet}\n`;
 
-  return { email, fullName, proposedSlug, isoDate, bullet, stubFrontmatter, stubBody };
+  return { email, fullName, firstName, lastName, proposedSlug, isoDate, bullet, stubFrontmatter, stubBody };
+}
+
+/** First/last from billing when present, else split the derived full name. */
+function deriveNameParts(r: RegfoxRegistrant, fullName: string | null): { firstName: string | null; lastName: string | null } {
+  const billing = r.billing ?? {};
+  const first = (billing.firstName ?? '').trim();
+  const last = (billing.lastName ?? '').trim();
+  if (first || last) return { firstName: first || null, lastName: last || null };
+  if (!fullName) return { firstName: null, lastName: null };
+  const toks = fullName.trim().split(/\s+/);
+  if (toks.length === 1) return { firstName: toks[0], lastName: null };
+  return { firstName: toks[0], lastName: toks[toks.length - 1] };
 }
 
 export function normalizeEmail(raw: unknown): string | null {
