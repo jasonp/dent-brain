@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dent The Future, Inc. Brain plugin — Code-mode local installer (v0.47.1.0).
+# Dent The Future, Inc. Brain plugin — Code-mode local installer (v0.48.0.0).
 #
 # Registers plugin/marketplace/ as a local Claude Code marketplace, then
 # installs the plugin from it. This is for Code mode (terminal CLI / Claude
@@ -15,7 +15,7 @@ TARGET_FREEFORM="$HOME/.claude/skills"
 MARKETPLACE_NAME="dent-brain"
 PLUGIN_NAME="dent-brain"
 
-echo "Installing $PLUGIN_NAME plugin v0.47.1.0 via Claude Code marketplace"
+echo "Installing $PLUGIN_NAME plugin v0.48.0.0 via Claude Code marketplace"
 echo "  source: $DIST_DIR"
 echo ""
 
