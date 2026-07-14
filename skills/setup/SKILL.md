@@ -442,12 +442,14 @@ Read `docs/GBRAIN_SKILLPACK.md` Section 18 for the full reference. Key points:
 
 1. **Check the connection first.** GBrain is tuned for the Supabase **Transaction
    pooler** (port 6543): it auto-disables prepared statements there and routes
-   migrations, DDL, and sync transactions to a separate direct connection. That
-   derived direct connection (`db.<ref>.supabase.co:5432`) is IPv6-only, so on an
-   IPv4-only host, reads work but sync silently skips pages. Fix by making the
-   direct connection reachable: set `GBRAIN_DIRECT_DATABASE_URL` to the **Session
-   pooler** string (port 5432 on the `pooler.supabase.com` host, IPv4), or enable
-   Supabase's IPv4 add-on.
+   migrations, DDL, and sync transactions to a separate session-mode connection.
+   GBrain derives that by keeping the same `pooler.supabase.com` host and swapping
+   the port to `5432` (session) — both ports are IPv4, so this works on IPv4-only
+   hosts by default (v0.48.1.0+). Older versions derived the IPv6-only
+   `db.<ref>.supabase.co:5432` and silently skipped sync pages on IPv4 hosts; if
+   you're on an older build, upgrade or set `GBRAIN_DIRECT_DATABASE_URL` to the
+   **Session pooler** string as a stopgap. `GBRAIN_DIRECT_DATABASE_URL` remains an
+   optional override.
 
 2. **Set up automatic sync.** Choose the approach that fits your environment:
    - **Cron** (recommended for agents): register a cron every 5-30 minutes:

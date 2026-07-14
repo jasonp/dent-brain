@@ -88,15 +88,17 @@ find /data/brain -name '*.md' \
 Some difference is normal (files added since last sync), but if page count is
 less than half the file count, sync is silently skipping pages.
 
-**If page count is way too low:** The #1 cause is an unreachable direct
-connection on an IPv4-only host. GBrain uses the Transaction pooler (port 6543)
-for reads, but routes migrations, DDL, and sync transactions to a derived direct
-connection (`db.<ref>.supabase.co:5432`), which is IPv6-only.
-- On an IPv4-only host, reads work but sync transactions fail and silently skip
-  pages.
-- Fix: set `GBRAIN_DIRECT_DATABASE_URL` to the **Session pooler** string (port
-  5432 on the `pooler.supabase.com` host, IPv4), or enable Supabase's IPv4
-  add-on. Then run `gbrain sync --full` to reimport everything.
+**If page count is way too low:** GBrain uses the Transaction pooler (port 6543)
+for reads, but routes migrations, DDL, and sync transactions to a derived
+session-mode connection (same `pooler.supabase.com` host, port 5432). As of
+v0.48.1.0 that derivation is IPv4-reachable by default.
+- Older GBrain derived `db.<ref>.supabase.co:5432` (IPv6-only) instead, so on an
+  IPv4-only host sync transactions failed and silently skipped pages. If you're
+  on a version before v0.48.1.0, upgrade — or set `GBRAIN_DIRECT_DATABASE_URL` to
+  the **Session pooler** string (port 5432 on the `pooler.supabase.com` host) as
+  a stopgap.
+- After confirming the connection, run `gbrain sync --full` to reimport
+  everything.
 
 ### 4b. Embed Check
 

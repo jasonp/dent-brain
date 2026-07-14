@@ -165,23 +165,32 @@ Configure it via:
 gbrain config set database_url "postgresql://postgres.YOUR-PROJECT:YOUR-PASSWORD@aws-0-us-west-1.pooler.supabase.com:6543/postgres"
 ```
 
-### 7c. Fix the IPv4 gotcha for migrations, DDL, and worker locks
+### 7c. Migrations, DDL, and worker locks (works over IPv4 by default)
 
-The transaction pooler (7b) carries your normal reads and writes over IPv4. But GBrain runs schema migrations, DDL, and background-worker locks on a *direct* connection, which it derives from your pooler URL by swapping the host to `db.YOUR-PROJECT.supabase.co:5432`. That direct host is **IPv6-only**. On an IPv4-only host (most Render plans), reads work but migrations hang and worker locks orphan, often silently.
+GBrain runs schema migrations, DDL, and background-worker locks on a second,
+*session-mode* connection that needs a pinned backend (advisory locks and
+`CREATE INDEX CONCURRENTLY` don't work through the transaction pooler). GBrain
+derives that connection from your pooler URL automatically: it keeps the same
+Supavisor host and just swaps the port from `6543` (transaction) to `5432`
+(session). Both ports are **IPv4**, so this works out of the box on IPv4-only
+hosts — no extra config, no add-on.
 
-Two ways to fix it. The free one first:
+> Older GBrain derived the session connection as `db.YOUR-PROJECT.supabase.co:5432`,
+> which is **IPv6-only**. On an IPv4-only host that silently hung migrations and
+> orphaned worker locks, and you had to set `GBRAIN_DIRECT_DATABASE_URL` by hand
+> (or buy Supabase's IPv4 add-on) to fix it. As of v0.48.1.0 the derivation
+> targets the IPv4 session pooler, so neither workaround is needed.
 
-**Free: point GBrain's direct connection at the Session pooler.** The session pooler is the same Supavisor host on port 5432, and it's IPv4. Copy the **Session pooler** string from the same **Connect → Connection String** panel and set it as the direct-connection override:
+**Optional override.** You can still point the session connection somewhere else
+by setting `GBRAIN_DIRECT_DATABASE_URL` (copy the **Session pooler** string from
+**Connect → Connection String**). It's an escape hatch now, not a requirement:
 
 ```bash
 export GBRAIN_DIRECT_DATABASE_URL="postgresql://postgres.YOUR-PROJECT:YOUR-PASSWORD@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
 ```
 
-Now both pools — reads on the transaction pooler (6543), DDL and locks on the session pooler (5432) — run over IPv4 at zero extra cost.
-
-**Paid: buy Supabase's IPv4 add-on.** About $4 a month, Pro tier or higher. It makes the direct `db.*.supabase.co` host reachable over IPv4, so the derived direct connection just works with no extra config. In the Supabase dashboard, **Project Settings → Add-ons → IPv4 address**. Toggle on, wait a minute, retry.
-
-Either fixes it. If `gbrain doctor` still shows connection failures that mention "network unreachable" or hangs forever on connect, you haven't done one of these yet.
+If `gbrain doctor` still shows connection failures that mention "network
+unreachable" or hangs forever on connect, double-check your pooler URL in 7b.
 
 ### 7d. Verify the connection
 
