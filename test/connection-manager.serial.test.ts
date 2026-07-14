@@ -35,35 +35,35 @@ describe('isSupabasePoolerUrl', () => {
 });
 
 describe('deriveDirectUrl', () => {
-  test('swaps pooler hostname + port for known shape', () => {
+  test('swaps to session-mode pooler (port 6543 → 5432, host preserved)', () => {
     const direct = deriveDirectUrl(
       'postgresql://postgres.abcxyz:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres'
     );
     expect(direct).toBeTruthy();
-    expect(direct).toContain('db.abcxyz.supabase.co:5432');
+    // Session pooler = SAME host on :5432 — NOT the IPv6-only db.<ref>.supabase.co.
+    expect(direct).toContain('aws-0-us-east-1.pooler.supabase.com:5432');
+    expect(direct).not.toContain('db.abcxyz.supabase.co'); // never the IPv6-only direct host
     expect(direct).toContain(':secret@'); // creds preserved
   });
 
-  test('strips .<project-ref> suffix from username when going pooler→direct', () => {
-    // Supabase direct connections require bare `postgres`; the `postgres.<ref>`
-    // form is pooler-only (Supavisor uses the suffix for tenant routing).
-    // Without the strip, direct auth fails with "password authentication
-    // failed for user postgres.<ref>" even with the correct password.
+  test('keeps the postgres.<ref> tenant-routing username (session pooler needs it)', () => {
+    // Session mode on the pooler uses the SAME `postgres.<ref>` username as
+    // transaction mode — Supavisor routes by the suffix. Stripping it to bare
+    // `postgres` (as the old db.<ref> derivation did) breaks pooler auth.
     const direct = deriveDirectUrl(
       'postgresql://postgres.abcxyz:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres'
     );
-    expect(direct).toContain('postgres:secret@'); // bare username
-    expect(direct).not.toContain('postgres.abcxyz:secret@'); // no pooler suffix
+    expect(direct).toContain('postgres.abcxyz:secret@'); // pooler suffix retained
   });
 
-  test('falls back to port-only swap when project-ref unparseable', () => {
+  test('preserves a non-standard username on the pooler host', () => {
     const direct = deriveDirectUrl(
       'postgresql://customuser:secret@some.pooler.supabase.com:6543/db'
     );
     expect(direct).toBeTruthy();
     expect(direct).toContain(':5432');
     expect(direct).toContain('some.pooler.supabase.com'); // host preserved
-    expect(direct).toContain('customuser:secret@'); // non-pooler username preserved
+    expect(direct).toContain('customuser:secret@'); // username preserved
   });
 
   test('returns null for non-pooler URL', () => {
@@ -75,6 +75,40 @@ describe('deriveDirectUrl', () => {
       'postgresql://postgres.ref:p@aws.pooler.supabase.com:6543/db?prepare=false'
     );
     expect(direct).toContain('?prepare=false');
+  });
+
+  test('swaps port on a non-pooler host that uses the transaction port', () => {
+    // Port-6543 detection is independent of the pooler hostname (mirrors
+    // isSupabasePoolerUrl's port-only branch). Host is preserved, port → 5432.
+    const direct = deriveDirectUrl('postgresql://u:p@host:6543/db');
+    expect(direct).toBeTruthy();
+    expect(direct).toContain('host:5432');
+  });
+
+  test('returns null when the pooler URL is already session mode (:5432)', () => {
+    // No separate direct endpoint exists — a second pool here would just
+    // duplicate the read pool, so we fall back to single-pool (null).
+    expect(
+      deriveDirectUrl('postgresql://postgres.ref:p@aws.pooler.supabase.com:5432/db')
+    ).toBeNull();
+  });
+
+  test('preserves a username with no password (no stray colon)', () => {
+    const direct = deriveDirectUrl(
+      'postgresql://postgres.ref@aws.pooler.supabase.com:6543/db'
+    );
+    expect(direct).toContain('postgres.ref@aws.pooler.supabase.com:5432');
+    expect(direct).not.toContain('postgres.ref:@'); // no empty-password colon
+  });
+
+  test('omits auth entirely when the URL has no userinfo', () => {
+    const direct = deriveDirectUrl('postgresql://aws.pooler.supabase.com:6543/db');
+    expect(direct).toContain('aws.pooler.supabase.com:5432');
+    expect(direct).not.toContain('@');
+  });
+
+  test('returns null for a malformed URL', () => {
+    expect(deriveDirectUrl('not a url')).toBeNull();
   });
 });
 
@@ -168,7 +202,7 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.isSupabase()).toBe(true);
     expect(cm.isDualPoolActive()).toBe(true);
     expect(cm.describeMode().mode).toBe('split');
-    expect(cm.describeMode().direct_host).toContain('db.abc.supabase.co:5432');
+    expect(cm.describeMode().direct_host).toContain('aws.pooler.supabase.com:5432');
   });
 
   test('kill-switch active → single mode (kill-switch)', () => {

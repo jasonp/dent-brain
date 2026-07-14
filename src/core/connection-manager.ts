@@ -117,51 +117,45 @@ export function isSupabasePoolerUrl(url: string): boolean {
 }
 
 /**
- * Derive a direct (non-pooler) URL from a Supabase pooler URL. Two known shapes:
+ * Derive the session-mode pooler URL from a Supabase transaction-pooler URL.
  *
- *   Pooler hostname: aws-N-region.pooler.supabase.com on port 6543
- *      → swap to db.<project-ref>.supabase.co on port 5432
- *      (project-ref encoded in the user component as postgres.<ref>)
- *   Direct hostname: db.<ref>.supabase.co already on port 5432 → returned as-is
+ * Supabase exposes the same pooler host on two ports:
+ *   - 6543 = transaction mode. No session state: no session-level advisory
+ *            locks, no CREATE INDEX CONCURRENTLY. This is our read/write pool.
+ *   - 5432 = session mode. Dedicated backend per connection — what the DDL /
+ *            direct pool needs for advisory locks and CIC.
  *
- * For the modern shape, we try to extract project-ref from the user component.
- * If we cannot, we fall back to swapping port-only and the caller may warn.
+ * So we keep the pooler host AND the `postgres.<ref>` tenant-routing username
+ * and only swap the port 6543 → 5432.
+ *
+ * We deliberately do NOT rewrite to the direct endpoint db.<project-ref>.supabase.co:
+ * that host is IPv6-only, so IPv4-only deploys (Railway, most CI) get
+ * ECONNREFUSED and the process crash-loops at boot. The session pooler resolves
+ * to the same IPv4 addresses as the transaction pooler, so it is always
+ * reachable wherever the read pool already connected.
  *
  * Returns null when the URL isn't a recognized Supabase pooler.
  */
 export function deriveDirectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));
-    const port = parsed.port;
     const hostname = parsed.hostname;
     const isPoolerHost = SUPABASE_POOLER_HOSTNAME_PATTERNS.some(re => re.test(hostname));
-    if (port !== '6543' && !isPoolerHost) return null;
-    // User part on Supabase pooler is typically `postgres.<project-ref>`.
-    // Extract <project-ref> for the direct hostname.
-    const user = parsed.username || '';
-    const decodedUser = decodeURIComponent(user);
-    const refMatch = decodedUser.match(/^postgres\.([a-z0-9]+)$/i);
-    let directHost = hostname;
-    let directUser = parsed.username;
-    if (refMatch && refMatch[1] && isPoolerHost) {
-      directHost = `db.${refMatch[1]}.supabase.co`;
-      // Supabase direct connections use bare `postgres`; the `postgres.<ref>`
-      // form is pooler-only (Supavisor uses the suffix for tenant routing).
-      // Without this strip, direct auth fails with `password authentication
-      // failed for user "postgres.<ref>"` even though the password is correct.
-      directUser = 'postgres';
-    }
-    // Compose direct URL by swapping host + port. Preserve auth, db, query.
-    parsed.hostname = directHost;
-    parsed.port = '5432';
-    // Reconstruct with the original scheme.
+    if (parsed.port !== '6543' && !isPoolerHost) return null;
+    // Already on the session port? Then the primary pool is itself session-capable
+    // (advisory locks, CIC), so a second pool to the same host:port would just
+    // duplicate the read pool. Return null → single-pool. (Only the 6543→5432
+    // transaction→session swap yields a genuinely distinct direct endpoint.)
+    if (parsed.port === '5432') return null;
+    // Swap transaction port (6543) for session port (5432); preserve host,
+    // auth, db, and query string exactly as given.
     const scheme = url.match(/^postgres(?:ql)?:\/\//i)?.[0] ?? 'postgres://';
-    const auth = directUser
-      ? `${directUser}${parsed.password ? `:${parsed.password}` : ''}@`
+    const auth = parsed.username
+      ? `${parsed.username}${parsed.password ? `:${parsed.password}` : ''}@`
       : '';
     const search = parsed.search ?? '';
     const path = parsed.pathname ?? '';
-    return `${scheme}${auth}${directHost}:5432${path}${search}`;
+    return `${scheme}${auth}${hostname}:5432${path}${search}`;
   } catch {
     return null;
   }
