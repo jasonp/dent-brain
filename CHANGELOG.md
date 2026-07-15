@@ -2,6 +2,30 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.48.1.0] - 2026-07-14
+
+## **GBrain now boots and runs migrations on IPv4-only hosts out of the box. The session connection it derives for DDL and worker locks no longer points at an IPv6-only address, so deploys on Railway (and most CI) stop crash-looping at startup.**
+
+GBrain opens two connections to Supabase: the transaction pooler (port 6543) for reads and writes, and a second session-mode connection for the things the transaction pooler can't do — schema migrations, `CREATE INDEX CONCURRENTLY`, and background-worker advisory locks. It derives that second connection from your pooler URL. The old derivation swapped the host to Supabase's direct endpoint, `db.<ref>.supabase.co`, which Supabase serves over IPv6 only. On an IPv4-only host the connection was refused, the process failed at boot, and the platform's restart budget ran out — the server went dark with a bare `ECONNREFUSED`.
+
+The derivation now keeps the pooler host and swaps only the port, from 6543 (transaction) to 5432 (session). The session pooler resolves to the same IPv4 addresses the read pool already reached, so the DDL connection is reachable wherever reads are, with no manual override and no paid IPv4 add-on. Session mode still gives the pinned backend that advisory locks and concurrent index builds require. If the pooler URL is already on the session port, GBrain now uses a single pool instead of opening a redundant second one to the same endpoint.
+
+### To take advantage of v0.48.1.0
+
+1. **Most installs: nothing to do.** If you set `GBRAIN_DIRECT_DATABASE_URL` by hand to work around the old IPv6 gotcha, you can keep it (it's still honored) or drop it — the automatic derivation now lands on the same session pooler.
+2. **If a deploy was crash-looping at boot with `ECONNREFUSED` to an IPv6 address,** upgrade and redeploy; it will connect over IPv4 on the next start.
+
+### Itemized changes
+
+#### Fixed
+- `deriveDirectUrl` (`src/core/connection-manager.ts`) now derives the Supabase **session pooler** (same `pooler.supabase.com` host, port 6543→5432) instead of the IPv6-only direct host `db.<ref>.supabase.co:5432`. IPv4-only deploys (Railway, most CI) no longer get `ECONNREFUSED` on the DDL/direct pool and crash-loop at boot. The `postgres.<ref>` tenant-routing username is retained (session mode needs it). Tests in `test/connection-manager.serial.test.ts`.
+
+#### Changed
+- A pooler URL already on the session port (`:5432`) now derives to `null` (single-pool) instead of opening a second pool to the same `host:port`. Only the 6543→5432 transaction→session swap produces a distinct direct endpoint.
+
+#### Documentation
+- `docs/tutorials/personal-brain.md`, `docs/guides/live-sync.md`, `docs/GBRAIN_VERIFY.md`, and `skills/setup/SKILL.md`: the old "IPv4 gotcha" workaround (set `GBRAIN_DIRECT_DATABASE_URL` by hand, or buy Supabase's IPv4 add-on) is no longer required; it's now documented as an optional override.
+
 ## [0.48.0.0] - 2026-06-28
 
 ## **Two reliability fixes for ingestion: freshly-ingested pages can't silently fall out of search anymore, and a returning attendee who registers with a new email lands on their existing page instead of a review pile.**

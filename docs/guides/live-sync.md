@@ -15,20 +15,25 @@ with the brain repo automatically. You never have to remember to run sync.
 
 ## Implementation
 
-### Prerequisite: a reachable direct connection
+### Prerequisite: the session connection (reachable over IPv4 by default)
 
 GBrain is tuned for the Supabase **Transaction pooler** (port 6543): it
 auto-disables prepared statements there and routes `engine.transaction()`
-(migrations, DDL, sync imports) to a derived **direct** connection
-(`db.<ref>.supabase.co:5432`). That direct host is IPv6-only, so on an
-IPv4-only host, reads work but sync **silently skips most pages**. This is the
-number one cause of "sync ran but nothing happened."
+(migrations, DDL, sync imports) to a derived **session-mode** connection. GBrain
+derives it by keeping the same `pooler.supabase.com` host and swapping the port
+to `5432` (session mode) — both ports are IPv4, so this works on IPv4-only hosts
+with no extra setup.
 
-Fix: make the direct connection reachable over IPv4. Either set
-`GBRAIN_DIRECT_DATABASE_URL` to the **Session pooler** string (port 5432 on the
-`pooler.supabase.com` host, IPv4), or enable Supabase's IPv4 add-on. Verify by
-running `gbrain sync` and checking that the page count in `gbrain stats` matches
-the syncable file count in the repo.
+> Before v0.48.1.0 the derived connection was `db.<ref>.supabase.co:5432`, which
+> is IPv6-only. On an IPv4-only host that made sync **silently skip most pages** —
+> the number one cause of "sync ran but nothing happened" — and you had to set
+> `GBRAIN_DIRECT_DATABASE_URL` or enable the IPv4 add-on by hand. That's fixed;
+> the derivation now targets the IPv4 session pooler automatically.
+
+`GBRAIN_DIRECT_DATABASE_URL` (a **Session pooler** string, port 5432) is still
+honored as an optional override. Verify a healthy sync by running `gbrain sync`
+and checking that the page count in `gbrain stats` matches the syncable file
+count in the repo.
 
 ### The Primitives
 
