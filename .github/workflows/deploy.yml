@@ -1,0 +1,60 @@
+name: Deploy to Railway
+
+# WHY THIS EXISTS: Railway's native GitHub auto-deploy CANNOT be used for this
+# project. The paid Railway app lives under the `dentthefuture` GitHub account,
+# but this repo is owned by `jasonp`, and the cross-account repo share never
+# surfaces `dent-brain` — so Railway's service `source.repo` is permanently
+# null and merges never auto-deploy. This workflow bypasses that integration
+# entirely: it deploys with a Railway PROJECT TOKEN, which authorizes into
+# Dent's Railway project regardless of which GitHub account owns the repo.
+#
+# Net effect: every push to `main` deploys automatically. No human, no manual
+# `railway up`, no reliance on anyone remembering. The manual `railway up
+# --detach` is now only an emergency fallback (e.g. token expired).
+#
+# REQUIRED SECRET: RAILWAY_TOKEN — a Railway *project token* scoped to the
+# production environment (Railway dashboard → project → Settings → Tokens).
+# Set it with: gh secret set RAILWAY_TOKEN --repo jasonp/dent-brain
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: railway-deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --detach --service dent-brain
+
+      # Deploy is async (build happens after `up` returns). Poll /health — which
+      # reports the running VERSION and probes the DB — until prod flips to the
+      # version in ./VERSION, or fail loudly. Dependency-free: no bun/node needed.
+      - name: Verify production is healthy on the new version
+        run: |
+          EXPECTED="$(cat VERSION)"
+          echo "Expecting production to report version $EXPECTED"
+          for i in $(seq 1 40); do
+            BODY="$(curl -fsS --max-time 10 https://dent-brain.dentthefuture.com/health || true)"
+            V="$(printf '%s' "$BODY" | grep -oE '"version":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
+            if [ "$V" = "$EXPECTED" ]; then
+              echo "✅ production is healthy on $V"
+              exit 0
+            fi
+            echo "… attempt $i: prod reports '${V:-<no response>}', want '$EXPECTED' — waiting 15s"
+            sleep 15
+          done
+          echo "::error::production did not reach version $EXPECTED within ~10 min. Check the Railway build logs; the container may have failed to boot."
+          exit 1
