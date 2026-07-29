@@ -63,11 +63,18 @@ describe('checkZeEmbeddingHealth', () => {
       const check = await checkZeEmbeddingHealth(engine);
       expect(check.status).toBe('warn');
       expect(check.message).toContain('ZEROENTROPY_API_KEY');
-      expect(check.message).toContain('zeroentropy.dev');
+      // Post-sunset the fix is to migrate off ZE, NOT to go get a ZE key —
+      // so the message points at the replacement stack, not dashboard.zeroentropy.dev.
+      expect(check.message).toContain('2026-09-04');
+      expect(check.message).toContain('openai:text-embedding-3-large');
     });
   });
 
-  test('on ZE + env key: ok', async () => {
+  test('on ZE + env key: still warns (sunset), key does not earn an ok', async () => {
+    // Behavior change: a valid ZE key used to be enough for `ok`. It is not
+    // anymore — ZeroEntropy shuts down 2026-09-04, so being on ZE at all is
+    // the finding. A green check here would let a brain sail into the
+    // deadline believing it was healthy.
     configureGateway({
       embedding_model: 'zeroentropyai:zembed-1',
       embedding_dimensions: 1280,
@@ -75,14 +82,15 @@ describe('checkZeEmbeddingHealth', () => {
     });
     await withEnv({ ZEROENTROPY_API_KEY: 'sk-fake-test' }, async () => {
       const check = await checkZeEmbeddingHealth(engine);
-      expect(check.status).toBe('ok');
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('2026-09-04');
     });
   });
 
   // v0.37 fix wave note: ZE key now lives in file plane only (not DB plane).
   // The "config key" path here exercises the file-plane fallback that
   // checkZeEmbeddingHealth checks via loadConfigFileOnly().
-  test('on ZE + env key (file-plane equivalent): ok', async () => {
+  test('on ZE + env key (file-plane equivalent): still warns (sunset)', async () => {
     configureGateway({
       embedding_model: 'zeroentropyai:zembed-1',
       embedding_dimensions: 1280,
@@ -90,7 +98,8 @@ describe('checkZeEmbeddingHealth', () => {
     });
     await withEnv({ ZEROENTROPY_API_KEY: 'sk-fake-from-env' }, async () => {
       const check = await checkZeEmbeddingHealth(engine);
-      expect(check.status).toBe('ok');
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('2026-09-04');
     });
   });
 });

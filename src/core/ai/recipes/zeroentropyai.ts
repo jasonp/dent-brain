@@ -62,6 +62,14 @@ export const zeroentropyai: Recipe = {
       max_payload_bytes: 5_000_000,
     },
   },
+  // ZeroEntropy was acquired by Notion; all products shut down on this date.
+  // Keeps `gbrain init` from auto-provisioning a fresh brain onto a dying
+  // endpoint just because a stale ZEROENTROPY_API_KEY is still in the
+  // environment. Existing ZE brains keep working until the date; migration
+  // guidance lives in skills/migrations/v0.49.0.0.md.
+  sunset_date: '2026-09-04',
   setup_hint:
-    'Get an API key at https://dashboard.zeroentropy.dev, then `export ZEROENTROPY_API_KEY=...`',
+    'ZeroEntropy shuts down 2026-09-04 — new brains should use ' +
+    'openai:text-embedding-3-large + cohere:rerank-v3.5 instead. Existing key: ' +
+    '`export ZEROENTROPY_API_KEY=...`',
 };

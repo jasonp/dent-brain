@@ -22,6 +22,7 @@ import { dashscope } from './dashscope.ts';
 import { zhipu } from './zhipu.ts';
 import { azureOpenAI } from './azure-openai.ts';
 import { zeroentropyai } from './zeroentropyai.ts';
+import { cohere } from './cohere.ts';
 import { llamaServerReranker } from './llama-server-reranker.ts';
 
 const ALL: Recipe[] = [
@@ -42,6 +43,7 @@ const ALL: Recipe[] = [
   zhipu,
   azureOpenAI,
   zeroentropyai,
+  cohere,
 ];
 
 /** Map from `provider:id` key to recipe. */

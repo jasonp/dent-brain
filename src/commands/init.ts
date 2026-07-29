@@ -351,6 +351,11 @@ export async function groupReadyByProvider(
     // still picker-selectable explicitly, but silent auto-pick is wrong UX.
     const required = r.auth_env?.required ?? [];
     if (required.length === 0) continue;
+    // Skip providers with an announced shutdown date. A fresh brain embedded
+    // against an expiring endpoint is a corpus that stops being readable on a
+    // known day — worse than failing loud now with the "no embedding provider"
+    // hint. Explicit `--embedding-model <id>` still reaches them.
+    if (r.sunset_date) continue;
     if (envReady(r, env)) {
       ready.push({ recipeId: r.id, recipe: r });
       seen.add(r.id);
@@ -393,8 +398,9 @@ export async function findEnvKeyTypos(
 function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested: string }>): void {
   console.error('\nNo embedding provider configured. Set one of:');
   console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
-  console.error('  export ZEROENTROPY_API_KEY=ze-…   # zeroentropyai:zembed-1 (2560d, Matryoshka)');
   console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-3-large (1024d)');
+  // ZEROENTROPY_API_KEY is deliberately absent: that API shuts down
+  // 2026-09-04, so pointing a brand-new brain at it would be bad advice.
   console.error('Then re-run: gbrain init --pglite');
   console.error('');
   console.error('Or pick explicitly:');

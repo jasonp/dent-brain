@@ -13,9 +13,20 @@
  */
 
 // v0.36.0 chose ZeroEntropy as the system default after evals showed
-// 11/20 wins vs OpenAI (6) and Voyage (4) on real-corpus benchmarks.
-// 1280 is the closest analog to legacy OpenAI 1536d while staying on
-// the high-recall section of ZE's Matryoshka curve. Valid ZE Matryoshka
-// steps: {2560, 1280, 640, 320, 160, 80, 40} — see ai/dims.ts.
-export const DEFAULT_EMBEDDING_MODEL = 'zeroentropyai:zembed-1';
-export const DEFAULT_EMBEDDING_DIMENSIONS = 1280;
+// 11/20 wins vs OpenAI (6) and Voyage (4) on real-corpus benchmarks. That
+// default is retired here: ZeroEntropy was acquired by Notion and sunsets
+// ALL products on September 4th, 2026, so a fresh install pointed at
+// zembed-1 would provision a brain against a dead endpoint.
+//
+// OpenAI text-embedding-3-large is the replacement, at its native 1536.
+//
+// These constants govern FRESH INSTALLS ONLY. A brain migrating off
+// zembed-1 keeps whatever `embedding_dimensions` it already has (1280 for
+// ZE-era brains) so it can re-embed in place — same vector column, same
+// HNSW index, no schema migration. That path reads the brain's own config,
+// never these defaults, so there is nothing to gain by holding the default
+// at 1280 and a little recall to lose. 1280 remains listed in the openai
+// recipe's `dims_options` (enforced by embedding-dim-check.ts) precisely so
+// those migrated brains stay valid at their existing width.
+export const DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-large';
+export const DEFAULT_EMBEDDING_DIMENSIONS = 1536;

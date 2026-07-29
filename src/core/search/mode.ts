@@ -95,7 +95,7 @@ export interface ModeBundle {
   searchLimit: number;
   /**
    * v0.35.0.0+ — cross-encoder reranker. Off for conservative/balanced,
-   * on for tokenmax. ZeroEntropy zerank-2 by default; can be overridden
+   * on for tokenmax. Cohere rerank-v3.5 by default; can be overridden
    * via `search.reranker.model`. Slots between dedup and token-budget
    * enforcement in hybrid.ts; fail-open on any RerankError (audit-logged).
    * Cost anchor: ~$0.0003/query at tokenmax topNIn=30 × ~400 tokens/chunk
@@ -103,10 +103,10 @@ export interface ModeBundle {
    */
   reranker_enabled: boolean;
   /**
-   * Provider:model for the reranker. Default `'zeroentropyai:zerank-2'`.
-   * Other ZE rerankers (`zerank-1`, `zerank-1-small`) work via the same
-   * recipe; future Cohere/Voyage rerankers drop in as new recipes
-   * declaring `touchpoints.reranker`.
+   * Provider:model for the reranker. Default `'cohere:rerank-v3.5'`.
+   * `cohere:rerank-v4.0-pro` works via the same recipe, as does a
+   * self-hosted zerank-2 through `llama-server-reranker` — every reranker
+   * rides the one wire shape declared by `touchpoints.reranker`.
    */
   reranker_model: string;
   /** Candidates to send upstream (default 30). The full result list always
@@ -294,7 +294,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
     // spend doesn't fit the tier's value prop.
     reranker_enabled: false,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: 'cohere:rerank-v3.5',
     reranker_top_n_in: 30,
     reranker_top_n_out: null,
     reranker_timeout_ms: 5000,
@@ -336,15 +336,17 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     expansion: false,
     searchLimit: 25,
     // v0.36.0.0 (D6): reranker flipped ON for `balanced` mode bundle. The
-    // real-corpus benchmark shows zerank-2 reshuffles 60% of top-1 results
-    // — the headline ZE quality story reaches the 80% of installs that
-    // stay on `balanced`. Per-query rerank cost ~$0.025/M tokens, ~150ms
-    // p50 added latency. Missing ZEROENTROPY_API_KEY is handled via
+    // real-corpus benchmark that justified this measured zerank-2 reshuffling
+    // 60% of top-1 results; the reranker stays on through the Cohere swap on
+    // the premise that a second-stage cross-encoder earns its keep, but that
+    // 60% figure is a ZE measurement and has NOT been re-run against
+    // rerank-v3.5 — treat it as the reason the stage exists, not as a
+    // current-provider benchmark. Missing COHERE_API_KEY is handled via
     // src/core/search/rerank.ts fail-open contract: log to audit JSONL,
     // return input order unchanged. Opt out with
     // `gbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: 'cohere:rerank-v3.5',
     // v0.42.3.0 D4: topNIn = searchLimit (25) so the cross-encoder scores
     // every result the limit slice will return — no unscored tail for autocut
     // to wrongly drop (Codex #2). Was 30; tracking searchLimit is the
@@ -399,7 +401,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // their fee. ~$0.0003/query at this shape; rounding error vs the
     // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: 'cohere:rerank-v3.5',
     // v0.42.3.0 D4: topNIn = searchLimit (50) so every returned result is
     // cross-encoder scored — closes the Codex #2 recall gap where autocut
     // would drop the deliberately-preserved un-reranked tail (results 31-50).

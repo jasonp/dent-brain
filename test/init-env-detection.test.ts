@@ -25,9 +25,14 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     expect(got.map(p => p.recipeId)).toContain('voyage');
   });
 
-  test('ZEROENTROPY_API_KEY alone → zeroentropyai is ready', async () => {
+  test('ZEROENTROPY_API_KEY alone → NOT auto-picked (sunset provider)', async () => {
+    // Behavior change: zeroentropyai declares sunset_date 2026-09-04, and
+    // auto-pick skips any provider with an announced shutdown. Provisioning a
+    // brand-new brain against an expiring endpoint would embed a corpus that
+    // stops being readable on a known date — failing loud is better. Existing
+    // brains and explicit `--embedding-model zeroentropyai:zembed-1` still work.
     const got = await groupReadyByProvider('embedding', { ZEROENTROPY_API_KEY: 'ze-test' });
-    expect(got.map(p => p.recipeId)).toContain('zeroentropyai');
+    expect(got.map(p => p.recipeId)).not.toContain('zeroentropyai');
   });
 
   test('OPENAI_API_KEY + VOYAGE_API_KEY → both providers in ready list', async () => {
