@@ -44,13 +44,17 @@ Three regexes, zero LLM tokens, single SQL `addLinksBatch` call with `INSERT ...
 
 Heuristic link-type inference (`attended`, `works_at`, `invested_in`, `founded`, `advises`) fires from surrounding sentence context — also LLM-free. Power users who want richer types add them via the typed-link blockquote convention.
 
-## ZeroEntropy as reranker: 60% top-1 reshuffle
+## Cross-encoder reranking: why the stage exists
 
-v0.36.0.0 ships ZeroEntropy's `zerank-2` as the default reranker (on for the `balanced` mode bundle). On a real-corpus benchmark across 20 queries, zerank-2 reshuffles **60% of top-1 results** after the hybrid + RRF + graph stack. That's the headline number.
+The default reranker is `cohere:rerank-v3.5`, on for the `balanced` mode bundle. It replaced ZeroEntropy's `zerank-2` in v0.49.0.0 when ZeroEntropy announced it was shutting down on 2026-09-04.
+
+The number that justified adding this stage: on a real-corpus benchmark across 20 queries, `zerank-2` reshuffled **60% of top-1 results** after the hybrid + RRF + graph stack. Treat that as the reason the stage exists, not as a current-provider benchmark — it is a ZeroEntropy measurement and has not been re-run against `rerank-v3.5`.
 
 The mechanical reason: hybrid ranking is locally optimal per strategy but globally suboptimal. A cross-encoder reranker reads the query + each candidate document jointly, with full attention. It catches the cases where the vector + keyword + graph signals all agreed on a document that's semantically related but topically wrong.
 
-The cost: +150ms p50 latency, ~$0.025/M tokens. Disabled with `gbrain config set search.reranker.enabled false`. For agent loops that do downstream LLM work after retrieval, the latency is invisible.
+The cost: roughly +150ms p50 latency. Cohere bills rerank per search rather than per token, so there is no per-token figure. Disabled with `gbrain config set search.reranker.enabled false`. For agent loops that do downstream LLM work after retrieval, the latency is invisible.
+
+**Score scale:** Cohere normalizes `relevance_score` to `[0, 1]` on an explicitly non-linear scale; `zerank-2` did not. Rank-based logic (top-N, autocut's cliff detection) carries over unchanged. Absolute score cutoffs tuned against ZeroEntropy do not, and observed Cohere scores run low in absolute terms — a clearly-correct answer can score ~0.3 while irrelevant candidates sit near 0.01, so a naive `> 0.5` floor would discard good results.
 
 ## Source-aware ranking
 

@@ -14,7 +14,15 @@ export const openai: Recipe = {
     embedding: {
       models: ['text-embedding-3-large', 'text-embedding-3-small'],
       default_dims: 1536,
-      dims_options: [256, 512, 768, 1024, 1536, 3072],
+      // OpenAI accepts ANY dimension in 1..3072 for the text-embedding-3
+      // family (Matryoshka); this list is gbrain's curated subset, not an
+      // upstream constraint, and IS enforced by embedding-dim-check.ts.
+      // 1280 is listed so brains migrating off ZeroEntropy's zembed-1 (which
+      // defaulted to 1280d) can switch provider WITHOUT a vector column
+      // change or an HNSW rebuild — the expensive part of an embedding
+      // migration. Note 3072 exceeds pgvector's 2000-dim index ceiling for
+      // the `vector` type, so it is usable only without an HNSW/IVFFlat index.
+      dims_options: [256, 512, 768, 1024, 1280, 1536, 3072],
       cost_per_1m_tokens_usd: 0.13,
       price_last_verified: '2026-04-20',
       // OpenAI per-request hard cap is 300K tokens. Free/Tier-1 TPM is 1M.

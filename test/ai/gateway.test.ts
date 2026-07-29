@@ -40,13 +40,15 @@ describe('gateway configuration', () => {
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 
-  test('defaults are ZE 1280d as of v0.36.0.0 (D3)', () => {
-    // The default flipped from openai:text-embedding-3-large 1536d to
-    // zeroentropyai:zembed-1 1280d in v0.36.0.0. The cost story is in
-    // CHANGELOG.md; the rationale lives in src/core/ai/gateway.ts:45-54.
+  test('defaults are OpenAI text-embedding-3-large at 1536d', () => {
+    // v0.36.0.0 flipped openai 1536d -> zeroentropyai:zembed-1 1280d; both
+    // flipped back for ZeroEntropy's 2026-09-04 sunset. These govern FRESH
+    // installs only — a brain migrating off zembed-1 keeps its own 1280 and
+    // never reads these constants, so the default returns to OpenAI's native
+    // width rather than being held at 1280 for a path that doesn't use it.
     configureGateway({ env: {} });
-    expect(getEmbeddingModel()).toBe('zeroentropyai:zembed-1');
-    expect(getEmbeddingDimensions()).toBe(1280);
+    expect(getEmbeddingModel()).toBe('openai:text-embedding-3-large');
+    expect(getEmbeddingDimensions()).toBe(1536);
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 });
@@ -143,7 +145,9 @@ describe('model-resolver', () => {
   });
 
   test('resolveRecipe throws AIConfigError for unknown provider', () => {
-    expect(() => resolveRecipe('cohere:embed-v3')).toThrow(AIConfigError);
+    // NOT 'cohere:*' — cohere became a real recipe when it replaced
+    // zerank-2 as the default reranker. Use a provider we will never ship.
+    expect(() => resolveRecipe('not-a-real-provider:some-model')).toThrow(AIConfigError);
   });
 });
 

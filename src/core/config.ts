@@ -41,7 +41,16 @@ export interface GBrainConfig {
    * merge → buildGatewayConfig env dict → recipe reads ZEROENTROPY_API_KEY.
    */
   zeroentropy_api_key?: string;
-  /** AI gateway config (v0.14+). v0.36+ default: "zeroentropyai:zembed-1" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
+  /**
+   * Cohere API key — reranker credential after ZeroEntropy's 2026-09-04
+   * sunset made `cohere:rerank-v3.5` the default reranker. Wired through the
+   * same three planes as `zeroentropy_api_key` above (file plane → loadConfig
+   * env merge → buildGatewayConfig env dict → recipe reads COHERE_API_KEY);
+   * skipping any one of them reproduces the v0.37 bug where the key was
+   * settable but never reached the pipeline.
+   */
+  cohere_api_key?: string;
+  /** AI gateway config (v0.14+). Default: "openai:text-embedding-3-large" / 1280 / "anthropic:claude-haiku-4-5-20251001". */
   embedding_model?: string;
   embedding_dimensions?: number;
   /**
@@ -421,6 +430,7 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
     ...(process.env.ANTHROPIC_API_KEY ? { anthropic_api_key: process.env.ANTHROPIC_API_KEY } : {}),
     ...(process.env.ZEROENTROPY_API_KEY ? { zeroentropy_api_key: process.env.ZEROENTROPY_API_KEY } : {}),
+    ...(process.env.COHERE_API_KEY ? { cohere_api_key: process.env.COHERE_API_KEY } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
     ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
     ...(process.env.GBRAIN_EXPANSION_MODEL ? { expansion_model: process.env.GBRAIN_EXPANSION_MODEL } : {}),
@@ -706,6 +716,14 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'database_path',
   'openai_api_key',
   'anthropic_api_key',
+  // NOTE: `cohere_api_key` and `zeroentropy_api_key` are deliberately absent.
+  // They are file-plane-only (read via loadConfig -> buildGatewayConfig), but
+  // `gbrain config set` writes the DB plane. Listing them here would make
+  // `gbrain config set cohere_api_key ...` succeed while the gateway never
+  // sees the value — the same silent-no-op class the embedding_model guard in
+  // commands/config.ts exists to close. Left unlisted so the unknown-key
+  // rejection fires loudly instead. Set them via COHERE_API_KEY in the
+  // environment or by editing ~/.gbrain/config.json.
   'embedding_model',
   'embedding_dimensions',
   'embedding_disabled',

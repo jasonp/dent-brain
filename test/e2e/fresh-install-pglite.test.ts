@@ -41,11 +41,16 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     // zeroentropyai") before the test body runs.
     origOpenaiKey = process.env.OPENAI_API_KEY;
     origVoyageKey = process.env.VOYAGE_API_KEY;
-    delete process.env.OPENAI_API_KEY;
     delete process.env.VOYAGE_API_KEY;
+    // ZeroEntropy carries a sunset_date, so init's env-detection now skips it
+    // for auto-pick entirely. Isolating on ZE (as this fixture used to) would
+    // leave zero env-ready providers and fail init before the test body runs.
+    // Isolate on OpenAI instead — it is the default provider, which is what
+    // makes the DEFAULT_EMBEDDING_* assertions below meaningful.
+    delete process.env.ZEROENTROPY_API_KEY;
     process.env.GBRAIN_HOME = tmpHome;
     // Stub key so init's setup-hint check passes.
-    process.env.ZEROENTROPY_API_KEY = 'sk-test-ze';
+    process.env.OPENAI_API_KEY = 'sk-test-openai';
   });
 
   afterEach(() => {
@@ -54,8 +59,13 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     else process.env.GBRAIN_HOME = origHome;
     if (origZeKey === undefined) delete process.env.ZEROENTROPY_API_KEY;
     else process.env.ZEROENTROPY_API_KEY = origZeKey;
-    if (origOpenaiKey !== undefined) process.env.OPENAI_API_KEY = origOpenaiKey;
-    if (origVoyageKey !== undefined) process.env.VOYAGE_API_KEY = origVoyageKey;
+    // Delete-on-undefined, not just restore-if-set: this fixture now INJECTS
+    // OPENAI_API_KEY, so a plain restore would leak the stub key to any later
+    // test on a machine where OpenAI was not already in the environment.
+    if (origOpenaiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = origOpenaiKey;
+    if (origVoyageKey === undefined) delete process.env.VOYAGE_API_KEY;
+    else process.env.VOYAGE_API_KEY = origVoyageKey;
     __setEmbedTransportForTests(null);
     // Restore legacy-preload gateway state.
     configureGateway({
@@ -65,7 +75,7 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
     });
   });
 
-  test('bare `init --pglite`: schema sized to gateway defaults (ZE/1280)', async () => {
+  test('bare `init --pglite`: schema sized to gateway defaults (OpenAI/1536)', async () => {
     // Reset gateway so init.ts has to resolve defaults from
     // ai/defaults.ts. This is the actual production code path for a
     // fresh install: bare `gbrain init --pglite` with no env or file

@@ -1877,6 +1877,23 @@ export async function checkZeEmbeddingHealth(engine: BrainEngine): Promise<Check
         message: `Configured embedding model "${model || 'default'}" is not ZeroEntropy — skip.`,
       };
     }
+    // ZeroEntropy sunsets ALL products on 2026-09-04. Past that date a brain
+    // on zeroentropyai:* cannot embed at all, so being on ZE is itself the
+    // finding — a configured key no longer earns an `ok`. The missing-key
+    // case still gets its own message because it is broken TODAY, not just
+    // after the deadline.
+    // NOTE: deliberately does NOT suggest `gbrain config set embedding_model`
+    // or `... cohere_api_key` — both are file-plane fields that config set
+    // cannot write (the former is hard-refused, the latter would be a silent
+    // DB-plane no-op). Point at the file plane and the environment instead.
+    const migrationFix =
+      `Fix: set OPENAI_API_KEY (and COHERE_API_KEY for reranking) in your ` +
+      `environment or ~/.gbrain/config.json, set "embedding_model": ` +
+      `"openai:text-embedding-3-large" in ~/.gbrain/config.json, then re-embed ` +
+      `with \`gbrain embed --all\`. Keep embedding_dimensions at its current ` +
+      `width so the vector column and HNSW index are reused instead of rebuilt. ` +
+      `Full steps: skills/migrations/v0.49.0.0.md.`;
+
     const envKey = process.env.ZEROENTROPY_API_KEY;
     // File plane: zeroentropy_api_key on GBrainConfig (added by C.3).
     const fileKey = loadConfigFileOnly()?.zeroentropy_api_key;
@@ -1885,16 +1902,19 @@ export async function checkZeEmbeddingHealth(engine: BrainEngine): Promise<Check
         name: 'ze_embedding_health',
         status: 'warn',
         message:
-          `embedding_model="${model}" but ZEROENTROPY_API_KEY is not set. ` +
-          `Fix: get a key at https://dashboard.zeroentropy.dev and either ` +
-          `\`export ZEROENTROPY_API_KEY=...\` or edit ~/.gbrain/config.json ` +
-          `to add "zeroentropy_api_key": "...". (gbrain config set writes the DB plane, which the embed pipeline ignores.)`,
+          `embedding_model="${model}" but ZEROENTROPY_API_KEY is not set, ` +
+          `so embedding is failing now. ZeroEntropy also shuts down on ` +
+          `2026-09-04 — migrate rather than provisioning a new ZE key. ` +
+          migrationFix,
       };
     }
     return {
       name: 'ze_embedding_health',
-      status: 'ok',
-      message: `embedding_model="${model}" with key configured`,
+      status: 'warn',
+      message:
+        `embedding_model="${model}" is on ZeroEntropy, which shuts down all ` +
+        `products on 2026-09-04. Embedding works today but stops on that date. ` +
+        migrationFix,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

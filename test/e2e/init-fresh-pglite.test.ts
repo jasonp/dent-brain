@@ -104,8 +104,10 @@ describe('v0.37 T12 — D3 non-TTY no-key fail-loud', () => {
     // Fail-loud message includes the canonical env var list.
     expect(r.stderr).toContain('No embedding provider configured');
     expect(r.stderr).toContain('OPENAI_API_KEY');
-    expect(r.stderr).toContain('ZEROENTROPY_API_KEY');
     expect(r.stderr).toContain('VOYAGE_API_KEY');
+    // ZEROENTROPY_API_KEY is deliberately NOT offered: that API shuts down
+    // 2026-09-04, so a fresh-install setup hint must not point at it.
+    expect(r.stderr).not.toContain('export ZEROENTROPY_API_KEY');
     // Suggests --no-embedding alternative.
     expect(r.stderr).toContain('--no-embedding');
   }, 60000);

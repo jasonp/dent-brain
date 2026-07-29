@@ -2,6 +2,44 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.0.0] - 2026-07-28
+
+## **GBrain's retrieval stack moves off ZeroEntropy, which shuts down on September 4th, 2026. Fresh installs get OpenAI embeddings and Cohere reranking automatically. Existing brains re-embed in place at their current width — same vector column, same index, no schema migration.**
+
+ZeroEntropy was acquired by Notion and is sunsetting all products on 2026-09-04. GBrain used it for both halves of retrieval: `zembed-1` for embeddings and `zerank-2` as the cross-encoder reranker. A brain still pointed at either one stops embedding and stops reranking on that date, so the defaults move now rather than at the deadline.
+
+Embeddings go to `openai:text-embedding-3-large`, and reranking to Cohere's `rerank-v3.5`. The Cohere swap needed no adapter code: its v2 rerank endpoint speaks the same request and response shape GBrain's reranker path already builds and parses, so the integration is a provider recipe and nothing else.
+
+The migration for an existing brain is deliberately cheap. ZE-era brains sit at 1280 dimensions, and `text-embedding-3-large` can be asked for any width up to 3072, so those brains keep 1280 and re-embed in place. That skips the expensive half of an embedding migration: no `ALTER TYPE` on the vector column and no HNSW index rebuild on a corpus that may run to hundreds of megabytes. Only the vectors change. Fresh installs are a separate case and get OpenAI's native 1536.
+
+Two smaller guards ship with it. `gbrain init` no longer auto-selects a provider that has announced a shutdown date, so a stale `ZEROENTROPY_API_KEY` left in your environment can't quietly provision a brand-new brain against an endpoint that expires in weeks — embedding a corpus that stops being readable on a known day is worse than failing loudly. And `gbrain doctor` now flags any brain still on ZeroEntropy even when its key is valid, because a working key no longer means a healthy configuration.
+
+One behavioral note worth carrying into your own tuning: Cohere normalizes relevance scores to `[0, 1]` on a scale that is explicitly not linear, and `zerank-2` did not. Relative ordering is unaffected, so rank-based logic carries over unchanged. Any absolute score cutoff you tuned against ZeroEntropy does not.
+
+### To take advantage of v0.49.0.0
+
+1. **Fresh installs: nothing to do.** Set `OPENAI_API_KEY` (and `COHERE_API_KEY` for reranking) and `gbrain init` picks the new defaults.
+2. **Existing brains on ZeroEntropy: migrate before 2026-09-04.** Set `COHERE_API_KEY`, then set `"embedding_model": "openai:text-embedding-3-large"` in `~/.gbrain/config.json` and re-embed with `gbrain embed --all`. **Leave `embedding_dimensions` at its current value** — matching your existing column is what avoids the index rebuild. Full steps in `skills/migrations/v0.49.0.0.md`.
+3. **API keys go in the environment or `~/.gbrain/config.json`, not `gbrain config set`.** `config set` writes the DB plane, which the gateway does not read; `cohere_api_key` is deliberately rejected there so the mistake fails loudly instead of silently.
+4. **If you tuned absolute reranker score thresholds,** re-tune them against the new scale before trusting them.
+5. **Deployed brains pin the model through environment variables,** which override config. Update `GBRAIN_EMBEDDING_MODEL` there and leave `GBRAIN_EMBEDDING_DIMENSIONS` at its existing width.
+
+### Itemized changes
+
+#### Added
+- `src/core/ai/recipes/cohere.ts` — Cohere provider recipe declaring a reranker touchpoint for `rerank-v3.5` and `rerank-v4.0-pro`. Wire-compatible with the existing `gateway.rerank()` HTTP path (`{model, query, documents, top_n}` → `{results:[{index, relevance_score}]}`), so no adapter shim. Cost is deliberately unset: Cohere bills rerank per search, not per token, so there is no honest per-token figure to publish. Tests in `test/ai/cohere-recipe.test.ts`.
+- `sunset_date` on the `Recipe` type (`src/core/ai/types.ts`). A recipe declaring it is excluded from `gbrain init`'s env-detection auto-pick. Existing brains, configured models, and explicit `--embedding-model <provider>:<model>` are unaffected.
+- `cohere_api_key` config field, wired file plane → `loadConfig` env merge → `buildGatewayConfig` → recipe. Tests in `test/cohere-key-plumbing.test.ts` pin the mapping, the same seam that silently dropped `zeroentropy_api_key` in v0.37.
+- `skills/migrations/v0.49.0.0.md` — canonical migration guide.
+
+#### Changed
+- Default embedding model: `zeroentropyai:zembed-1` (1280d) → `openai:text-embedding-3-large` (1536d). These govern fresh installs only; a migrating brain keeps its own configured width and never reads them.
+- Default reranker: `zeroentropyai:zerank-2` → `cohere:rerank-v3.5`, in `DEFAULT_RERANKER_MODEL` and all three search-mode bundles.
+- `openai` recipe `dims_options` now includes `1280`. The list is enforced by `embedding-dim-check.ts`, so without this entry a ZE-era brain re-embedding at its existing width would be rejected by GBrain's own validator.
+- `zeroentropyai` recipe declares `sunset_date: '2026-09-04'` and its setup hint now points at the replacement stack.
+- `gbrain doctor`'s `ze_embedding_health` check returns `warn` for any brain on `zeroentropyai:*`, including when a valid key is configured. A green check would let a brain sail into the deadline believing it was healthy. The missing-key case keeps its own message because it is broken today, not just after the deadline.
+- `gbrain init`'s "no embedding provider configured" hint no longer offers `ZEROENTROPY_API_KEY` as a setup option.
+
 ## [0.48.1.0] - 2026-07-14
 
 ## **GBrain now boots and runs migrations on IPv4-only hosts out of the box. The session connection it derives for DDL and worker locks no longer points at an IPv6-only address, so deploys on Railway (and most CI) stop crash-looping at startup.**

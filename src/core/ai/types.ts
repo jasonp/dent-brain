@@ -255,6 +255,17 @@ export interface Recipe {
   /** One-line description of setup (shown in wizard + env subcommand). */
   setup_hint?: string;
   /**
+   * ISO date on which this provider's API shuts down, when one is announced.
+   *
+   * Set this and the provider is excluded from `gbrain init`'s env-detection
+   * auto-pick: a brand-new brain must never be silently provisioned onto an
+   * endpoint with a known expiry, because the corpus it embeds becomes
+   * unreadable the day the API goes away. Existing brains are untouched —
+   * the recipe keeps working, configured models keep resolving, and an
+   * explicit `--embedding-model <provider>:<model>` still selects it.
+   */
+  sunset_date?: string;
+  /**
    * v0.32 (D12=A): unified auth resolver across embed / expansion / chat
    * touchpoints. Returns the header name (`Authorization`, `api-key`, etc.)
    * and the full header value (for Bearer-style providers, include the
