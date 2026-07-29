@@ -1,5 +1,19 @@
 # ZeroEntropy — zembed-1 + zerank-2
 
+> **⚠️ Shutting down 2026-09-04.** ZeroEntropy was acquired by Notion and is
+> sunsetting all products on that date. A brain still pointed at
+> `zeroentropyai:*` stops embedding and stops reranking then.
+>
+> As of v0.49.0.0 the defaults are `openai:text-embedding-3-large` and
+> `cohere:rerank-v3.5`, and `gbrain init` no longer auto-selects ZeroEntropy
+> even when `ZEROENTROPY_API_KEY` is set. Migration steps (including how to
+> re-embed in place at your existing width, with no schema change) are in
+> `skills/migrations/v0.49.0.0.md`.
+>
+> ZeroEntropy open-sourced its weights under Apache 2.0, so `zerank-2` can be
+> self-hosted through the `llama-server-reranker` recipe if you need its exact
+> score scale. Everything below documents the hosted API, which goes away.
+
 [ZeroEntropy](https://zeroentropy.dev) ships two specialized small models
 for retrieval pipelines:
 
