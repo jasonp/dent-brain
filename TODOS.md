@@ -1,5 +1,76 @@
 # TODOS
 
+## v0.49.0.0 ZeroEntropy-migration follow-ups (filed 2026-07-31)
+
+### `gbrain embed --all` exits 0 while leaving pages on the previous model
+
+**Priority:** P1
+**Filed:** 2026-07-31, from the production ZeroEntropy → OpenAI cutover (v0.49.0.0).
+
+**What happened:** `embed --all` against the production brain reported
+`[embed.pages] 10563/10563 (100%)` and exited **0**. 139 pages had failed
+mid-run with `canceling statement due to statement timeout`. The ground-truth
+check told a different story:
+
+```
+openai:text-embedding-3-large | 24604
+zeroentropyai:zembed-1        |  4031   <-- 14% of the corpus
+```
+
+**Why it matters:** `embed --all` re-embeds in place and does NOT null a
+chunk before writing. When a page's embed fails, its chunks keep their
+**previous-model vectors**. Those vectors live in a different space than the
+query embedding, so the content is effectively unsearchable — while every
+progress signal, the exit code, and the page count all report success. A
+model migration can therefore look complete and be 14% wrong.
+
+**The part that makes it dangerous:** the natural cleanup, `embed --stale`,
+could not reach most of them. It invalidates on `pages.embedding_signature`
+drift, but NULL signatures are explicitly grandfathered
+(`src/core/engine.ts` — "GRANDFATHER: NULL signature is never invalidated").
+Of the 4,031 stranded chunks:
+
+| Signature | Pages | Chunks | Reachable by `--stale`? |
+|---|---|---|---|
+| `<NULL>` | 77 | 3,626 | **No — grandfathered** |
+| `zeroentropyai:zembed-1:1280` | 145 | 405 | Yes |
+
+So 90% of the damage was invisible to the tool built to repair it. Manual
+remediation was `UPDATE content_chunks SET embedding=NULL, embedded_at=NULL
+WHERE model='<old-model>'` followed by `embed --stale --catch-up`.
+
+**Fix directions (pick one or more):**
+- Track per-page failures in `embed --all` and exit non-zero with a count.
+  "100% complete" must not coexist with silent partial failure.
+- On per-page embed failure, null that page's chunks so the standard
+  `--stale` NULL cursor can recover them.
+- Add a `--verify` / post-run assertion: after `--all`, assert
+  `select count(*) from content_chunks where model <> <current>` is 0.
+- Consider narrowing the NULL-signature grandfather so a *model mismatch*
+  (which is directly observable on `content_chunks.model`) overrides it.
+  Grandfathering protects against mass re-embed on upgrade; it should not
+  protect a chunk that is provably on a dead provider.
+
+**Regression test:** simulate a mid-run page failure under `--all`, then
+assert either a non-zero exit or that a follow-up `--stale` fully converges
+`content_chunks.model` to the configured model.
+
+### Embed path needs a higher `statement_timeout` for large pages
+
+**Priority:** P2
+**Filed:** 2026-07-31, same cutover.
+
+**Evidence:** all 139 failures above were `canceling statement due to
+statement timeout`, clustered on large PDF-derived pages
+(`archives/dropbox/**` LinkedIn-profile and conference-guide PDFs). Small
+pages were unaffected. Throughput on that region dropped from ~140 to
+~20 pages/min.
+
+This is the trigger for the P1 above and will recur on every future bulk
+re-embed or model swap. Options: raise `statement_timeout` for the embed
+connection specifically, or reduce per-statement work (smaller chunk write
+batches) so large pages fit inside the existing budget.
+
 ## Google Workspace knowledge-graph router (filed 2026-06-26 — MVP shipped v0.47.0.0)
 
 Goal: make the dent brain a **router** over Dent's Google Docs/Sheets, not a content
