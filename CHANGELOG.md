@@ -2,6 +2,33 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.1.1] - 2026-08-01
+
+## **Background embedding on the server actually runs now. The embed cron and the nightly maintenance cycle had never successfully embedded anything — every tick failed on an unconfigured AI gateway, and nothing surfaced it.**
+
+`gbrain`'s CLI configures the AI gateway before it embeds. The server never did. So every `embed-cron` tick — and the embed phase of the nightly cycle — failed with `Embedding gateway is not configured.`, retried on the next interval, and failed again.
+
+The failure mode is the dangerous kind: nothing crashes. Chunks stay NULL, vector search quietly returns fewer results than it should, and the only evidence is one stderr line per tick that nobody is reading. A brain in this state looks healthy from every angle that gets checked.
+
+This went undetected twice. Once as a stall where the unembedded backlog grew past a thousand chunks before a manual backfill cleared it, with the failing phase never pinned down. Then again when a provider migration's remaining pages sat unconverted for days because the cron meant to finish them had never once succeeded — while the migration itself reported every page processed and exited 0.
+
+The gateway is now configured once at server boot, before any cron starts, so every background embedder shares it. If it cannot be configured, the server says so loudly at startup instead of discovering it ninety minutes later, one tick at a time.
+
+### To take advantage of v0.49.1.1
+
+1. **Nothing to do.** Look for `[dent-brain] ai-gateway: embedding=<model> (<dims>d)` in your startup logs to confirm it resolved.
+2. **If you see `ai-gateway: FAILED to configure`,** background embedding is off. Check `GBRAIN_EMBEDDING_MODEL` and your provider API key in the server environment.
+3. **If your brain accumulated an unembedded backlog while this was broken,** the cron drains it automatically on its next tick. Confirm with `select count(*) from content_chunks where embedding is null`.
+
+### Itemized changes
+
+#### Fixed
+- `src/dent/serve.ts` now calls `configureGateway(buildGatewayConfig(loadConfig()))` at boot, before `startNightlyMaintenance` and `startEmbedCron`. Previously only `cli.ts` configured the gateway, so every server-side background embedder ran against an unconfigured one and failed on every attempt.
+- A configuration failure is reported at startup with the env vars to check, rather than surfacing as a recurring per-tick error.
+
+#### Added
+- `test/dent/serve-gateway-config.test.ts` — structural guard asserting the server configures the gateway, builds it via `buildGatewayConfig` (the only site that folds file-plane API keys into the gateway env), and does both **before** either cron starts. Ordering is asserted explicitly: configuring after the crons start reintroduces the same failure for early ticks.
+
 ## [0.49.1.0] - 2026-07-31
 
 ## **Large pages no longer silently fail to embed. The embedding write now raises its own timeout ceiling for the duration of the write, so a page big enough to take more than two minutes finishes instead of being cancelled mid-flight.**
