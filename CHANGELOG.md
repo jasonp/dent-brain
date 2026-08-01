@@ -28,6 +28,11 @@ Why this is worth a release rather than a footnote: when the write was cancelled
 
 #### Added
 - `resolveEmbedStatementTimeout()` (`src/core/db.ts`) — reads `GBRAIN_EMBED_STATEMENT_TIMEOUT`, defaults to `10min`. A GUC cannot be parameterized, so the value is interpolated into SQL; anything not matching a strict `<digits><unit>` pattern falls back to the default rather than reaching the server. Tests in `test/embed-statement-timeout.test.ts` cover the injection-safety boundary and assert the default exceeds the 2-minute pooler ceiling it exists to clear.
+## [0.49.0.1] - 2026-07-29
+
+Documentation only. `CLAUDE.md` still instructed a manual `railway redeploy` after every merge and described GitHub → Railway auto-deploy as broken. Both stopped being true when the deploy workflow landed: every push to `main` now deploys via `railway up --detach` under a project token and polls `/health` until production reports the version in `./VERSION`.
+
+The emergency fallback is corrected too. The old instruction said `railway redeploy`, which redeploys the **existing image** rather than building the new commit — it would report success while leaving production on the old code. The fallback is `railway up --detach`.
 
 ## [0.49.0.0] - 2026-07-28
 
