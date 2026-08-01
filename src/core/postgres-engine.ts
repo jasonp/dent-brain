@@ -2186,7 +2186,27 @@ export class PostgresEngine implements BrainEngine {
     //   - new is fresher (embedded_at > existing.embedded_at) → take new
     //   - otherwise → keep existing (slower writer with stale embedding loses)
     // Mirrored in pglite-engine.ts; pinned by test/e2e/concurrent-embed-race.test.ts.
-    await sql.unsafe(
+    // v0.49.1.0: bound this write with a TRANSACTION-SCOPED statement_timeout.
+    //
+    // This is ONE multi-row INSERT carrying a full embedding vector per chunk,
+    // so a PDF-derived page that chunks into hundreds of rows can exceed the
+    // pooler's 2-minute ceiling. Supabase's transaction pooler overrides the
+    // startup `statement_timeout` the client requests (asks 5min, SHOW reports
+    // 2min), so GBRAIN_STATEMENT_TIMEOUT cannot lift it — only SET LOCAL inside
+    // an explicit transaction survives PgBouncer transaction mode.
+    //
+    // Why it matters beyond a slow write: on timeout the page keeps its
+    // PREVIOUS-model vectors while the run reports success, which is how a
+    // ZeroEntropy→OpenAI migration left 14% of the corpus on the dead provider
+    // with a clean exit 0. See TODOS.md "gbrain embed --all exits 0 while
+    // leaving pages on the previous model".
+    //
+    // Scoped to the transaction so the GUC can never leak onto a pooled
+    // connection, matching the search-path pattern above.
+    const embedTimeout = db.resolveEmbedStatementTimeout();
+    const runUpsert = async (q: Pick<typeof sql, 'unsafe'>) => {
+      await q.unsafe(`SET LOCAL statement_timeout = '${embedTimeout}'`);
+      await q.unsafe(
       `INSERT INTO content_chunks ${cols} VALUES ${rows.join(', ')}
        ON CONFLICT (page_id, chunk_index) DO UPDATE SET
          chunk_text = EXCLUDED.chunk_text,
@@ -2219,8 +2239,24 @@ export class PostgresEngine implements BrainEngine {
          symbol_name_qualified = EXCLUDED.symbol_name_qualified,
          modality = EXCLUDED.modality,
          embedding_image = COALESCE(EXCLUDED.embedding_image, content_chunks.embedding_image)`,
-      params as Parameters<typeof sql.unsafe>[1],
-    );
+        params as Parameters<typeof sql.unsafe>[1],
+      );
+    };
+
+    // `sql` is a postgres.js TRANSACTION object whenever upsertChunks runs
+    // inside engine.transaction() — that helper hands the scoped engine a `tx`,
+    // and a tx exposes savepoint(), NOT begin(). Calling begin() unconditionally
+    // here threw `sql.begin is not a function` and broke every transactional
+    // write path (import-file.ts wraps chunk upserts in a transaction), which
+    // the e2e suite caught as ~25 failures across Page CRUD / Search / Links.
+    //
+    // When already inside a transaction, SET LOCAL is scoped to the caller's
+    // transaction — exactly what we want — so reuse it rather than nesting.
+    if (typeof (sql as unknown as { begin?: unknown }).begin === 'function') {
+      await sql.begin(async tx => { await runUpsert(tx); });
+    } else {
+      await runUpsert(sql);
+    }
   }
 
   async getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]> {
