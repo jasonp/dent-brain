@@ -160,11 +160,15 @@ All bulk commands stream through `src/core/progress.ts` — heartbeats within 1s
 
 Run `bun test` AND `bun run test:e2e` (full DB lifecycle). Both must pass.
 
-**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1 with railway-redeploy instructions. Reason: this project's GitHub → Railway auto-deploy hook is broken, so merges to main do NOT propagate to production automatically. Shipping more changes on top of un-deployed fixes compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence. If the check fails, run `railway redeploy --yes` from the repo root and wait ~90s before retrying.
+**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1. Deploys are automatic as of v0.49.0.0 (see below), so a failure here means the last deploy did not land — check the Actions run before shipping on top of it. Shipping more changes over an un-deployed fix compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence.
 
 ## Post-ship requirements (production deploy)
 
-After every merge to main, manually run `railway redeploy --yes` from the repo root. The GitHub → Railway integration on this project does not work; merges do not auto-deploy. Confirm the new version reached production by re-running `bun run check:prod-version` (should report in-sync) or by hitting the MCP `initialize` endpoint and reading `serverInfo.version`.
+**Deploys are automatic.** `.github/workflows/deploy.yml` runs on every push to `main`: it deploys with `railway up --detach --service dent-brain` using the `RAILWAY_TOKEN` project secret, then polls `/health` until production reports the version in `./VERSION`, failing loudly if it never flips. Railway's native GitHub integration cannot be used here — the repo and the paid Railway app live under different GitHub accounts, so the service's `source.repo` is permanently null — and this workflow bypasses that entirely.
+
+Watch the Actions run rather than deploying by hand. If it fails (expired token, boot failure), the emergency fallback is `railway up --detach` from the repo root — **not** `railway redeploy`, which redeploys the existing image instead of building the new commit. Confirm with `bun run check:prod-version`.
+
+Changing a Railway environment variable also triggers a redeploy on its own; wait for that to settle before deploying again.
 
 ## Post-ship requirements (MANDATORY)
 

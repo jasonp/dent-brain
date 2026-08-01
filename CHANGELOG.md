@@ -2,6 +2,12 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.0.1] - 2026-07-29
+
+Documentation only. `CLAUDE.md` still instructed a manual `railway redeploy` after every merge and described GitHub → Railway auto-deploy as broken. Both stopped being true when the deploy workflow landed: every push to `main` now deploys via `railway up --detach` under a project token and polls `/health` until production reports the version in `./VERSION`.
+
+The emergency fallback is corrected too. The old instruction said `railway redeploy`, which redeploys the **existing image** rather than building the new commit — it would report success while leaving production on the old code. The fallback is `railway up --detach`.
+
 ## [0.49.0.0] - 2026-07-28
 
 ## **GBrain's retrieval stack moves off ZeroEntropy, which shuts down on September 4th, 2026. Fresh installs get OpenAI embeddings and Cohere reranking automatically. Existing brains re-embed in place at their current width — same vector column, same index, no schema migration.**
