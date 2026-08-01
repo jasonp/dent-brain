@@ -2,6 +2,32 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.1.0] - 2026-07-31
+
+## **Large pages no longer silently fail to embed. The embedding write now raises its own timeout ceiling for the duration of the write, so a page big enough to take more than two minutes finishes instead of being cancelled mid-flight.**
+
+Embedding a page issues one multi-row INSERT carrying a full vector per chunk. A document that chunks into hundreds of rows — PDF-derived material especially — can push that single statement past the connection pooler's two-minute `statement_timeout`, and Postgres cancels it.
+
+The ceiling could not be lifted from the client. GBrain already requests a five-minute `statement_timeout` as a connection startup parameter, but a transaction pooler overrides it: the client asks for 5min and `SHOW statement_timeout` on a pooled connection reports 2min. `GBRAIN_STATEMENT_TIMEOUT` therefore had no effect on pooled writes no matter what it was set to.
+
+The embedding upsert now sets its timeout with `SET LOCAL` inside an explicit transaction, which is the one form that survives transaction-mode pooling. The elevated value applies for the write and reverts on commit, so it can never leak onto a pooled connection. Default is 10 minutes, tunable with `GBRAIN_EMBED_STATEMENT_TIMEOUT`.
+
+Why this is worth a release rather than a footnote: when the write was cancelled, the page kept its **previous** embedding vectors while the run carried on and still reported success. A model migration could therefore finish, report every page processed, exit 0, and leave part of the corpus on the old provider — searchable only by a query vector from a different embedding space. The timeout was the trigger for that whole class of silent damage.
+
+### To take advantage of v0.49.1.0
+
+1. **Nothing to do.** The new ceiling applies automatically to every embedding write.
+2. **If you have unusually large pages and still see `canceling statement due to statement timeout`,** raise it further: `GBRAIN_EMBED_STATEMENT_TIMEOUT=20min`.
+3. **After any model migration, verify rather than trusting the exit code:** `select model, count(*) from content_chunks group by 1` should show a single row. Anything else means pages were left behind.
+
+### Itemized changes
+
+#### Fixed
+- `upsertChunks` (`src/core/postgres-engine.ts`) wraps its INSERT in a transaction and applies `SET LOCAL statement_timeout` first. Startup-parameter timeouts are overridden by transaction poolers; `SET LOCAL` is not. Reverts on commit, so no GUC leaks onto a pooled connection.
+- The wrapper detects when it is **already inside** a transaction and reuses it. `engine.transaction()` hands the scoped engine a postgres.js transaction object, which exposes `savepoint()` rather than `begin()`; opening a transaction unconditionally broke every transactional write path (`import-file.ts` upserts chunks inside one).
+
+#### Added
+- `resolveEmbedStatementTimeout()` (`src/core/db.ts`) — reads `GBRAIN_EMBED_STATEMENT_TIMEOUT`, defaults to `10min`. A GUC cannot be parameterized, so the value is interpolated into SQL; anything not matching a strict `<digits><unit>` pattern falls back to the default rather than reaching the server. Tests in `test/embed-statement-timeout.test.ts` cover the injection-safety boundary and assert the default exceeds the 2-minute pooler ceiling it exists to clear.
 ## [0.49.0.1] - 2026-07-29
 
 Documentation only. `CLAUDE.md` still instructed a manual `railway redeploy` after every merge and described GitHub → Railway auto-deploy as broken. Both stopped being true when the deploy workflow landed: every push to `main` now deploys via `railway up --detach` under a project token and polls `/health` until production reports the version in `./VERSION`.

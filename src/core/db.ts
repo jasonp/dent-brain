@@ -174,6 +174,32 @@ export function resolveSessionTimeouts(): Record<string, string> {
   return out;
 }
 
+/** Default ceiling for a single embedding-upsert statement. */
+const DEFAULT_EMBED_STATEMENT_TIMEOUT = '10min';
+
+/**
+ * Timeout for the embedding upsert statement, as a Postgres interval literal.
+ *
+ * WHY THIS EXISTS SEPARATELY from `resolveSessionTimeouts()`: that function
+ * requests `statement_timeout` as a connection *startup parameter*, and
+ * Supabase's transaction pooler silently overrides it — the client asks for
+ * 5min and `SHOW statement_timeout` on a pooled connection reports 2min. So
+ * `GBRAIN_STATEMENT_TIMEOUT` cannot lift the ceiling for pooled writes no
+ * matter what it is set to. The only thing that survives PgBouncer
+ * transaction mode is `SET LOCAL` inside an explicit transaction, which is
+ * how `upsertChunks` applies this value.
+ *
+ * Override with `GBRAIN_EMBED_STATEMENT_TIMEOUT` (e.g. `20min`, `900s`).
+ *
+ * A GUC cannot be parameterized, so the value is interpolated into SQL.
+ * Anything not matching a strict `<digits><unit>` pattern falls back to the
+ * default rather than reaching the server.
+ */
+export function resolveEmbedStatementTimeout(): string {
+  const raw = (process.env.GBRAIN_EMBED_STATEMENT_TIMEOUT ?? '').trim();
+  return /^\d+\s*(ms|s|min|h)?$/i.test(raw) ? raw : DEFAULT_EMBED_STATEMENT_TIMEOUT;
+}
+
 /**
  * Backward-compat shim for v0.21.0's `setSessionDefaults` callers.
  * The current implementation no-ops because session timeouts are now
