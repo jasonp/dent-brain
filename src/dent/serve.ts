@@ -41,6 +41,8 @@ import { createHash } from 'node:crypto';
 import { PostgresEngine } from '../core/postgres-engine.ts';
 import { operations, type Operation, OperationError, type OperationContext } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
+import { configureGateway, getEmbeddingModel, getEmbeddingDimensions } from '../core/ai/gateway.ts';
+import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from '../mcp/tool-defs.ts';
 import { buildDefaultLimiters, type RateLimiter } from '../mcp/rate-limit.ts';
@@ -254,6 +256,38 @@ let gwsSyncCron: GwsSyncCronHandle | null = null;
 // The filesystem-walking phases (backlinks/extract) get the export mirror
 // path when the mirror is configured; with no mirror we pass null and
 // runCycle skips those phases with a per-phase 'skipped' entry.
+// Configure the AI gateway for server-side background work.
+//
+// cli.ts configures the gateway on the CLI path; the server never did. Every
+// embed-cron tick therefore failed with "Embedding gateway is not configured."
+// and the nightly cycle's embed phase failed the same way. The failure is
+// silent in the way that matters: chunks stay NULL, vector search quietly
+// misses them, and the only signal is one stderr line per tick that nobody
+// reads. Observed consequences: the 2026-06 embed stall (backlog grew past 1K
+// chunks before a manual backfill cleared it) and, later, the tail of the
+// ZeroEntropy migration sitting on a dead provider because the cron that was
+// supposed to finish it had never once succeeded.
+//
+// Configured ONCE at boot, before any cron starts, so every background
+// embedder shares it. Fails loud: a server that cannot embed should say so at
+// startup rather than discover it 90 minutes later, one tick at a time.
+{
+  const cfg = loadConfig() || { engine: 'postgres' as const };
+  try {
+    configureGateway(buildGatewayConfig(cfg));
+    console.error(
+      `[dent-brain] ai-gateway: embedding=${getEmbeddingModel()} (${getEmbeddingDimensions()}d)`,
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(
+      `[dent-brain] ai-gateway: FAILED to configure (${msg}). ` +
+      `Background embedding (embed-cron, nightly maintenance) will not run. ` +
+      `Check GBRAIN_EMBEDDING_MODEL / provider API key env vars.`,
+    );
+  }
+}
+
 let nightlyCron: NightlyMaintenanceHandle | null = null;
 {
   const hourUtcRaw = process.env.DENT_BRAIN_NIGHTLY_HOUR_UTC;
