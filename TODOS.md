@@ -1,5 +1,55 @@
 # TODOS
 
+## Pre-existing E2E reds observed during v0.49.2.0 ship (filed 2026-08-03)
+
+Surfaced by the full E2E gate on the v0.49.2.0 branch. All four were exonerated
+against clean `main` (stash the diff, re-run the same files, identical failures),
+so none are caused by that change. They are recorded here because two of them are
+NOT in the previously-known red list and one touches a cross-cutting invariant.
+
+### `engine-parity` relationalFanout: PGLite and Postgres disagree
+
+**Priority:** P0
+**Filed:** 2026-08-03, from `bun run test:e2e` on the v0.49.2.0 branch.
+
+Three failures in `test/e2e/engine-parity.test.ts`:
+
+```
+(fail) Engine parity — relationalFanout > typed-edge fan-out is identical across engines
+(fail) Engine parity — relationalFanout > type-agnostic + mentions-exclusion identical across engines
+(fail) Engine parity — relationalFanout > connects (multi-seed, both) identical across engines
+```
+
+**Why it matters:** engine parity is a CLAUDE.md must-never-violate invariant —
+`postgres-engine.ts` and `pglite-engine.ts` are supposed to move in lockstep, and
+this test is the pin that enforces it. A red parity test means the two engines
+return different graph fan-out results, so a query answered correctly on a PGLite
+dev brain can be wrong on a production Postgres brain (or the reverse) with no
+error surfaced. That is the same silent-divergence shape as the v0.49.1.1 embed
+incident.
+
+**Next step:** diff the `relationalFanout` SQL between the two engines and
+determine which side is correct before assuming the test is stale.
+
+### `sync --skip-failed`: deleting a failed file does not clear its ledger row
+
+**Priority:** P0
+**Filed:** 2026-08-03, same run.
+
+```
+(fail) E2E: sync --skip-failed structured summary loop (v0.22.12, issue #500)
+       > deleting a failed file clears its ledger row (self-heal, no stuck FAIL)
+```
+
+**Why it matters:** this is the self-heal path. If a deleted file keeps its FAIL
+ledger row, the failure is stuck permanently and `sync` keeps reporting a failure
+for a file that no longer exists. The user-visible symptom is a sync that never
+returns to clean.
+
+**Also worth noting:** `~/.claude/.../memory/e2e_without_docker.md` lists four known
+local reds. Two of them (`connect-bearer`, `serve-stdio-roundtrip`) now PASS, and
+these two are new. That memory needs refreshing.
+
 ## v0.49.0.0 ZeroEntropy-migration follow-ups (filed 2026-07-31)
 
 ### `gbrain embed --all` exits 0 while leaving pages on the previous model
@@ -110,6 +160,22 @@ Decided 2026-06-26: start metadata-only; do not put LLM summaries on the cards y
   Reconcile-later (non-blocking): the delta path trusts the changes-feed's embedded `permissions`
   snapshot; if that ever proves stale, re-fetch authoritative permissions via `files.get` before
   the include decision on a delta upsert.
+
+- [x] **P2.2 — Relevance-scope filter (ownership gate) for the crawler.** Share-scope answers
+  "is this confidential?" and structurally cannot answer "is this ours?" — a file owned by an
+  outsider and shared with the crawl identity passes it trivially, because the outside owner is
+  what makes the file look shared. Second orthogonal gate: INCLUDE on a shared drive, an owner
+  domain in `GWS_SYNC_OWNER_DOMAINS`, or an owner email in `GWS_SYNC_COLLABORATOR_EMAILS` /
+  `GWS_SYNC_SELF_EMAILS`; EXCLUDE otherwise, including unattributable files (fail closed).
+  Activation deliberately keys off the NEW vars only — `GWS_SYNC_SELF_EMAILS` is already set in
+  every deployed brain, so arming on it would mass-prune teammate-owned cards on a routine deploy.
+  Measured on the production export mirror: 930 cards → 914 (16 pruned); domain-only was tried
+  first and rejected (dropped 144, mostly real work owned by contractors on personal addresses).
+  **Completed:** v0.49.2.0 (2026-08-03).
+  Reconcile-later (non-blocking): on the delta path, fail-closed means *tombstone*, not merely
+  *withhold* — if a changes-feed payload ever omits `owners` for a My Drive file, a legitimate
+  card is deleted until the next re-seed. Consider re-fetching via `files.get` before excluding
+  on a delta, same shape as the P2.1 permissions note above.
 
 - [ ] **P3 — Local-model summarization pass for smarter routing (future, free).** Once
   metadata-only is in and we know where titles under-route, add a script that uses the 35B

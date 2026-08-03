@@ -56,6 +56,7 @@ import { startRegfoxCron, DEFAULT_REGFOX_POLL_INTERVAL_SECONDS, type RegfoxCronH
 import { startGwsSyncCron, DEFAULT_GWS_SYNC_INTERVAL_SECONDS, type GwsSyncCronHandle } from './ingestors/gws-sync/cron.ts';
 import { DriveClient } from './ingestors/gws-sync/drive-client.ts';
 import { parseEmailSet } from './ingestors/gws-sync/share-scope.ts';
+import { buildRelevanceScope } from './ingestors/gws-sync/relevance-scope.ts';
 import {
   startNightlyMaintenance,
   DEFAULT_NIGHTLY_HOUR_UTC,
@@ -223,6 +224,20 @@ let gwsSyncCron: GwsSyncCronHandle | null = null;
       const shareScope = selfEmails.size > 0
         ? { selfEmails, excludePairEmails: parseEmailSet(process.env.GWS_SYNC_EXCLUDE_PAIR_EMAILS) }
         : undefined;
+      // Relevance-scope filter: a file gets a card only if WE own it (your own
+      // accounts, your company's domain, a named collaborator) or it lives on a
+      // shared drive. Share-scope cannot catch an outsider's doc shared with you
+      // — the outside owner is exactly what makes it look "shared". Off when both
+      // GWS_SYNC_OWNER_DOMAINS and GWS_SYNC_COLLABORATOR_EMAILS are unset.
+      // Activation rule + set assembly live in buildRelevanceScope (pure, unit-tested).
+      const relevanceScope = buildRelevanceScope(
+        {
+          ownerDomains: process.env.GWS_SYNC_OWNER_DOMAINS,
+          collaboratorEmails: process.env.GWS_SYNC_COLLABORATOR_EMAILS,
+          includeDriveIds: process.env.GWS_SYNC_INCLUDE_DRIVE_IDS,
+        },
+        selfEmails,
+      );
       // One-shot: GWS_SYNC_RESEED forces a full re-walk on next tick by clearing
       // the cursor — the re-seed is self-pruning, so it removes cards now excluded
       // by the filter. Unset the var after it runs once.
@@ -239,10 +254,17 @@ let gwsSyncCron: GwsSyncCronHandle | null = null;
           now: () => new Date().toISOString(),
           maxFolderLookups: Number.isFinite(maxFolderLookupsRaw) && maxFolderLookupsRaw > 0 ? maxFolderLookupsRaw : undefined,
           shareScope,
+          relevanceScope,
         },
         intervalSec * 1000,
       );
-      console.error(`[dent-brain] gws-sync: every ${intervalSec}s (Docs/Sheets pointer-cards)${shareScope ? `, share-scope filter on (${selfEmails.size} self, ${shareScope.excludePairEmails.size} excluded-pairs)` : ''}`);
+      const shareNote = shareScope
+        ? `, share-scope on (${selfEmails.size} self, ${shareScope.excludePairEmails.size} excluded-pairs)`
+        : '';
+      const relevanceNote = relevanceScope
+        ? `, relevance-scope on (${relevanceScope.ownerDomains.size} owner-domains, ${relevanceScope.ownerEmails.size} owner-emails, ${relevanceScope.driveIds.size || 'all'} drive-ids)`
+        : ', relevance-scope OFF (every visible Doc/Sheet is carded)';
+      console.error(`[dent-brain] gws-sync: every ${intervalSec}s (Docs/Sheets pointer-cards)${shareNote}${relevanceNote}`);
     } else {
       console.error('[dent-brain] gws-sync: disabled (GWS_SYNC_INTERVAL_SECONDS=0)');
     }

@@ -39,6 +39,7 @@ Strong success criteria let you loop independently.
 - `docs/architecture/brains-and-sources.md` — brain/source topology
 - `docs/CHANGELOG_VOICE.md` — CHANGELOG formatting
 - `docs/progress-events.md` — progress JSON event schema
+- `docs/dent-brain/DEPLOY.md` — Railway + Supabase deploy steps and the canonical server env-var table (`DENT_BRAIN_*`, `GWS_SYNC_*`)
 - `skills/RESOLVER.md` — skill routing table
 
 ## Two organizational axes

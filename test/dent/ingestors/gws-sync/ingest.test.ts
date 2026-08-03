@@ -305,3 +305,126 @@ describe('share-scope filter', () => {
     expect(await identity('AUTOSELF', 'gdrive-doc')).toBeNull(); // excluded — identity auto-added to self
   });
 });
+
+describe('relevance-scope filter', () => {
+  const relevanceScope = {
+    ownerDomains: new Set(['dentthefuture.com']),
+    ownerEmails: new Set(['jason@jrpreston.com']),
+    driveIds: new Set<string>(),
+  };
+  const ownedBy = (id: string, email: string, extra: Partial<DriveFile> = {}) =>
+    doc({ id, owners: [{ emailAddress: email }], ...extra });
+
+  test('seed cards our own files and excludes an outsider-owned file shared with us', async () => {
+    // The regression: a friend's spreadsheet, shared with the crawl identity.
+    const ours = ownedBy('OURS', 'steve@dentthefuture.com');
+    const mine = ownedBy('MINE', 'jason@jrpreston.com');
+    const theirs = ownedBy('THEIRS', 'stranger@gmail.com', { name: 'League Roster' });
+    const out = await runGwsSyncTick(engine, {
+      client: fakeClient({ files: [ours, mine, theirs] }),
+      now,
+      relevanceScope,
+    });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 2 });
+    expect(await identity('OURS', 'gdrive-doc')).not.toBeNull();
+    expect(await identity('MINE', 'gdrive-doc')).not.toBeNull();
+    expect(await identity('THEIRS', 'gdrive-doc')).toBeNull();
+  });
+
+  test('a re-seed prunes an outsider-owned card written before the gate existed', async () => {
+    const theirs = ownedBy('LEAGUE', 'stranger@gmail.com');
+    await runGwsSyncTick(engine, { client: fakeClient({ files: [theirs] }), now }); // no filter → carded
+    expect(await identity('LEAGUE', 'gdrive-doc')).not.toBeNull();
+    // Clear the cursor (what GWS_SYNC_RESEED does) to force a re-seed with the gate on.
+    await engine.executeRaw('UPDATE gws_sync_state SET changes_page_token = NULL WHERE id = 1', []);
+    const out = await runGwsSyncTick(engine, {
+      client: fakeClient({ files: [theirs] }),
+      now,
+      relevanceScope,
+    });
+    expect(out).toMatchObject({ mode: 'seed', tombstoned: 1, upserted: 0 });
+    expect(await identity('LEAGUE', 'gdrive-doc')).toBeNull();
+  });
+
+  test('a file that changes hands to an outside owner is tombstoned on the delta', async () => {
+    const ours = ownedBy('XFER', 'steve@dentthefuture.com');
+    await runGwsSyncTick(engine, { client: fakeClient({ files: [ours] }), now, relevanceScope });
+    expect(await identity('XFER', 'gdrive-doc')).not.toBeNull();
+    const transferred = ownedBy('XFER', 'stranger@gmail.com', { modifiedTime: '2026-06-29T00:00:00.000Z' });
+    const out = await runGwsSyncTick(engine, {
+      client: fakeClient({ changes: { changes: [{ fileId: 'XFER', file: transferred }], newStartPageToken: 't2' } }),
+      now,
+      relevanceScope,
+    });
+    expect(out).toMatchObject({ mode: 'delta', tombstoned: 1 });
+    expect(await identity('XFER', 'gdrive-doc')).toBeNull();
+  });
+
+  test('shared-drive files are carded even when owned outside the domain', async () => {
+    const onDrive = ownedBy('SD', 'stranger@gmail.com', { driveId: 'D1' });
+    const out = await runGwsSyncTick(engine, { client: fakeClient({ files: [onDrive] }), now, relevanceScope });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 1 });
+    expect(await identity('SD', 'gdrive-doc')).not.toBeNull();
+  });
+
+  test('inactive by default — an outsider-owned file still cards when the gate is unset', async () => {
+    const theirs = ownedBy('DEFAULT', 'stranger@gmail.com');
+    const out = await runGwsSyncTick(engine, { client: fakeClient({ files: [theirs] }), now });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 1 });
+    expect(await identity('DEFAULT', 'gdrive-doc')).not.toBeNull();
+  });
+
+  test('the two gates compose — either one alone excludes', async () => {
+    const shareScope = {
+      selfEmails: new Set(['jason@dentthefuture.com']),
+      excludePairEmails: new Set<string>(),
+    };
+    const perm = (email: string) => ({ emailAddress: email, type: 'user' });
+    // Ours by ownership, but private → share-scope rejects.
+    const oursPrivate = ownedBy('OURS_PRIV', 'jason@dentthefuture.com', {
+      permissions: [perm('jason@dentthefuture.com')],
+    });
+    // Widely shared → share-scope accepts, but owned by an outsider → relevance rejects.
+    const theirsShared = ownedBy('THEIRS_SHD', 'stranger@gmail.com', {
+      permissions: [perm('jason@dentthefuture.com'), perm('jeff@dentthefuture.com')],
+    });
+    // Ours AND shared → both accept.
+    const oursShared = ownedBy('OURS_SHD', 'jason@dentthefuture.com', {
+      permissions: [perm('jason@dentthefuture.com'), perm('jeff@dentthefuture.com')],
+    });
+    const out = await runGwsSyncTick(engine, {
+      client: fakeClient({ files: [oursPrivate, theirsShared, oursShared] }),
+      now,
+      shareScope,
+      relevanceScope,
+    });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 1 });
+    expect(await identity('OURS_PRIV', 'gdrive-doc')).toBeNull();
+    expect(await identity('THEIRS_SHD', 'gdrive-doc')).toBeNull();
+    expect(await identity('OURS_SHD', 'gdrive-doc')).not.toBeNull();
+  });
+
+  test('auto-includes the crawl identity as an owner, so an owner-domain-only config keeps your docs', async () => {
+    const mine = ownedBy('AUTOOWN', 'jason@othercorp.com');
+    const client = {
+      getAuthedEmail: async () => 'jason@othercorp.com',
+      getStartPageToken: async () => 't0',
+      listAllDocsAndSheets: async () => [mine],
+      listChanges: async () => ({ changes: [], newStartPageToken: 't1' }),
+      getFolder: async (id: string) => ({ id, name: 'F', parents: undefined }),
+      getSpreadsheetSchema: async () => ({ tabs: [], dimensions: {} }),
+    } as unknown as DriveClient;
+    const out = await runGwsSyncTick(engine, {
+      client,
+      now,
+      // Owner rules never mention othercorp.com — only ensureSelfIdentity saves it.
+      relevanceScope: {
+        ownerDomains: new Set(['dentthefuture.com']),
+        ownerEmails: new Set<string>(),
+        driveIds: new Set<string>(),
+      },
+    });
+    expect(out).toMatchObject({ mode: 'seed', upserted: 1 });
+    expect(await identity('AUTOOWN', 'gdrive-doc')).not.toBeNull();
+  });
+});
