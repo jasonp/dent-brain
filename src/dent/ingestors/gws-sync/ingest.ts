@@ -26,6 +26,11 @@ import { classifyChange } from './delta-classifier.ts';
 import { readGwsState, writeChangesToken, writeFullWalkDone } from './state.ts';
 import { shareScopeActive, shouldIncludeByShareScope, type ShareScopeConfig } from './share-scope.ts';
 import {
+  relevanceScopeActive,
+  shouldIncludeByRelevanceScope,
+  type RelevanceScopeConfig,
+} from './relevance-scope.ts';
+import {
   IDENTITY_KEY,
   cardTypeForMime,
   isTrackedMime,
@@ -46,27 +51,45 @@ export interface GwsSyncOptions {
   maxFolderLookups?: number;
   /** Share-scope filter. When absent/empty, every file is carded (default). */
   shareScope?: ShareScopeConfig;
+  /** Relevance-scope filter. When absent/empty, every file is carded (default). */
+  relevanceScope?: RelevanceScopeConfig;
 }
 
-/** Card a file only if it passes the share-scope filter (filter off → always). */
+/**
+ * Card a file only if it clears BOTH gates. They are orthogonal and each is
+ * independently optional: share-scope answers "is this confidential?" and
+ * relevance-scope answers "is this ours?". A file shared with you by an outside
+ * owner passes the first and fails the second — that asymmetry is the point.
+ */
 function included(file: DriveFile, opts: GwsSyncOptions): boolean {
-  if (!shareScopeActive(opts.shareScope)) return true;
-  return shouldIncludeByShareScope(file, opts.shareScope, Date.parse(opts.now()));
+  if (shareScopeActive(opts.shareScope) && !shouldIncludeByShareScope(file, opts.shareScope, Date.parse(opts.now()))) {
+    return false;
+  }
+  if (relevanceScopeActive(opts.relevanceScope) && !shouldIncludeByRelevanceScope(file, opts.relevanceScope)) {
+    return false;
+  }
+  return true;
 }
 
 /**
  * Always treat the crawl identity itself as "self", regardless of config. A typo
  * in GWS_SYNC_SELF_EMAILS would otherwise leave the founder's own email
- * unsubtracted, turning the filter into include-everything. Best-effort: if we
- * can't resolve our own identity, the configured self set still applies.
+ * unsubtracted, turning share-scope into include-everything — and would drop
+ * every doc you own from relevance-scope. Seeds both sets for that reason.
+ * Best-effort: if we can't resolve our own identity, the configured sets apply.
  */
 async function ensureSelfIdentity(opts: GwsSyncOptions): Promise<void> {
-  if (!shareScopeActive(opts.shareScope)) return;
+  const wantShare = shareScopeActive(opts.shareScope);
+  const wantRelevance = relevanceScopeActive(opts.relevanceScope);
+  if (!wantShare && !wantRelevance) return;
   const getAuthed = (opts.client as { getAuthedEmail?: () => Promise<string | undefined> }).getAuthedEmail;
   if (typeof getAuthed !== 'function') return;
   try {
     const email = await getAuthed.call(opts.client);
-    if (email) opts.shareScope.selfEmails.add(email.toLowerCase());
+    if (!email) return;
+    const lower = email.toLowerCase();
+    if (wantShare) opts.shareScope!.selfEmails.add(lower);
+    if (wantRelevance) opts.relevanceScope!.ownerEmails.add(lower);
   } catch {
     /* best-effort */
   }
@@ -117,8 +140,8 @@ async function seedFullWalk(engine: BrainEngine, opts: GwsSyncOptions): Promise<
         if (action === 'upserted') upserted++;
         else skipped++;
       } else if (await tombstone(engine, file.id)) {
-        // Share-scope excludes this file. The seed sees the FULL list, so it
-        // also removes a card written before the filter (or before the file
+        // A filter excludes this file. The seed sees the FULL list, so it also
+        // removes a card written before the filter existed (or before the file
         // was un-shared) — this is what makes a re-seed self-pruning.
         tombstoned++;
       }
@@ -152,8 +175,9 @@ async function processDeltas(engine: BrainEngine, opts: GwsSyncOptions, token: s
         if (fileId && (await tombstone(engine, fileId))) tombstoned++;
       } else if (action === 'upsert' && change.file) {
         if (!included(change.file, opts)) {
-          // A file that became private / you+excluded-only / restricted loses
-          // its card on the delta that reports the sharing change.
+          // A file that became private / you+excluded-only / restricted, or that
+          // changed hands to an owner outside the relevance scope, loses its card
+          // on the delta that reports the change.
           if (await tombstone(engine, change.file.id)) tombstoned++;
         } else {
           // Never skip on delta: the changes feed only fires on a REAL change
