@@ -2,6 +2,77 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.2.0] - 2026-08-03
+
+## **The Drive router carded every document anyone had ever shared with you. Ownership is the second gate now.**
+
+`gws-sync` lists every Google Doc and Sheet the crawl identity can see, then applies one filter: is this shared beyond you? That question protects confidentiality. It cannot answer relevance. A document owned by someone outside your organization and shared with you passes it trivially, because the outside owner is precisely what makes the file look shared.
+
+So the router accumulated pointer-cards for other people's work. Another organization's plan. A vendor's proposal. A personal spreadsheet a friend sent years ago. Metadata only, never content, and every one of them technically correct under the old rule. Noise in a router is still noise.
+
+v0.49.2.0 adds a second, orthogonal gate. Share-scope asks "is this confidential?" Relevance-scope asks "is this ours?" A file must clear both. Ownership is the discriminator, and it is the one signal an outside sharer cannot forge.
+
+### The numbers that matter
+
+Measured by replaying the real filter over every pointer-card in a production brain's export mirror (`gdrive/`), not a synthetic fixture:
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Pointer-cards in the router | 930 | 914 | −16 |
+| Cards owned outside the org, self, or an allowlisted collaborator | 16 | 0 | −16 |
+| Cards owned by the org, self, or a shared drive | 914 | 914 | 0 |
+| Filter gates | 1 | 2 | +1 |
+| gws-sync tests | 57 | 86 | +29 |
+
+Domain-only filtering was measured first and rejected: it dropped 144 cards, most of them real work owned by contractors using personal addresses. The named-collaborator allowlist is not a convenience, it is what makes the gate safe to turn on. Size it from your own corpus by grouping existing cards on `owner_email`, not by guessing.
+
+### What this means for operators
+
+The gate ships off. Set `GWS_SYNC_OWNER_DOMAINS` and `GWS_SYNC_COLLABORATOR_EMAILS` to arm it, then one boot with `GWS_SYNC_RESEED=1` prunes what no longer qualifies. `GWS_SYNC_SELF_EMAILS` deliberately does not arm it, because that variable is already set in every deployed brain and arming on it would turn a routine deploy into a silent mass-prune of teammate-owned cards. There is no migration script; the seed walk's existing tombstone path does the cleanup.
+
+## To take advantage of v0.49.2.0
+
+No action required. The relevance gate is inert until you configure it, and behavior is identical to v0.49.1.1 with the new variables unset.
+
+To arm it:
+
+1. **Size the collaborator allowlist from your corpus.** Group existing cards by `owner_email` and list anyone who owns work that belongs in the brain:
+   ```bash
+   grep -h '^owner_email:' <export-mirror>/gdrive/**/*.md | sort | uniq -c | sort -rn
+   ```
+2. **Set the variables** on the brain server:
+   ```
+   GWS_SYNC_OWNER_DOMAINS=your-company.com
+   GWS_SYNC_COLLABORATOR_EMAILS=person@example.com,other@example.com
+   ```
+3. **Prune existing cards** with one re-seed, then unset the flag:
+   ```
+   GWS_SYNC_RESEED=1
+   ```
+4. **Confirm** from the boot log, which now states the gate's status explicitly:
+   ```
+   [dent-brain] gws-sync: every 3600s (Docs/Sheets pointer-cards), share-scope on (...), relevance-scope on (...)
+   ```
+   When the gate is off the same line says `relevance-scope OFF (every visible Doc/Sheet is carded)`.
+
+### Itemized changes
+
+**gws-sync relevance-scope filter**
+- `src/dent/ingestors/gws-sync/relevance-scope.ts` (new): pure ownership gate. INCLUDE on a shared drive (narrowed by `GWS_SYNC_INCLUDE_DRIVE_IDS` when set), an owner domain in `GWS_SYNC_OWNER_DOMAINS`, or an owner email in `GWS_SYNC_COLLABORATOR_EMAILS` / `GWS_SYNC_SELF_EMAILS`. EXCLUDE everything else, including files with no readable owner and no shared drive (fail closed).
+- `buildRelevanceScope()` owns the activation rule as a pure, exported function so it is unit-testable. The serve.ts block that would otherwise hold it runs at module scope behind a live `DATABASE_URL`, so nothing could pin the rule there.
+- `parseDomainSet()` tolerates `example.com`, `@example.com`, and `user@example.com` forms. `parseIdSet()` preserves case, because Drive ids are case-sensitive and folding them would silently match nothing.
+- Domain matching is exact Set membership, not suffix matching, so a lookalike domain cannot slip through.
+- `src/dent/ingestors/gws-sync/ingest.ts`: `included()` composes both gates; each is independently optional. `ensureSelfIdentity()` now seeds the crawl identity into both scopes, so an owner-domains-only config keeps documents you own on a personal domain.
+- `src/dent/serve.ts`: env wiring plus a boot log line that names the gate's state, including when it is off.
+- Cleanup runs through the seed walk's existing tombstone path, so `GWS_SYNC_RESEED=1` is self-pruning. A file that changes hands to an outside owner loses its card on the delta that reports the change.
+
+**Tests**
+- `test/dent/ingestors/gws-sync/relevance-scope.test.ts` (new, 22 tests): gate semantics, fail-closed paths, lookalike-domain rejection, case handling, first-owner-only, and the activation rule including the mass-prune footgun.
+- `test/dent/ingestors/gws-sync/ingest.test.ts` (+7 tests): seed exclusion, re-seed pruning, delta tombstone on ownership transfer, shared-drive passthrough, inactive-by-default, two-gate composition, and self-identity seeding.
+
+**Docs**
+- `docs/reference/ingestors.md`: documents both gates, why neither subsumes the other, and how to size the collaborator allowlist from a real corpus.
+
 ## [0.49.1.1] - 2026-08-01
 
 ## **Background embedding on the server actually runs now. The embed cron and the nightly maintenance cycle had never successfully embedded anything — every tick failed on an unconfigured AI gateway, and nothing surfaced it.**
