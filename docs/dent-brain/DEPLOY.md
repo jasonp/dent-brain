@@ -105,8 +105,26 @@ In the project's **Variables** tab, add:
 | `DENT_BRAIN_REGFOX_FORM_IDS` | (optional, default poll-all) Comma-separated form IDs to scope polling. |
 | `DENT_BRAIN_REGFOX_PRODUCT` | (optional, default `regfox.com`) Webconnex product. |
 | `DENT_BRAIN_REGFOX_DISCOUNT_FIELD_PATH` | (optional) Override path inside `fieldData` where the discount code lives. |
+| `GWS_SYNC_GOOGLE_CLIENT_ID` | (optional, since v0.47) OAuth client id for the Google Workspace pointer-card crawler. The crawler is a silent no-op unless all three `GWS_SYNC_GOOGLE_*` values are set. Mint them with `scripts/dent/gws-sync-oauth.ts --set-railway`. |
+| `GWS_SYNC_GOOGLE_CLIENT_SECRET` | (optional, since v0.47) OAuth client secret. See above. |
+| `GWS_SYNC_GOOGLE_REFRESH_TOKEN` | (optional, since v0.47) Read-only Drive + Sheets refresh token. Scoped `drive.metadata.readonly`, so it cannot read document bodies. |
+| `GWS_SYNC_INTERVAL_SECONDS` | (optional, default `3600`) Tick interval for the crawler. Set `0` to disable. |
+| `GWS_SYNC_MAX_FOLDER_LOOKUPS` | (optional, default `500`) Cap on folder-metadata fetches per tick for path resolution. |
+| `GWS_SYNC_SELF_EMAILS` | (optional, since v0.47.1) Your own account(s). Turns the **share-scope** gate on: a file earns a card only if shared beyond you. Also contributes to relevance-scope's owner set, but does **not** arm that gate on its own. |
+| `GWS_SYNC_EXCLUDE_PAIR_EMAILS` | (optional, since v0.47.1) A confidential contact whose two-person documents with you stay out of the brain. |
+| `GWS_SYNC_OWNER_DOMAINS` | (optional, since v0.49.2) Comma-separated bare domains. Arms the **relevance-scope** gate: a file earns a card only if it is on a shared drive or owned by your domain, your accounts, or a named collaborator. Without it, every Doc/Sheet the crawl identity can see is carded, including documents outsiders shared with you. |
+| `GWS_SYNC_COLLABORATOR_EMAILS` | (optional, since v0.49.2) Comma-separated owner emails that also qualify. Contractors often own real work from personal addresses, so domain-only filtering prunes legitimate material. Size this from your own corpus, not by guessing. Also arms relevance-scope. |
+| `GWS_SYNC_INCLUDE_DRIVE_IDS` | (optional, since v0.49.2) Comma-separated shared-drive ids to allowlist. Case-sensitive. Unset means every shared drive qualifies. Does **not** arm the gate by itself. |
+| `GWS_SYNC_RESEED` | (optional, one-shot) Clears the crawler's cursor for one boot, forcing a self-pruning full re-walk. Use it after changing either gate's config, then unset it. |
 
 The server reads `PORT` from env and binds to whatever Railway provides.
+
+The Google Workspace crawler has two independent gates, and the boot log states
+both. Share-scope answers "is this confidential?"; relevance-scope answers "is
+this ours?". Neither subsumes the other: a document owned by an outsider and
+shared with you passes share-scope trivially, because the outside owner is what
+makes the file look shared. Full contract in
+[`docs/reference/ingestors.md`](../reference/ingestors.md).
 
 When `DENT_BRAIN_DATA_DEPLOY_KEY` is unset, the server still boots but logs
 `exporter: disabled (DENT_BRAIN_DATA_DEPLOY_KEY unset) — no git mirror will
