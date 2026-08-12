@@ -260,7 +260,7 @@ hatches — no config-dashboard surface by design):
 
 | Command | Scope | When |
 |---|---|---|
-| `bun run test` | Parallel unit fast loop (8-shard), then `*.serial.test.ts`. Excludes slow + e2e. **~23 min** (10,667 tests; measured 2026-08-11). | Not an inner edit loop any more — run targeted files while iterating, this before pushing. |
+| `bun run test` | Parallel unit fast loop (4-shard), then `*.serial.test.ts`. Excludes slow + e2e. **~23–32 min** (~10,700 tests; two runs measured 2026-08-11/12 at 1,394s and 1,915s). | Not an inner edit loop any more — run targeted files while iterating, this before pushing. |
 | `bun run verify` | `check:privacy && check:jsonb && check:progress && check:wasm && typecheck`. ~12s. | Before pushing. |
 | `bun run test:full` | verify + test + test:slow + smart e2e. | Pre-PR sanity. |
 | `bun run test:slow` | `*.slow.test.ts` only. | Touching slow-path code. |
