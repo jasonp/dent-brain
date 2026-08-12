@@ -8,7 +8,23 @@ Detailed testing handbook for gbrain. CLAUDE.md keeps only the command-tiers tab
 |---|---|---|
 | single file (`bun test <file>`) | ~3s | PGLite cold-start dominates; amortized per file, not per test |
 | `bun run verify` | ~12s | static checks + `tsc --noEmit` |
-| `bun run test` | **~23 min** | 1,394s parallel across 8 shards, then 67 serial files. 10,667 tests |
+| `bun run test` | **~23–32 min** | 4 shards × 236 files, then 67 serial files. ~10,700 tests. Two runs: 1,394s and 1,915s |
+
+**Treat that as a range, not a number.** The two measurements above are the same suite on the
+same machine a day apart; the spread is external load, and a third run under heavy load was
+crawling at ~23s/file (4x the good rate) when its shards hit the timeout. That variance is
+the reason the per-shard cap matters — see below.
+
+**Per-shard timeout.** `run-unit-parallel.sh` caps each shard (`GBRAIN_TEST_SHARD_TIMEOUT`).
+At the observed good rate a shard needs ~1,400s, so the 1,500s default leaves ~100s of
+headroom and ordinary variance wedges it. A wedged shard is *not* obvious from the output —
+it reports `pass=0 fail=0 rc=1` and the run banner can still say "0 TEST FAILURES." Export
+`GBRAIN_TEST_SHARD_TIMEOUT=5400` for a reliable full run, and always read
+`.context/test-summary.txt` before believing a green count:
+
+```bash
+cat .context/test-summary.txt   # per-shard pass/fail/rc — a shard with rc=1 and pass=0 died
+```
 
 The command-tiers table carried `~85s` for the full suite for a long time and it was
 wrong by roughly sixteen-fold. Two consequences worth internalizing:
