@@ -260,7 +260,7 @@ hatches — no config-dashboard surface by design):
 
 | Command | Scope | When |
 |---|---|---|
-| `bun run test` | Parallel unit fast loop (8-shard), then `*.serial.test.ts`. Excludes slow + e2e. ~85s. | Inner edit loop. |
+| `bun run test` | Parallel unit fast loop (8-shard), then `*.serial.test.ts`. Excludes slow + e2e. **~23 min** (10,667 tests; measured 2026-08-11). | Not an inner edit loop any more — run targeted files while iterating, this before pushing. |
 | `bun run verify` | `check:privacy && check:jsonb && check:progress && check:wasm && typecheck`. ~12s. | Before pushing. |
 | `bun run test:full` | verify + test + test:slow + smart e2e. | Pre-PR sanity. |
 | `bun run test:slow` | `*.slow.test.ts` only. | Touching slow-path code. |
@@ -269,6 +269,13 @@ hatches — no config-dashboard surface by design):
 | `bun run check:all` | All 7 historical pre-checks (superset of `verify`). | Local sweep. |
 
 File taxonomy: `*.test.ts` (parallel), `*.slow.test.ts` (cold-path), `*.serial.test.ts` (cross-file-state quarantine), `test/e2e/*.test.ts` (real Postgres). See `docs/reference/testing.md` for isolation lint (R1–R4), canonical PGLite block, `withEnv` pattern, and the full inventory.
+
+**Runtime reality check (2026-08-11).** The `~85s` this table carried for `bun run test`
+was badly stale — an actual run is **~23 minutes** (1,394s parallel across 8 shards, then
+67 serial files). Budget for that: pipe to a file and run it in the background rather than
+blocking on it, and iterate with targeted `bun test <file>` instead. If you need a number
+to plan around, `verify` (~12s) and a single test file (~3s) are the fast gates; the full
+suite is a pre-push gate, not an inner-loop one.
 
 ### Iron rule: capturing test output
 
