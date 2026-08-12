@@ -69,6 +69,9 @@ CHECKS=(
   "check:engine-dynamic-import"
   "check:worker-lock-renewal-shape"
   "check:plugin-version"   # fork-only: marketplace bundle must match VERSION
+  "check:bun-test-timeout" # CI runs this as a separate verify step; register it
+                           # here so local `bun run verify` is a SUPERSET of CI's
+                           # verify job rather than silently missing a gate.
   "check:bootstrap-tag"
   "check:bootstrap-templates"
   "check:skill-refs"

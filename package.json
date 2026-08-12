@@ -102,7 +102,8 @@
     "check:plugin-version": "bun run scripts/check-plugin-version.ts",
     "setup": "bun run scripts/setup.ts",
     "test:dent": "bun test test/dent/ --timeout=60000",
-    "sync:upstream": "bash scripts/sync-from-upstream.sh"
+    "sync:upstream": "bash scripts/sync-from-upstream.sh",
+    "check:bun-test-timeout": "bash scripts/check-bun-test-timeout.sh"
   },
   "openclaw": {
     "compat": {

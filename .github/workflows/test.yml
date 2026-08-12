@@ -142,8 +142,16 @@ jobs:
       - run: bun run verify
       # Guard: no bare `bun test` in workflows/scripts — bun ignores
       # bunfig.toml's timeout, and hooks (beforeAll/afterAll) get the 5s
-      # default regardless of per-test third-arg timeouts. Runs directly
-      # (not via verify's CHECKS array) to avoid a package.json edit.
+      # default regardless of per-test third-arg timeouts.
+      #
+      # FORK: upstream runs this ONLY here, deliberately, "to avoid a
+      # package.json edit". We also registered it in the CHECKS array during
+      # the v0.50.0.0 sync, because running it only in CI meant local
+      # `bun run verify` was NOT a superset of this job — it reported 39/39
+      # green while this gate was red, and the miss reached CI. A local gate
+      # that can pass while CI fails is worse than no local gate, because it
+      # is trusted. The step below is kept as-is so the next upstream sync
+      # does not conflict here; it is now redundant, not wrong.
       - run: bash scripts/check-bun-test-timeout.sh
 
   serial-tests:
@@ -207,7 +215,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          fetch-depth: 0  # the gate needs origin/master's baseline
+          fetch-depth: 0  # the gate needs the baseline from BRAINBENCH_MAIN_REF (origin/main here)
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: 1.3.13
@@ -219,6 +227,12 @@ jobs:
       - run: bash scripts/ci-brainbench-gate.sh
         env:
           BRAINBENCH_OUT: ${{ runner.temp }}/brainbench-result.json
+          # FORK: upstream's default branch is `master`; ours is `main`, so the
+          # script's `origin/master` default does not resolve here. It fails
+          # CLOSED on an unresolvable ref by design (a typo must not silently
+          # disable the gate), which is why this has to be set rather than
+          # left to the default.
+          BRAINBENCH_MAIN_REF: origin/main
       - name: BrainBench delta → step summary
         if: always()
         run: |
