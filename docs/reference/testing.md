@@ -2,6 +2,29 @@
 
 Detailed testing handbook for gbrain. CLAUDE.md keeps only the command-tiers table and the Iron rule on test output capture; everything else lives here.
 
+### Wallclock: what the suite actually costs (measured 2026-08-11)
+
+| Gate | Wallclock | Notes |
+|---|---|---|
+| single file (`bun test <file>`) | ~3s | PGLite cold-start dominates; amortized per file, not per test |
+| `bun run verify` | ~12s | static checks + `tsc --noEmit` |
+| `bun run test` | **~23 min** | 1,394s parallel across 8 shards, then 67 serial files. 10,667 tests |
+
+The command-tiers table carried `~85s` for the full suite for a long time and it was
+wrong by roughly sixteen-fold. Two consequences worth internalizing:
+
+- **`bun run test` is a pre-push gate, not an inner-loop one.** Iterate with targeted
+  `bun test <file>`; run the suite in the background (`run_in_background`, or `&` plus a
+  log file) and keep working while it goes. Blocking a terminal on it for 23 minutes is
+  how a session stalls.
+- **Budget agent tool-call timeouts accordingly.** A 10-minute cap kills the run about a
+  quarter of the way through, and the partial `.context/test-shards/*.log` files left
+  behind look like a clean pass because no shard has reported failures yet.
+
+The number will drift with hardware and with the suite growing. Re-measure rather than
+trusting this table if it starts to feel wrong, and update it here when you do — a stale
+timing here is what produced the 85s figure.
+
 ### CI vs local: intentionally divergent file sets
 
 - **CI matrix** (`.github/workflows/test.yml`) runs `scripts/test-shard.sh` 4-way, which uses FNV-1a hash bucketing and INCLUDES `*.slow.test.ts`. CI is the ground truth for "did everything pass."
