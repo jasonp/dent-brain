@@ -69,7 +69,11 @@ if ! git merge upstream/master --no-edit; then
   echo "After resolving:"
   echo "  git add <files>"
   echo "  git commit"
-  echo "  bun test"
+  # --timeout is not decoration: bun's 5s default kills the PGLite setup hooks
+  # this repo's tests rely on, so a bare `bun test` reports failures that are
+  # really timeouts. check-bun-test-timeout.sh enforces this repo-wide (and
+  # greps printed instructions too, which is how this line was caught).
+  echo "  bun test --timeout=60000"
   echo
   echo "Then re-run: bun run sync:upstream"
   echo "(it'll skip the merge step, re-verify rename, run tests.)"

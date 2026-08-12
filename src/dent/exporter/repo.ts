@@ -79,9 +79,18 @@ export function materializeDeployKey(): DataRepoEnv {
  * is canonical, the repo is derived.
  */
 async function upsertMirrorSource(engine: BrainEngine, repoPath: string): Promise<void> {
+  // `$4::text::jsonb`, NOT `$4::jsonb`. postgres.js sends a JS string bound to a
+  // `::jsonb` parameter as jsonb and stringifies it AGAIN, so `config` lands as a
+  // JSONB *string literal* — `"{\"mirror\":true}"` rather than an object. Every
+  // read of `config->>'mirror'` then returns NULL, which would silently un-mark
+  // this source as a mirror and let sync_brain import FROM the export repo, the
+  // exact direction the contract above exists to prevent. PGLite hides the bug,
+  // so it only bites on production Postgres. Casting through ::text first makes
+  // the double-encode impossible. (#2339 class; caught by check:jsonb during the
+  // v0.50.0.0 upstream sync — this predates the sync.)
   await engine.executeRaw(
     `INSERT INTO sources (id, name, local_path, config)
-       VALUES ($1, $2, $3, $4::jsonb)
+       VALUES ($1, $2, $3, $4::text::jsonb)
      ON CONFLICT (id) DO UPDATE
        SET local_path = EXCLUDED.local_path,
            name = EXCLUDED.name,

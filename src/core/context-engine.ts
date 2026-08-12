@@ -180,6 +180,29 @@ function getLastUserText(messages: AgentMessage[]): string {
 }
 
 /**
+ * v0.43 (#2095): the rolling extraction window — the most recent
+ * user/assistant turns (oldest → newest, current turn last), capped here at
+ * a generous max; the reflex slices to its configured
+ * retrieval_reflex_window_turns (default 4).
+ */
+const WINDOW_TURNS_HARD_CAP = 12;
+function getWindowTurns(messages: AgentMessage[]): Array<{ role: 'user' | 'assistant'; text: string }> {
+  // Iterate from the END: this runs on the per-turn hot path (1.5s reflex
+  // budget) and only the last 12 turns matter — flattening every content
+  // block of a multi-hundred-turn session just to slice the tail would make
+  // the cost grow with session length.
+  const out: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+  for (let i = messages.length - 1; i >= 0 && out.length < WINDOW_TURNS_HARD_CAP; i--) {
+    const m = messages[i];
+    if (m?.role !== 'user' && m?.role !== 'assistant') continue;
+    const text = messageText(m.content);
+    if (!text) continue;
+    out.push({ role: m.role, text });
+  }
+  return out.reverse();
+}
+
+/**
  * Joined text of everything the agent has ALREADY seen — every message EXCEPT
  * the current turn (the last user message). Used for "already in context"
  * suppression; MUST exclude the current turn or the triggering mention would
@@ -430,7 +453,14 @@ function resolveActivity(
  * every `assemble()` call. 1 MB is generous for a human-edited task list. */
 const MAX_TASKS_MD_BYTES = 1_000_000;
 
-/** Extract open tasks from ops/tasks.md "## Today" section. */
+/** Extract open tasks from ops/tasks.md Today section.
+ *
+ * The daily-task-manager skill's documented Output Format uses priority
+ * headings (`## P1 — Today`) with plain `- [ ] task` lines; older fixtures
+ * used a bare `## Today` heading with bold task names. Accept both so the
+ * live-context reader matches the documented writer contract instead of
+ * silently surfacing no tasks (#2186).
+ */
 function resolveTodayTasks(workspaceDir: string): string[] {
   try {
     const path = join(workspaceDir, 'ops', 'tasks.md');
@@ -438,14 +468,18 @@ function resolveTodayTasks(workspaceDir: string): string[] {
     // statSync throws if the file doesn't exist; that lands in the outer catch.
     if (statSync(path).size > MAX_TASKS_MD_BYTES) return [];
     const raw = readFileSync(path, 'utf8');
-    const todayMatch = raw.match(/## Today[\s\S]*?(?=\n## |$)/);
+    const todayMatch = raw.match(/^##\s+(?:P\d\s*[—–-]\s*)?Today\b[\s\S]*?(?=\n##\s|$(?![\s\S]))/m);
     if (!todayMatch) return [];
 
     const lines = todayMatch[0].split('\n');
     const open: string[] = [];
     for (const line of lines) {
-      // Match unchecked task lines: - [ ] **task name** ...
-      const m = line.match(/^\s*-\s*\[ \]\s*\*\*(.+?)\*\*/);
+      // Match unchecked task lines. Legacy bold form first (extracts just
+      // the task name, dropping trailing metadata), then the documented
+      // plain form (whole line body is the task).
+      const m =
+        line.match(/^\s*-\s*\[ \]\s*\*\*(.+?)\*\*/) ??
+        line.match(/^\s*-\s*\[ \]\s*(.+?)\s*$/);
       if (m) open.push(sanitizeForPrompt(m[1].trim()));
     }
     return open.slice(0, 5); // cap at 5 to keep prompt lean
@@ -649,6 +683,9 @@ export function createGBrainContextEngine(ctx: {
         workspaceDir,
         currentUserText: getLastUserText(messages),
         priorContextText: getPriorContextText(messages),
+        // v0.43 (#2095): rolling window — assistant-introduced entities and
+        // named-antecedent follow-ups from recent turns now resolve too.
+        windowTurns: getWindowTurns(messages),
         resolveEntities: ctx.resolveEntities,
       });
 

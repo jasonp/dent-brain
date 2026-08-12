@@ -58,6 +58,12 @@ export const ALL_PAGE_TYPES: readonly string[] = [
   // loops via the dream_generated:true + type:extract_receipt belt-and-
   // suspenders pattern per plan D-EXTRACT-19.
   'extract_receipt',
+  // v0.42.x — Life Chronicle (#2390). `event` = timeline atom
+  // (when·where·who·what), lives under life/events/; `diary` = first-person
+  // interiority, lives under life/diary/. Both temporal-primitive,
+  // extractable:false (events are one-line atoms; diary is private interiority
+  // never mined into the facts table). Pack entries in gbrain-base.yaml.
+  'event', 'diary',
 ] as const;
 
 /**
@@ -288,6 +294,15 @@ export interface PageFilters {
   /** ISO date string (YYYY-MM-DD or full ISO timestamp). Filter to pages updated_at > value. */
   updated_after?: string;
   /**
+   * v0.45.7 — keyset cursor for deterministic pagination through pages sharing
+   * one `updated_at`. `WHERE p.updated_at > ts OR (p.updated_at = ts AND
+   * p.slug > slug)`. Supersedes `updated_after` when set; pair with
+   * `sort: 'updated_asc'` (total order). Used by the `delta` verb's session
+   * cursor so a >limit same-timestamp cluster pages cleanly instead of
+   * livelocking. `slug` empty ⇒ start of the `ts` bucket.
+   */
+  updatedAfterKeyset?: { updatedAt: string; slug: string };
+  /**
    * Prefix-match filter on slug. Implemented as `WHERE slug LIKE prefix || '%'`
    * in both engines so it uses the (source_id, slug) UNIQUE constraint's btree
    * index for efficient range scans on large brains. Used by storage-tiering
@@ -343,7 +358,12 @@ export interface GetPageOpts {
 /** v0.29: literal ORDER BY fragments for the PageFilters.sort enum. Whitelisted. */
 export const PAGE_SORT_SQL: Record<NonNullable<PageFilters['sort']>, string> = {
   updated_desc: 'p.updated_at DESC',
-  updated_asc:  'p.updated_at ASC',
+  // v0.45.7: slug tiebreaker makes updated_asc a TOTAL order, so keyset
+  // pagination (updatedAfterKeyset) can page deterministically through a
+  // cluster of pages sharing one updated_at (bulk syncs stamp identical
+  // now() across a transaction). Without the tiebreaker, rows at the same
+  // timestamp order arbitrarily and a >limit tie cluster is unpageable.
+  updated_asc:  'p.updated_at ASC, p.slug ASC',
   created_desc: 'p.created_at DESC',
   slug:         'p.slug ASC',
 };
@@ -575,6 +595,13 @@ export interface Chunk {
   parent_symbol_path?: string[] | null;
   doc_comment?: string | null;
   symbol_name_qualified?: string | null;
+  /**
+   * v0.27.1 multimodal. Read side of ChunkInput.modality — must round-trip
+   * through getChunks → embed-stale merge → upsertChunks or image rows get
+   * reset to 'text' (EXCLUDED.modality on the upsert) and vanish from the
+   * image search arm.
+   */
+  modality?: 'text' | 'image';
 }
 
 /**
@@ -687,6 +714,17 @@ export interface SearchResult {
    */
   content_flag?: { reason: string; detail: string };
   /**
+   * Extraction quarantine lane (issue #160): true when the result's page is
+   * an unverified auto-extracted entity stub (frontmatter
+   * `provenance: 'auto-extracted'` + `status: 'unverified'`). Such pages are
+   * excluded from the compiled-truth authority boost and the namespace
+   * source-boost — they rank as ordinary content — and this marker tells the
+   * agent the page has NOT been reviewed by the owner. Stamped pre-fusion by
+   * `stampUnverifiedExtractions` (hybrid.ts). Absent for reviewed/ordinary
+   * pages.
+   */
+  unverified?: boolean;
+  /**
    * v0.36 (cross-modal wave): the chunk's modality discriminator from
    * content_chunks.modality. 'text' for the existing text-embedding rows,
    * 'image' for rows populated by importImageFile. Surfaced so callers /
@@ -710,6 +748,12 @@ export interface SearchResult {
    */
   effective_date?: string | null;
   effective_date_source?: string | null;
+  /** RFC 5322 Message-ID projected from allowlisted email frontmatter. */
+  message_id?: string;
+  /** Gmail thread id projected from allowlisted email frontmatter. */
+  thread_id?: string;
+  /** Exact email subject, projected only when the page has a Message-ID. */
+  source_subject?: string;
   /**
    * v0.40.4 graph signals — populated by applyGraphSignals when the
    * graph_signals mode-bundle knob is on. Surfaced in JSON envelope
@@ -755,6 +799,8 @@ export interface SearchResult {
   salience_boost?: number;
   /** Multiplier applied by applyRecencyBoost. */
   recency_boost?: number;
+  /** v0.42.x (#2390) — multiplier applied by applyChronicleTypeBoost (event/diary on temporal queries). */
+  chronicle_boost?: number;
   /** Multiplier applied by applyExactMatchBoost. */
   exact_match_boost?: number;
   /** Multiplier applied by applyGraphSignals (adjacency hit). */
@@ -967,6 +1013,19 @@ export interface SearchOpts {
    */
   sourceIds?: string[];
   /**
+   * fix/title-retrieval-arm (D2, Reviewer F1): opt-in AND→OR keyword-recall
+   * fallback. When true, `searchKeyword` retries ONCE with OR-of-terms after
+   * the strict websearch AND query returns zero rows (strict results always
+   * win when non-empty). Default false/undefined = strict-AND only — the
+   * pre-fix contract. hybridSearch opts in for its keyword arm; precision
+   * consumers (enrichment countMentions, link-extraction resolution, eval
+   * paths) MUST NOT set this: OR-matches would inflate mention counts and
+   * relax link-candidate resolution ("John Smith" matching every John and
+   * every Smith). `searchTitles` has its own page-grain fallback and
+   * ignores this flag.
+   */
+  orFallback?: boolean;
+  /**
    * v0.27.1 / v0.36 (D11): target column for vector search. Two shapes:
    *
    * 1. String name (legacy + user-facing). Engine and hybridSearch convert
@@ -1158,7 +1217,11 @@ export interface CodeEdgeResult {
 // Links
 export interface Link {
   from_slug: string;
+  /** Exact source identity of the from-page joined by from_page_id. */
+  from_source_id: string;
   to_slug: string;
+  /** Exact source identity of the to-page joined by to_page_id. */
+  to_source_id: string;
   link_type: string;
   context: string;
   /**
@@ -1176,6 +1239,8 @@ export interface Link {
    * multiple pages reference the same (from, to, type) tuple.
    */
   origin_slug?: string | null;
+  /** Exact source identity of origin_slug; null when absent or grant-redacted. */
+  origin_source_id?: string | null;
   /**
    * The frontmatter field name that created this edge (e.g. 'key_people',
    * 'investors'). Used for debug output and the `unresolved` response list.
@@ -1270,6 +1335,99 @@ export interface TimelineOpts {
    * (pre-v0.31.8 behavior; preserved by the two-branch query in both engines).
    */
   sourceId?: string;
+  /**
+   * #2200: federated read grant (caller's allowedSources). Takes precedence over
+   * scalar `sourceId` when non-empty; scopes the page-id lookup to
+   * `source_id = ANY($::text[])` so a federated read honors the whole grant
+   * (union of allowed sources), not just one source. Mirrors `GetPageOpts.sourceIds`.
+   */
+  sourceIds?: string[];
+}
+
+// v0.42.x — Life Chronicle (#2390): timeline read surfaces.
+// A ChronicleTimelineRow is a timeline_entries projection JOINed to its depth
+// page (always) and, when it is an event projection, to the event page (for
+// intra-day order via effective_date, the backlink slug, and the event kind).
+export interface ChronicleTimelineRow {
+  date: string;               // YYYY-MM-DD (the projection date, pinned tz)
+  summary: string;
+  detail: string;
+  source: string;
+  page_id: number;            // depth page id (the rich page the row belongs to)
+  page_slug: string;          // depth page slug (backlink target)
+  event_page_id: number | null;
+  event_slug: string | null;  // the type:event page, when this is an event projection
+  effective_date: string | null; // event page effective_date — drives intra-day order
+  kind: string | null;        // event.kind from the event page frontmatter
+}
+
+export interface ChronicleTimelineOpts {
+  /** getTimelineForDate: expand to the ISO week (Mon–Sun) containing `date`. */
+  week?: boolean;
+  /** getSince: filter event projections by `event.kind`. */
+  kind?: string;
+  limit?: number;
+  /** Source scope (scalar). Federated `sourceIds` takes precedence when set. */
+  sourceId?: string;
+  sourceIds?: string[];
+}
+
+export interface LastSeenResult {
+  entity_slug: string;
+  /** Most recent timeline date the entity appears in (own page or an event's who). NULL if never. */
+  last_date: string | null;
+  /** The most recent event page slug involving the entity, if the last hit was an event. */
+  last_event_slug: string | null;
+  /** Whole days between last_date and `asof` (default today). NULL when last_date is NULL. */
+  days_ago: number | null;
+}
+
+// v0.42.x — Life Chronicle (#2390) per-entity ontology (rides the `facts` table).
+// An observation is a sourced, confidence-weighted, bi-temporal claim that an
+// entity has dimension=value (e.g. role=advisor). Supersession/validity/visibility
+// are inherited from facts columns.
+export interface OntologyObservationInput {
+  entitySlug: string;
+  dimension: string;
+  value: string;
+  /** 0..1; default 0.7. */
+  confidence?: number;
+  /** Provenance — written to facts.source_markdown_slug (the dedup key + retraction key). */
+  source: string;
+  validFrom?: string | null; // ISO; null = -infinity
+  validTo?: string | null;   // ISO; null = open/current
+  visibility?: 'private' | 'world';
+  /** Novel/LLM-proposed dimensions land 'quarantined' (excluded from current resolution). */
+  status?: 'active' | 'quarantined';
+  sourceId?: string;
+}
+export interface OntologyMergeResult {
+  action: 'inserted' | 'corroborated' | 'superseded_prior' | 'noop';
+  factId: number | null;
+  supersededId: number | null;
+}
+export interface OntologyValue {
+  dimension: string;
+  value: string;
+  confidence: number;
+  source: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  status: string;          // 'active' | 'quarantined'
+  fact_id: number;
+}
+export interface OntologyDimensionStat { dimension: string; entities: number; observations: number }
+export interface OntologyConflict {
+  entity_slug: string;
+  dimension: string;
+  values: { value: string; source: string | null; confidence: number; fact_id: number }[];
+}
+export interface OntologyReadOpts {
+  asof?: string;
+  minConfidence?: number;
+  includeQuarantined?: boolean;
+  sourceId?: string;
+  sourceIds?: string[];
 }
 
 // Raw data
@@ -1301,10 +1459,20 @@ export interface BrainStats {
 
 export interface BrainHealth {
   page_count: number;
+  /**
+   * Pages inside the linkable scope (src/core/orphan-policy.ts) — the
+   * pages expected to participate in the curated link graph. Excludes
+   * archive (raw/), generated, and daily-log pages; the same scope the
+   * orphans audit uses. Denominator for the no-orphans and
+   * timeline-coverage score components.
+   */
+  linkable_page_count: number;
   embed_coverage: number;
   stale_pages: number;
   /**
-   * Islanded pages — zero inbound AND zero outbound links. A hub page
+   * Islanded pages — zero inbound AND zero outbound links, counted over
+   * LINKABLE pages only (the same scope as the `gbrain orphans` audit, so
+   * doctor cannot report two contradictory orphan numbers). A hub page
    * that has references out but no back-references is NOT an orphan under
    * this definition (it's working as intended as an index). The metric
    * aims at "pages I forgot to connect to anything", not the stricter

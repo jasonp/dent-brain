@@ -152,9 +152,21 @@ export const SECTIONS: DocSection[] = [
         path: "docs/guides/scaling-skills.md",
       },
       {
+        title: "docs/guides/push-context.md",
+        description:
+          "Push-based context: the brain volunteers confidence-gated pages from the rolling conversation window. Three channels (ambient reflex, volunteer_context op, gbrain watch), config knobs, and the volunteered-vs-used feedback loop.",
+        path: "docs/guides/push-context.md",
+      },
+      {
         title: "docs/mcp/DEPLOY.md",
         description: "MCP server deployment.",
         path: "docs/mcp/DEPLOY.md",
+      },
+      {
+        title: "docs/protocol/MEMORY_VERBS_v1.md",
+        description:
+          "The frozen five-verb memory protocol (recall/remember/entity/synthesize/forget): response envelopes, error contract, additive-forever versioning, surface modes, conformance certification, per-harness installs.",
+        path: "docs/protocol/MEMORY_VERBS_v1.md",
       },
     ],
   },

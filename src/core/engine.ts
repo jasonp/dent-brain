@@ -4,6 +4,9 @@ import type {
   SearchResult, SearchOpts,
   Link, GraphNode, GraphPath, RelationalFanoutRow, RelationalFanoutOpts,
   TimelineEntry, TimelineInput, TimelineOpts,
+  ChronicleTimelineRow, ChronicleTimelineOpts, LastSeenResult,
+  OntologyObservationInput, OntologyMergeResult, OntologyValue, OntologyDimensionStat,
+  OntologyConflict, OntologyReadOpts,
   RawData,
   PageVersion,
   BrainStats, BrainHealth,
@@ -304,6 +307,10 @@ export interface TakesListOpts {
   sortBy?: 'weight' | 'since_date' | 'created_at';
   limit?: number;
   offset?: number;
+  /** Federated/source scope via the take's page.source_id. Array wins over
+   *  scalar, matching sourceScopeOpts. Omitted (local CLI) = no source filter. */
+  sourceId?: string;
+  sourceIds?: string[];
 }
 
 /** Search result row from searchTakes / searchTakesVector. */
@@ -402,6 +409,9 @@ export interface TakesScorecardOpts {
   domainPrefix?: string; // e.g. 'companies/' to scope the scorecard
   since?: string;        // ISO date 'YYYY-MM-DD'
   until?: string;        // ISO date 'YYYY-MM-DD'
+  /** Federated/source scope via the take's page.source_id (array wins over scalar). */
+  sourceId?: string;
+  sourceIds?: string[];
 }
 
 /** v0.30.0: calibration curve bucket. */
@@ -421,6 +431,9 @@ export interface CalibrationBucket {
 export interface CalibrationCurveOpts {
   holder?: string;
   bucketSize?: number; // default 0.1
+  /** Federated/source scope via the take's page.source_id (array wins over scalar). */
+  sourceId?: string;
+  sourceIds?: string[];
 }
 
 /** Synthesis evidence row input (provenance from think synthesis pages). */
@@ -650,6 +663,15 @@ export interface BrainEngine {
   // Lifecycle
   connect(config: EngineConfig): Promise<void>;
   disconnect(): Promise<void>;
+  /**
+   * Recover a dropped connection using the config captured at the last
+   * `connect()`. Callers (autopilot health probe, batchRetry) MUST use this
+   * instead of `disconnect()` + bare `connect()`: the latter loses the config
+   * (#2034 — a bare `connect()` with no args throws `database_url undefined`
+   * forever) AND opens a null-connection window. Implemented on BOTH engines
+   * for parity so the call is never a silent no-op.
+   */
+  reconnect(ctx?: { error?: unknown }): Promise<void>;
   initSchema(): Promise<void>;
   transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T>;
   /**
@@ -943,6 +965,27 @@ export interface BrainEngine {
 
   // Search
   searchKeyword(query: string, opts?: SearchOpts): Promise<SearchResult[]>;
+  /**
+   * fix/title-retrieval-arm (D1): page-grain title candidate arm.
+   *
+   * content_chunks.search_vector never includes the page TITLE (it is
+   * doc_comment + symbol_name_qualified + chunk_text), so a page whose
+   * title tokens are absent from its body is unreachable by searchKeyword.
+   * This arm queries the PAGE-GRAIN DOCUMENT vector pages.search_vector —
+   * NOT titles alone: per trg_pages_search_vector it is title (weight 'A')
+   * + compiled_truth ('B') + timeline text ('C'). Ranked by ts_rank_cd,
+   * the 'A'-weighted title dominates, but body/timeline matches also
+   * produce (lower-ranked) candidates. Returns page-grain hits joined to
+   * ONE representative chunk per page (compiled_truth preferred, else
+   * lowest chunk_index) so rows are shaped like searchKeyword's output and
+   * can enter RRF fusion in hybridSearch.
+   *
+   * Deliberately NO query-length gating — unlike the alias hop (≤6-token
+   * guard) and the title-phrase re-rank boost, this arm must GENERATE
+   * candidates for long exact-title queries, which is exactly where
+   * chunk-grain AND FTS is weakest.
+   */
+  searchTitles(query: string, opts?: SearchOpts): Promise<SearchResult[]>;
   searchVector(embedding: Float32Array, opts?: SearchOpts): Promise<SearchResult[]>;
   /**
    * Hydrate embeddings for chunks already known by id. v0.36 (D9):
@@ -976,12 +1019,15 @@ export interface BrainEngine {
    */
   upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string } & BatchOpts): Promise<void>;
   /**
-   * Read every chunk for a page. `opts.sourceId` source-scopes the page
-   * lookup; without it, multi-source brains return chunks from every
-   * same-slug source (importCodeFile uses this for incremental embedding
-   * reuse, which would then attach the wrong source's embeddings).
+   * Read every chunk for a page. Scope precedence mirrors getPage (#2555):
+   * a federated grant (`sourceIds[]`) wins over scalar `sourceId`; with
+   * neither set, the lookup falls back to the `'default'` source (the
+   * local-untyped-call default that importCodeFile's incremental embedding
+   * reuse relies on). Embedding vectors are never selected — rowToChunk
+   * discards them at these call sites, so pulling them was pure egress
+   * (#2544).
    */
-  getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]>;
+  getChunks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Chunk[]>;
   /**
    * Count chunks across the brain where embedding IS NULL.
    * Pre-flight short-circuit for `embed --stale` so a 100%-embedded brain
@@ -991,8 +1037,13 @@ export interface BrainEngine {
    * counts across every source in the brain. Operators running
    * `gbrain embed --stale --source media-corpus` expect only that
    * source's NULLs touched; the caller threads `sourceId` here.
+   *
+   * `includeNullSignature` (only meaningful with `signature`, #3391): also
+   * count embedded chunks whose page has NO recorded signature (v108
+   * grandfathered). Provider-migration paths set this so pre-stamp pages
+   * aren't silently left in the old embedding space.
    */
-  countStaleChunks(opts?: { sourceId?: string; signature?: string }): Promise<number>;
+  countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number>;
   /**
    * Sum of LENGTH(chunk_text) over stale chunks — the character-count
    * backlog the embed phase / embed-backfill will process. Sibling of
@@ -1006,8 +1057,10 @@ export interface BrainEngine {
    * model signature (a model/dims swap). NULL signature is GRANDFATHERED
    * (never counted) so the post-migration corpus isn't flagged en masse.
    * Omit `signature` for the legacy `embedding IS NULL`-only count.
+   * `includeNullSignature` lifts the grandfather clause (#3391) — see
+   * countStaleChunks.
    */
-  sumStaleChunkChars(opts?: { sourceId?: string; signature?: string }): Promise<number>;
+  sumStaleChunkChars(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number>;
   /**
    * Stamp `pages.embedding_signature = signature` for one page. Called after
    * a page's chunks are (re)embedded so a later model swap can detect it as
@@ -1022,8 +1075,15 @@ export interface BrainEngine {
    * drift pages flow through the existing NULL-embedding cursor (keeps
    * listStaleChunks's keyset pagination untouched). GRANDFATHER: NULL
    * signature is never invalidated. `sourceId` scopes the sweep.
+   *
+   * `includeNullSignature` (#3391): ALSO invalidate embedded chunks whose
+   * page signature is NULL (pre-v108 pages that predate the stamp). After a
+   * provider/model swap those vectors are in the old embedding space; the
+   * default grandfather clause would silently keep them mixed into the new
+   * index. `gbrain migrate embeddings` and `embed --stale
+   * --include-null-signature` set this.
    */
-  invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string }): Promise<number>;
+  invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string; includeNullSignature?: boolean }): Promise<number>;
   /**
    * Cheap existence probe: is ANY page stamped with a signature that differs
    * from `signature`? Answers the only question the caller actually needs
@@ -1182,13 +1242,23 @@ export interface BrainEngine {
    * sources (pre-v0.31.8 behavior; preserved via two-branch query in both
    * engines). When set, the from-page filter becomes
    * `WHERE f.slug = $1 AND f.source_id = $X`.
+   *
+   * #2200: `opts.sourceIds` is a federated read grant (caller's allowedSources).
+   * It takes precedence over scalar `sourceId` and constrains BOTH endpoints
+   * (from AND to) to the grant via `source_id = ANY($::text[])` — so an in-grant
+   * page linking to an out-of-grant page does NOT leak the foreign slug/context
+   * (carries the `traversePaths` both-endpoint invariant). Remote MCP clients
+   * always route here (sourceScopeOpts emits an array for any allowedSources
+   * grant); the scalar branch is internal/CLI and keeps cross-source visibility
+   * (reconcileLinks + back-link validators depend on it).
    */
-  getLinks(slug: string, opts?: { sourceId?: string }): Promise<Link[]>;
+  getLinks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Link[]>;
   /**
    * v0.31.8 (D12 + D16): same `opts.sourceId` semantics as `getLinks`,
-   * applied to the to-page side of the join.
+   * applied to the to-page side of the join. #2200: `opts.sourceIds` federated
+   * grant constrains both endpoints (see `getLinks`).
    */
-  getBacklinks(slug: string, opts?: { sourceId?: string }): Promise<Link[]>;
+  getBacklinks(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<Link[]>;
   /**
    * v114 (#1941): distinct link_source provenances with edge counts, for
    * `gbrain link-sources`. Source-scoped via `{sourceId?, sourceIds?}` (both
@@ -1211,11 +1281,21 @@ export interface BrainEngine {
    *
    * Uses the `%` trigram operator (GIN-indexed) + the standard `similarity()`
    * function. Both engines support pg_trgm (PGLite 0.3+, Postgres always).
+   *
+   * `sourceId` constrains the search to a single source and filters out
+   * soft-deleted pages. Mirrors the same filters `tryFuzzyMatch` in
+   * `src/core/entities/resolve.ts` got via #1436 (v0.41.13.0). Omit for the
+   * historical unscoped behavior — live-mode callers that already know
+   * the source should pass it to avoid cross-source slug suggestions that
+   * get silently dropped at the FK filter downstream. Batch-mode callers
+   * (e.g. `gbrain extract`) intentionally omit it to build a cross-source
+   * resolution map.
    */
   findByTitleFuzzy(
     name: string,
     dirPrefix?: string,
     minSimilarity?: number,
+    sourceId?: string,
   ): Promise<{ slug: string; similarity: number } | null>;
   /**
    * v0.34.1 (#861 — P0 leak seal): `opts.sourceId` / `opts.sourceIds`
@@ -1311,6 +1391,16 @@ export interface BrainEngine {
     pageIds: number[],
   ): Promise<Map<number, { reason: string; detail: string }>>;
   /**
+   * Extraction quarantine lane (issue #160): for a list of page_ids, return
+   * the subset that are unverified auto-extracted entity stubs (frontmatter
+   * `provenance: 'auto-extracted'` + `status: 'unverified'`). Used by hybrid
+   * search to stamp `SearchResult.unverified` pre-fusion so the fusion-level
+   * compiled-truth boost skips them. Single SQL query, not N+1. Empty input
+   * → empty set (no query). SQL predicate is the shared
+   * `unverifiedExtractionFragment` (src/core/extraction-review.ts).
+   */
+  getUnverifiedExtractionPageIds(pageIds: number[]): Promise<Set<number>>;
+  /**
    * v0.27.0: for a list of slugs, return their updated_at timestamps (or created_at fallback).
    * Used by hybrid search recency boost. Single SQL query, not N+1.
    * Slugs with no timestamp get no entry in the map.
@@ -1367,7 +1457,13 @@ export interface BrainEngine {
    */
   addTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void>;
   removeTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void>;
-  getTags(slug: string, opts?: { sourceId?: string }): Promise<string[]>;
+  /**
+   * #2200: getTags ALSO accepts a federated `sourceIds[]` read grant (precedence
+   * over scalar `sourceId`); it unions tags across the matched same-slug pages
+   * via `page_id IN (…) … DISTINCT`. The write-side addTag/removeTag deliberately
+   * stay scalar-only — `allowedSources` is a read grant; writes route to one source.
+   */
+  getTags(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<string[]>;
 
   // Timeline
   /**
@@ -1403,6 +1499,42 @@ export interface BrainEngine {
   addTimelineEntriesBatch(entries: TimelineBatchInput[], opts?: BatchOpts): Promise<number>;
   getTimeline(slug: string, opts?: TimelineOpts): Promise<TimelineEntry[]>;
 
+  // v0.42.x — Life Chronicle (#2390) timeline reads. All filter the depth page
+  // (and any event page) on deleted_at IS NULL, order by COALESCE(event
+  // effective_date, date), and honor source scope (sourceIds[] > sourceId).
+  /** Events/timeline rows on a given day (or its ISO week when opts.week). */
+  getTimelineForDate(date: string, opts?: ChronicleTimelineOpts): Promise<ChronicleTimelineRow[]>;
+  /** Events/timeline rows on or after `date`, optionally filtered by event.kind. */
+  getSince(date: string, opts?: ChronicleTimelineOpts): Promise<ChronicleTimelineRow[]>;
+  /** "On this day" — events from the same month-day in PRIOR years (default: today). */
+  getOnThisDay(opts?: { date?: string; limit?: number; sourceId?: string; sourceIds?: string[] }): Promise<ChronicleTimelineRow[]>;
+  /** Most recent date an entity appears (its own page or an event's `who`). */
+  getLastSeen(entitySlug: string, opts?: { asof?: string; sourceId?: string; sourceIds?: string[] }): Promise<LastSeenResult>;
+  /**
+   * Upsert the date-index projection row for an event page: page_id = depth
+   * page, event_page_id = event page, keyed (event_page_id, date). Re-extraction
+   * with a changed summary UPDATEs (no duplicate). Returns projected=false when
+   * either slug is missing in the source. Idempotent.
+   */
+  upsertEventProjection(opts: { depthSlug: string; eventSlug: string; date: string; summary: string; detail?: string; sourceId?: string }): Promise<{ projected: boolean }>;
+
+  // v0.42.x — Life Chronicle (#2390) per-entity ontology (rides `facts`).
+  /**
+   * Record one ontology observation (entity has dimension=value). Idempotent on
+   * the deterministic dedup key (source_id, entity_slug, dimension, value_hash,
+   * source_markdown_slug). A new value forward-supersedes the prior open row
+   * (expired_at + superseded_by); the same value corroborates; a backdated
+   * conflicting value is inserted WITHOUT rewriting the prior (surfaced by
+   * findOntologyConflicts). Never throws on dup — returns action 'noop'.
+   */
+  mergeOntologyFact(obs: OntologyObservationInput): Promise<OntologyMergeResult>;
+  /** Current resolved ontology for an entity at `asof` (default now). */
+  getOntology(entitySlug: string, opts?: OntologyReadOpts): Promise<OntologyValue[]>;
+  /** Meta-ontology: which dimensions exist across the brain, and how widely. */
+  discoverOntologyDimensions(opts?: { sourceId?: string; sourceIds?: string[] }): Promise<OntologyDimensionStat[]>;
+  /** Dimensions with ≥2 distinct current-open values from ≥2 provenances. */
+  findOntologyConflicts(opts?: { sourceId?: string; sourceIds?: string[]; minConfidence?: number }): Promise<OntologyConflict[]>;
+
   // Raw data
   /**
    * v0.31.8 (D21): `opts.sourceId` source-scopes the page-id lookup. When
@@ -1416,7 +1548,7 @@ export interface BrainEngine {
    * it, multi-source brains return raw_data rows from every same-slug page
    * (preserved via two-branch query for back-compat).
    */
-  getRawData(slug: string, source?: string, opts?: { sourceId?: string }): Promise<RawData[]>;
+  getRawData(slug: string, source?: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<RawData[]>;
 
   // Files (v0.27.1: binary asset metadata + storage_path. Image bytes never
   // enter the DB; storage_path references a path inside the brain repo or an
@@ -1455,7 +1587,7 @@ export interface BrainEngine {
    * Honors `takesHoldersAllowList` via WHERE filter so MCP-bound calls cannot
    * retrieve holders outside the token's allow-list.
    */
-  searchTakes(query: string, opts?: SearchOpts & { takesHoldersAllowList?: string[] }): Promise<TakeHit[]>;
+  searchTakes(query: string, opts?: SearchOpts & { takesHoldersAllowList?: string[]; sourceId?: string; sourceIds?: string[] }): Promise<TakeHit[]>;
 
   /**
    * Vector search across active takes. Cosine distance against `embedding`.
@@ -1463,7 +1595,7 @@ export interface BrainEngine {
    */
   searchTakesVector(
     embedding: Float32Array,
-    opts?: SearchOpts & { takesHoldersAllowList?: string[] },
+    opts?: SearchOpts & { takesHoldersAllowList?: string[]; sourceId?: string; sourceIds?: string[] },
   ): Promise<TakeHit[]>;
 
   /** Look up embeddings by take id (mirrors getEmbeddingsByChunkIds). */
@@ -1724,7 +1856,31 @@ export interface BrainEngine {
    * until the v0_32_2 migration backfills them. Cycle-phase callers in
    * commit 7 add the empty-fence-guard as a belt-and-suspenders check.
    */
-  deleteFactsForPage(slug: string, source_id: string): Promise<{ deleted: number }>;
+  /**
+   * #1928: `excludeSourcePrefixes` protects facts whose `source` matches any
+   * given prefix (e.g. `['cli:']` for conversation facts written by
+   * `extract-conversation-facts`) from a fence reconcile. Those rows are NOT
+   * fence-owned — a destructive wipe-and-reinsert pass would delete them and
+   * never recreate them (the page has no `## Facts` fence). Omitted ⇒ legacy
+   * behavior (delete every fact on the page coordinate). NULL/empty `source`
+   * rows are always deletable (fence default).
+   *
+   * #2646: `preserveExpiredLegacy` protects soft-expired legacy rows
+   * (`row_num IS NULL AND expired_at IS NOT NULL`) — the record left by
+   * `forget_fact`'s legacy DB-only path. Fence rows always carry a
+   * `row_num`, so these rows are never fence-owned and a wipe would
+   * destroy the forget record (the audit trail of the forget). Note what
+   * this does NOT promise: it protects the record, not the forget itself —
+   * if the fence still carries the same claim, fence canonicality
+   * independently reinserts it as a fresh active row (legacy DB-only
+   * forgets are documented as non-durable; see extract-facts.ts). Omitted
+   * ⇒ legacy behavior.
+   */
+  deleteFactsForPage(
+    slug: string,
+    source_id: string,
+    opts?: { excludeSourcePrefixes?: string[]; preserveExpiredLegacy?: boolean },
+  ): Promise<{ deleted: number }>;
 
   /**
    * Mark a fact expired. Never DELETE. Returns true iff a row was updated.
@@ -1818,7 +1974,7 @@ export interface BrainEngine {
    * When omitted, returns versions for every same-slug page across sources
    * (pre-v0.31.8 behavior; preserved via two-branch query).
    */
-  getVersions(slug: string, opts?: { sourceId?: string }): Promise<PageVersion[]>;
+  getVersions(slug: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<PageVersion[]>;
   /**
    * v0.31.8 (D12): `opts.sourceId` source-scopes both the version lookup
    * and the page revert. Without it, multi-source brains can revert the
@@ -1832,7 +1988,11 @@ export interface BrainEngine {
 
   // Ingest log
   logIngest(entry: IngestLogInput): Promise<void>;
-  getIngestLog(opts?: { limit?: number }): Promise<IngestLogEntry[]>;
+  /**
+   * `opts.sourceIds` scopes the log to those sources (federated read grant /
+   * remote caller scope). Omitted → whole brain (trusted local callers).
+   */
+  getIngestLog(opts?: { limit?: number; sourceIds?: string[] }): Promise<IngestLogEntry[]>;
 
   // Sync
   /**
@@ -1840,8 +2000,13 @@ export interface BrainEngine {
    * preserved via stable page_id). `opts.sourceId` scopes the UPDATE — without
    * it, the bare `WHERE slug = old` matches every row across every source and
    * would either rename them all OR violate the (source_id, slug) UNIQUE.
+   *
+   * Returns the number of rows moved. 0 means the old slug had no row in the
+   * scoped source — an UPDATE that matches nothing does NOT throw, so callers
+   * that need to know whether the rename actually happened (the sync rename
+   * path, #3056) must check the return value rather than rely on the catch.
    */
-  updateSlug(oldSlug: string, newSlug: string, opts?: { sourceId?: string }): Promise<void>;
+  updateSlug(oldSlug: string, newSlug: string, opts?: { sourceId?: string }): Promise<number>;
   rewriteLinks(oldSlug: string, newSlug: string): Promise<void>;
 
   /**
@@ -1988,6 +2153,9 @@ export interface BrainEngine {
 
   // Migration support
   runMigration(version: number, sql: string): Promise<void>;
+  // Deliberately scalar-only (no sourceIds[] widening): engine-internal with
+  // zero remote-reachable callers (verified #2555 review), so the federated
+  // read-scope contract doesn't apply. Widen only if an op ever exposes it.
   getChunksWithEmbeddings(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]>;
 
   // Raw SQL (for Minions job queue and other internal modules)

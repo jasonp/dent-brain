@@ -136,6 +136,32 @@ export function isSupabasePoolerUrl(url: string): boolean {
  *
  * Returns null when the URL isn't a recognized Supabase pooler.
  */
+// FORK DIVERGENCE (v0.48.1, RE-CONFIRMED during the v0.50.0.0 upstream sync).
+//
+// Upstream derives `db.<ref>.supabase.co` and strips the username to bare
+// `postgres`. We deliberately do NEITHER. Two independent reasons, both of
+// which our own tests below pin:
+//
+//   1. HOST. `db.<ref>.supabase.co` is IPv6-only without Supabase's paid IPv4
+//      add-on. Railway is IPv4-only, so deriving it turns every direct-pool
+//      init into a failed connection. Upstream absorbs that with an
+//      ENOTFOUND fallback to the pooler — which works, but costs a timeout at
+//      init and then drops to single-pool anyway. Swapping 6543→5432 on the
+//      pooler host reaches a genuinely session-capable endpoint on the first
+//      try.
+//
+//   2. USERNAME. Supavisor routes tenants BY the `postgres.<ref>` suffix.
+//      Stripping it is correct for a direct host and WRONG for the pooler:
+//      auth fails with `password authentication failed for user "postgres"`
+//      even though the password is right. Since our derived endpoint stays on
+//      the pooler, the suffix must stay too.
+//
+// Taking upstream's version was attempted during the sync and reverted — the
+// tests in test/connection-manager.serial.test.ts caught it. If a future sync
+// makes this conflict again, read those tests before "fixing" it toward
+// upstream. Production sets GBRAIN_DIRECT_DATABASE_URL explicitly to the
+// session pooler (:5432), which passes through untouched either way, so the
+// blast radius is fresh installs and teammates without the override.
 export function deriveDirectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));
@@ -159,6 +185,52 @@ export function deriveDirectUrl(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** True when the URL targets Supavisor transaction mode (port 6543). */
+function isTransactionPoolerUrl(url: string): boolean {
+  try {
+    return new URL(url.replace(/^postgres(ql)?:\/\//, 'http://')).port === '6543';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the direct-pool URL from an explicit/env override + the primary URL.
+ *
+ * A direct override still pointing at the TRANSACTION-mode pooler (port 6543,
+ * usually a copy-paste of the primary URL) is a misconfiguration: the manager
+ * would believe DDL/bulk work runs on a long-timeout direct connection while
+ * still routing through Supavisor transaction mode (short timeouts, no
+ * prepared statements). Normalize it via deriveDirectUrl. Session-mode pooler
+ * URLs (pooler host, port 5432) pass through — they are a legitimate
+ * direct-ish target when the db.<ref> host is unreachable.
+ */
+export function normalizeDirectUrl(primaryUrl: string, override?: string | null): string | null {
+  const candidate = override ?? deriveDirectUrl(primaryUrl);
+  if (!candidate) return null;
+  if (!isTransactionPoolerUrl(candidate)) return candidate;
+  return deriveDirectUrl(candidate) ?? deriveDirectUrl(primaryUrl);
+}
+
+/**
+ * Error codes that mean "the direct host is unreachable from this network"
+ * (#1641). The auto-derived db.<ref>.supabase.co host is IPv6-only without
+ * the paid IPv4 add-on, so ENOTFOUND/ECONNREFUSED here is expected on
+ * IPv4-only networks — we fall back to the pooler instead of failing init.
+ */
+const NETWORK_UNREACHABLE_CODES = [
+  'ENOTFOUND', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH',
+  'ETIMEDOUT', 'CONNECT_TIMEOUT',
+];
+
+/** True when err looks like a network-unreachable failure (not auth/SQL). */
+export function isNetworkUnreachableError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && NETWORK_UNREACHABLE_CODES.includes(code)) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return NETWORK_UNREACHABLE_CODES.some(c => msg.includes(c));
 }
 
 /**
@@ -207,9 +279,10 @@ export class ConnectionManager {
     } else {
       this._killSwitch = readKillSwitchEnv();
       this._isSupabase = isSupabasePoolerUrl(opts.url);
-      // Direct URL: explicit override > env > derive > null
+      // Direct URL: explicit override > env > derive > null. Pooler-shaped
+      // overrides are normalized to a real direct host (or dropped).
       const envOverride = process.env.GBRAIN_DIRECT_DATABASE_URL;
-      this._directUrl = opts.directUrl ?? envOverride ?? deriveDirectUrl(opts.url);
+      this._directUrl = normalizeDirectUrl(opts.url, opts.directUrl ?? envOverride);
     }
   }
 
@@ -313,7 +386,30 @@ export class ConnectionManager {
         throw err;
       });
     }
-    const pool = await this._directInit;
+    let pool: Sql | null;
+    try {
+      pool = await this._directInit;
+    } catch (err) {
+      // #1641: the derived direct host (db.<ref>.supabase.co) is IPv6-only
+      // without Supabase's IPv4 add-on. On IPv4-only networks the direct
+      // pool can never connect — permanently fall back to the read pool
+      // (self-activating kill-switch) instead of failing init/migrations.
+      // Non-network errors (auth, SQL) still throw: they mean misconfig,
+      // not unreachability.
+      if (isNetworkUnreachableError(err)) {
+        const alreadyWarned = this._killSwitch;
+        this._killSwitch = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!alreadyWarned) console.error(
+          `gbrain: direct connection to ${this._directUrl ? this.hostOnly(this._directUrl) : 'unknown host'} unreachable (${msg}); ` +
+          'falling back to the pooler for DDL/bulk (long migrations may hit the pooler statement timeout). ' +
+          'Set GBRAIN_DIRECT_DATABASE_URL to a reachable direct URL (e.g. the Session pooler, port 5432) or enable the Supabase IPv4 add-on; ' +
+          'GBRAIN_DISABLE_DIRECT_POOL=1 silences this.',
+        );
+        return this.getReadPool();
+      }
+      throw err;
+    }
     if (!pool) {
       // Defensive — initDirectPool should have thrown.
       throw new Error('connection-manager: direct pool init returned null');
@@ -344,8 +440,9 @@ export class ConnectionManager {
       },
     };
     const t0 = Date.now();
+    let pool: Sql | null = null;
     try {
-      const pool = postgres(this._directUrl, opts);
+      pool = postgres(this._directUrl, opts);
       // Probe to validate connectivity early.
       await pool`SELECT 1`;
       logConnectionEvent({
@@ -356,6 +453,9 @@ export class ConnectionManager {
       });
       return pool;
     } catch (err) {
+      // Don't leak the failed pool's sockets/timers (#1641 fallback keeps
+      // the process running afterward).
+      if (pool) await endPoolBounded(pool);
       logConnectionEvent({
         pool: 'ddl',
         op: 'error',
