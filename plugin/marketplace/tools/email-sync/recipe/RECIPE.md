@@ -29,7 +29,7 @@ The daemon imports this module at startup. The filter is called **after** the ca
 
 1. **Pure function.** No network, no fs, no env reads, no side effects.
 2. **Privacy bias: exclude by default.** When ambiguous, return `keep: false`. Work inboxes often carry personal threads (banking, doctor, family), and the work-email scope alone doesn't separate them.
-3. **Don't re-implement noise filtering.** The canonical `noise-filter.ts` (Mailchimp, SendGrid, noreply@, etc.) runs first; `email.isNoise === true` tells you the sender already matched. Defer to it unless you have a specific reason to keep a noise-flagged sender.
+3. **Don't re-implement noise filtering.** The canonical `noise-filter.ts` (Mailchimp, SendGrid, noreply@, etc.) runs first; `email.isNoise === true` tells you the sender already matched, and `email.isBulk === true` tells you the sender stamped RFC bulk headers. Defer to both unless you have a specific reason to keep a flagged sender.
 4. **No third-party logging.** Don't `console.log` PII from the email. The daemon's verbose mode logs subject + from for each decision — that's enough audit trail.
 
 ## What's in `CollectedEmail`
@@ -41,7 +41,8 @@ See `../types.ts` for the full shape. Fields the filter typically uses:
 - `email.recipients: string[]` — To + Cc + Bcc, bare addresses.
 - `email.subject` — trimmed subject line.
 - `email.snippet` — ~250-char body preview. Be cautious about matching against this (it can change between Gmail revisions).
-- `email.isNoise` — canonical "this looks like bulk/automation."
+- `email.isNoise` — canonical "this looks like bulk/automation," decided from the sender address.
+- `email.isBulk` — canonical "the sender itself declared this bulk," decided from the RFC headers (`List-Unsubscribe`, `List-Id`, `Precedence: bulk`). This is the one that catches newsletters sent from human-looking addresses, which `isNoise` structurally cannot. Additive field — a filter written before it existed still works unchanged, which is why `RECIPE_VERSION` stays at 1.
 - `email.isSignature` — canonical "this is a Docusign-style signature request."
 - `email.isOutbound` — true when the work-email-holder sent the message (vs received).
 - `email.date` — ISO timestamp.

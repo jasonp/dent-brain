@@ -30,8 +30,20 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import type { CollectedEmail, SyncConfig, SyncCursor, RunSummary, UserFilterModule } from './types.ts';
 import { McpClient } from './mcp-client.ts';
-import { GoogleClient, GoogleClientError, classifyProbeFailure, header, parseAddress, parseAddressList } from './google-client.ts';
-import { isNoise, isSignature } from './noise-filter.ts';
+import { GoogleClient, GoogleClientError, classifyProbeFailure, header, loadTokensFromDisk, parseAddress, parseAddressList } from './google-client.ts';
+import {
+  clearCooldown,
+  cooldownRemainingMs,
+  formatDuration,
+  loadGmailState,
+  needsIdentityProbe,
+  recordVerifiedAccount,
+  saveGmailStateBestEffort,
+  startCooldown,
+  tokenFingerprint,
+  type GmailState,
+} from './gmail-state.ts';
+import { isBulkMail, isNoise, isSignature } from './noise-filter.ts';
 import { gmailLink } from './link-gen.ts';
 import { buildDigest, digestSlug } from './digest.ts';
 
@@ -48,6 +60,7 @@ interface Flags {
   since: string | null;
   configPath: string;
   filterPath: string;
+  force: boolean;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -57,10 +70,12 @@ function parseFlags(argv: string[]): Flags {
     since: null,
     configPath: DEFAULT_CONFIG_PATH,
     filterPath: DEFAULT_USER_FILTER_PATH,
+    force: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') f.dryRun = true;
+    else if (a === '--force') f.force = true;
     else if (a === '--verbose' || a === '-v') f.verbose = true;
     else if (a === '--since') f.since = argv[++i];
     else if (a === '--config') f.configPath = argv[++i];
@@ -78,7 +93,7 @@ function parseFlags(argv: string[]): Flags {
 
 function printHelp() {
   console.error(
-    `Email-sync collector — pulls Gmail via direct OAuth, writes daily digest to dent-brain.\n\nUsage: bun collect.ts [flags]\n  --dry-run                Plan only, no MCP writes.\n  --since YYYY-MM-DD       Backfill from this date (override cursor).\n  --verbose | -v           Log every classification decision.\n  --config <path>          Override config path (default: ${DEFAULT_CONFIG_PATH}).\n  --filter <path>          Override user filter path (default: <install-dir>/user/filter.ts).\n  --help | -h              Print this help.\n`,
+    `Email-sync collector — pulls Gmail via direct OAuth, writes daily digest to dent-brain.\n\nUsage: bun collect.ts [flags]\n  --dry-run                Plan only, no MCP writes.\n  --force                  Ignore an active Gmail 429 cool-down (see gmail-state.ts).\n  --since YYYY-MM-DD       Backfill from this date (override cursor).\n  --verbose | -v           Log every classification decision.\n  --config <path>          Override config path (default: ${DEFAULT_CONFIG_PATH}).\n  --filter <path>          Override user filter path (default: <install-dir>/user/filter.ts).\n  --help | -h              Print this help.\n`,
   );
 }
 
@@ -170,6 +185,7 @@ function loadConfig(path: string): SyncConfig {
     workEmail: String(raw.workEmail).toLowerCase(),
     authUser: String(raw.authUser ?? '0'),
     cursorPath: String(raw.cursorPath ?? join(homedir(), '.dent-brain', 'email-sync', 'cursor.json')),
+    gmailStatePath: String(raw.gmailStatePath ?? join(homedir(), '.dent-brain', 'email-sync', 'gmail-state.json')),
     cacheDir: String(raw.cacheDir ?? join(homedir(), '.dent-brain', 'email-sync', 'cache')),
   };
 }
@@ -244,6 +260,11 @@ function translateMessage(msg: any, workEmail: string, authUser: string): Collec
     snippet,
     gmailLink: gmailLink(String(msg.id), authUser),
     isNoise: isNoise(from.email),
+    isBulk: isBulkMail({
+      listUnsubscribe: header(msg, 'List-Unsubscribe'),
+      listId: header(msg, 'List-Id'),
+      precedence: header(msg, 'Precedence'),
+    }),
     isSignature: isSignature(subject, from.email),
     isOutbound: from.email === workEmail,
   };
@@ -264,6 +285,31 @@ function groupByDate(emails: CollectedEmail[]): Map<string, CollectedEmail[]> {
   return m;
 }
 
+/**
+ * Bank a Gmail 429 and stop the run cleanly.
+ *
+ * Exiting 0 is deliberate: a rate-limit is not a failure of this daemon, and a
+ * non-zero exit would make the scheduler log noise for a condition that resolves
+ * itself. What matters is that we persist the window first, so every fire before
+ * it passes makes ZERO Gmail calls instead of re-extending it.
+ */
+function bankCooldownAndExit(
+  statePath: string,
+  state: GmailState,
+  err: unknown,
+  phase: string,
+): never {
+  const retryAfter = err instanceof GoogleClientError ? err.retryAfter : null;
+  const next = startCooldown(state, retryAfter, Date.now(), phase);
+  saveGmailStateBestEffort(statePath, next, 'the Gmail cool-down');
+  console.error(
+    `[email-sync] Gmail rate-limited (429) during ${phase}${retryAfter ? ` (Gmail says retry after ${retryAfter})` : ' (no retry-after given)'}.`,
+  );
+  console.error(`  Holding all Gmail calls until ${next.cooldownUntil}. Scheduled fires before then will exit without touching the API —`);
+  console.error(`  a per-user 429 window extends every time it is touched, so waiting it out untouched is the only thing that clears it.`);
+  process.exit(0);
+}
+
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
   const config = loadConfig(flags.configPath);
@@ -279,45 +325,91 @@ async function main() {
   console.error(`[email-sync] mode=${flags.dryRun ? 'DRY RUN' : 'APPLY'} workEmail=${config.workEmail} since=${sinceIso}`);
   console.error(`[email-sync] user filter: ${flags.filterPath} (RECIPE_VERSION=${userFilter.RECIPE_VERSION ?? 0})`);
 
+  // --- Gmail cool-down gate. Must come before ANY Gmail call. ---
+  // A live per-user 429 window is extended by every call made against it, so a
+  // daemon that fires on a fixed interval and probes each time can hold itself
+  // out indefinitely (observed: 3-5 consecutive fires, 18-30h of stalled
+  // ingestion, retry-after advancing in lockstep with the 6h interval).
+  let gmailState = loadGmailState(config.gmailStatePath);
+  const cooldownLeft = cooldownRemainingMs(gmailState, Date.now());
+  if (cooldownLeft > 0) {
+    if (flags.force) {
+      console.error(`[email-sync] --force: ignoring the Gmail cool-down (${formatDuration(cooldownLeft)} left, until ${gmailState.cooldownUntil}).`);
+    } else {
+      console.error(
+        `[email-sync] Gmail cool-down active until ${gmailState.cooldownUntil} (${formatDuration(cooldownLeft)} left, tripped during ${gmailState.cooldownReason ?? 'an earlier call'}).`,
+      );
+      console.error(`  Making no Gmail calls this run. Re-run with --force if you need a single confirming probe.`);
+      process.exit(0);
+    }
+  }
+
   const gc = new GoogleClient({
     tokensPath: config.googleTokensPath,
     clientId: config.googleClientId,
     clientSecret: config.googleClientSecret,
   });
 
-  // Health probe up front. Token expired / revoked → fail fast.
+  // Wrong-account guard. This costs a `users.getProfile` call, and the answer
+  // can only change when the tokens change — so we memoize it against a
+  // fingerprint of the refresh token and probe once per authorization instead
+  // of once per fire (issue doc §A5). A tokens file we can't read leaves the
+  // fingerprint null, which forces the probe and surfaces the real error there.
+  let fingerprint: string | null = null;
   try {
-    const profile = await gc.health();
-    if (flags.verbose) console.error(`[email-sync] gmail profile: ${profile.emailAddress}`);
-    if (profile.emailAddress.toLowerCase() !== config.workEmail) {
-      console.error(`[email-sync] FATAL: OAuth tokens are for ${profile.emailAddress} but config.workEmail is ${config.workEmail}. Re-run install.sh to re-authorize.`);
-      process.exit(2);
+    fingerprint = tokenFingerprint(loadTokensFromDisk(config.googleTokensPath).refresh_token);
+  } catch {
+    /* fall through to the probe, which reports the underlying problem */
+  }
+
+  if (fingerprint && !needsIdentityProbe(gmailState, fingerprint)) {
+    if (flags.verbose) {
+      console.error(`[email-sync] identity already verified for these tokens (${gmailState.verifiedAccount?.email}); skipping the getProfile probe.`);
     }
-  } catch (e) {
-    // A transient rate-limit must NOT be treated as a fatal auth failure. If we
-    // hard-exit and re-fire every few hours hammering getProfile, we keep the
-    // per-user 429 window alive (the v0.45 lockout). On 429: skip this run
-    // cleanly (exit 0, no further Gmail calls) and let the next scheduled fire
-    // retry. Only a genuine auth/other failure is fatal.
-    const kind = e instanceof GoogleClientError ? classifyProbeFailure(e.status, e.body) : 'network';
-    if (kind === 'rate_limit') {
-      const when = e instanceof GoogleClientError && e.retryAfter ? ` (retry after ${e.retryAfter})` : '';
-      console.error(`[email-sync] Gmail rate-limited (429)${when}; skipping this run, will retry on the next scheduled fire.`);
-      process.exit(0);
+  } else {
+    try {
+      const profile = await gc.health();
+      if (flags.verbose) console.error(`[email-sync] gmail profile: ${profile.emailAddress}`);
+      if (profile.emailAddress.toLowerCase() !== config.workEmail) {
+        console.error(`[email-sync] FATAL: OAuth tokens are for ${profile.emailAddress} but config.workEmail is ${config.workEmail}. Re-run install.sh to re-authorize.`);
+        process.exit(2);
+      }
+      if (fingerprint) {
+        gmailState = recordVerifiedAccount(gmailState, profile.emailAddress.toLowerCase(), fingerprint);
+        // Best-effort: this sits inside the Gmail-failure catch below, so an
+        // unguarded throw here would be misreported as a Gmail probe failure.
+        saveGmailStateBestEffort(config.gmailStatePath, gmailState, 'the verified-account memo');
+      }
+    } catch (e) {
+      // A transient rate-limit must NOT be treated as a fatal auth failure
+      // (the v0.45 lockout). Bank the window and stop; only a genuine
+      // auth/other failure is fatal.
+      const kind = e instanceof GoogleClientError ? classifyProbeFailure(e.status, e.body) : 'network';
+      if (kind === 'rate_limit') {
+        bankCooldownAndExit(config.gmailStatePath, gmailState, e, 'the identity probe');
+      }
+      if (kind === 'auth') {
+        console.error(`[email-sync] FATAL: Gmail auth failed: ${e instanceof Error ? e.message : String(e)}`);
+        console.error(`  The access token was likely revoked — re-run \`dent-extensions install email-sync\` to re-authorize.`);
+        process.exit(2);
+      }
+      console.error(`[email-sync] Gmail health probe failed (${kind}): ${e instanceof Error ? e.message : String(e)}; skipping this run.`);
+      process.exit(1);
     }
-    if (kind === 'auth') {
-      console.error(`[email-sync] FATAL: Gmail auth failed: ${e instanceof Error ? e.message : String(e)}`);
-      console.error(`  The access token was likely revoked — re-run \`dent-extensions install email-sync\` to re-authorize.`);
-      process.exit(2);
-    }
-    console.error(`[email-sync] Gmail health probe failed (${kind}): ${e instanceof Error ? e.message : String(e)}; skipping this run.`);
-    process.exit(1);
   }
 
   const query = buildGmailQuery(config.workEmail, sinceIso);
   if (flags.verbose) console.error(`[email-sync] gmail query: ${query}`);
 
-  const { ids } = await gc.listMessages(query, 100);
+  let ids: Array<{ id: string; threadId: string }>;
+  try {
+    ({ ids } = await gc.listMessages(query, 100));
+  } catch (e) {
+    if (e instanceof GoogleClientError && classifyProbeFailure(e.status, e.body) === 'rate_limit') {
+      bankCooldownAndExit(config.gmailStatePath, gmailState, e, 'the message list');
+    }
+    throw e;
+  }
   console.error(`[email-sync] gmail returned ${ids.length} candidate ids`);
 
   // Skip any we've already processed.
@@ -347,10 +439,18 @@ async function main() {
       }
       collected.push(translated);
       if (flags.verbose) {
-        const tag = translated.isNoise ? 'NOISE' : translated.isSignature ? 'SIG' : 'TRIAGE';
+        const tag = translated.isNoise ? 'NOISE' : translated.isBulk ? 'BULK' : translated.isSignature ? 'SIG' : 'TRIAGE';
         console.error(`  ${tag} ${translated.date.slice(0, 10)} ${translated.fromEmail} → ${translated.subject.slice(0, 60)}`);
       }
     } catch (e) {
+      if (e instanceof GoogleClientError && classifyProbeFailure(e.status, e.body) === 'rate_limit') {
+        // Abandon the whole run rather than grinding through the remaining ids:
+        // each would 429 too and push the window further out. Nothing is written
+        // and the cursor stays put, so the next run redoes this range cleanly —
+        // digest pages are rewritten per day and the `[Source: gmail/<id>]`
+        // marker keeps re-ingestion idempotent.
+        bankCooldownAndExit(config.gmailStatePath, gmailState, e, 'a message fetch');
+      }
       console.error(`[email-sync] fetch ${id} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -454,12 +554,26 @@ async function main() {
   };
   if (!flags.dryRun) saveCursor(config.cursorPath, newCursor);
 
+  // We got all the way through without a 429, so any banked window is gone.
+  // Drop it (this is how a successful `--force` probe re-opens the daemon, and
+  // how a stale past timestamp gets tidied up). Unlike the cursor, this is
+  // written even on a dry run — the Gmail calls it describes really happened.
+  if (gmailState.cooldownUntil) {
+    gmailState = clearCooldown(gmailState);
+    // Best-effort: this is the LAST thing a successful run does, after every
+    // MCP write has already landed. Throwing here would exit non-zero on a run
+    // that did all its work, and the scheduler log would read as a failure.
+    saveGmailStateBestEffort(config.gmailStatePath, gmailState, 'the cleared cool-down');
+    console.error(`[email-sync] Gmail cool-down cleared — the run completed with no rate-limit.`);
+  }
+
   const summary: RunSummary = {
     startedAt: cursor.cursorUpdatedAt,
     finishedAt: new Date().toISOString(),
     candidates: ids.length,
     fetched: collected.length,
-    noise: collected.filter((e) => e.isNoise).length,
+    // Matches the digest's routing: bulk lands in the Noise section too.
+    noise: collected.filter((e) => e.isNoise || e.isBulk).length,
     signatures: collected.filter((e) => e.isSignature).length,
     userFiltered,
     written,
