@@ -305,7 +305,30 @@ All bulk commands stream through `src/core/progress.ts` — heartbeats within 1s
 
 ## Pre-ship requirements
 
-Run `bun test` AND `bun run test:e2e` (full DB lifecycle). Both must pass.
+**CI is the gate, not your laptop.** Push the branch and require green on the `Test` and
+`E2E Tests` workflows for the SHA you intend to merge. Locally, run `bun run verify` (~12s)
+plus the test files your diff touches. Do NOT run the full `bun test` or `bun run test:e2e`
+locally as a ship gate.
+
+Why (measured 2026-08-12): CI runs the same unit suite in **7–9 min** across a 10-shard matrix
+on dedicated runners, and E2E in ~3 min. The same suite locally takes **23–32 min** — 4 shards
+contending for 14 cores — and the local E2E harness needs a hand-rolled Postgres cluster. That
+is ~40 minutes per ship to re-derive an answer CI already has, and it made batching work into
+bigger PRs look necessary when it isn't. `docs/reference/testing.md` has said it all along:
+*"CI is the ground truth for 'did everything pass.'"*
+
+Two caveats worth knowing:
+
+- **Local and CI shard differently** — CI buckets by FNV-1a hash across 10 shards, local uses
+  round-robin across 4. Cross-file contamination can therefore appear in one and not the other
+  (v0.49.4.0: a gateway-singleton leak killed a local shard while CI stayed green because the
+  two files never shared a process). A green CI is the merge gate; a local failure is still a
+  real bug worth chasing, not noise to dismiss.
+- **Env-sensitive tests fail locally and pass in CI** — anything reading an ambient API key.
+  Fix the test's isolation rather than concluding the suite is flaky.
+
+Run the full local suite when you are deliberately hunting a cross-file or environment problem.
+Not on every ship.
 
 **Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1. Deploys are automatic as of v0.49.0.0 (see below), so a failure here means the last deploy did not land — check the Actions run before shipping on top of it. Shipping more changes over an un-deployed fix compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence.
 
