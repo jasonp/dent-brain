@@ -2,6 +2,48 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.5.0] - 2026-08-12
+
+## **A Gmail rate-limit window is restarted by every call. The daemon was checking whether it had expired by calling Gmail.**
+
+email-sync fires on a fixed schedule. When Gmail returns a 429, it hands back a rolling window that every subsequent call pushes further out. The collector had no memory of that window, so each fire probed, got 429'd, and moved the deadline. Field evidence: 40 of 224 fires rate-limited, arriving in streaks of three to five, each streak stalling ingestion for 18 to 30 hours.
+
+v0.49.5.0 gives the daemon a memory. A 429 banks its retry-after to `gmail-state.json`, and every fire before that deadline makes **zero** Gmail calls. The wrong-account guard, which used to spend a `users.getProfile` on every single fire, is now memoized against a fingerprint of the refresh token and runs once per authorization instead.
+
+**A correction to the v0.46 bug report ships with it.** That report described the window as *escalating*. It isn't. Two independent measurements on 2026-08-11 — a scheduled fire and a manual probe 52 minutes later — each returned a retry-after exactly `15m56s` out. The window is a rolling ~16 minutes, and the earlier "escalation" was an operator retrying every ~18 minutes and restarting it each time. That matters for where to aim: the daemon waits 6h between fires, roughly 22x the window, and still gets 429'd, so the multi-hour stalls are sustained exhaustion of the **pooled per-project quota**, not something the daemon does to itself. This release is quota hygiene. It will not move the streak rate; only raising the ceiling or splitting the OAuth clients can.
+
+### The numbers that matter
+
+Measured from `~/.dent-brain/email-sync/sync.log` over 224 scheduled fires:
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Gmail calls during a known-live 429 window | 2+ per fire | **0** | window can no longer be self-extended |
+| `users.getProfile` calls | 1 per fire | 1 per authorization | −1 per fire |
+| A run that 429s partway through | grinds remaining fetches | aborts, banks the window | stops digging |
+| Bulk mail identified by RFC headers | 0 | `List-Unsubscribe` / `List-Id` / `Precedence` | newsletters from human-looking addresses |
+| email-sync tests | 6 | 52 | +46 |
+
+### What this means for operators
+
+Three rules, all of which were previously easy to get wrong:
+
+- **Never re-authorize on a 429.** It is not an auth failure, and the OAuth dance spends more quota.
+- **Don't poll it.** `preview`, `verify`, or a manual `collect.ts` run during a live window restarts it. Read `~/.dent-brain/email-sync/gmail-state.json` instead — that costs nothing.
+- **`--force` is one confirming probe, not a retry loop.** Use it after the deadline passes if you want to reopen the daemon early rather than waiting for the next scheduled fire.
+
+## To take advantage of v0.49.5.0
+
+Teammates get this on their next `/dent-update`. The daemon rebuilds `gmail-state.json` itself; there is nothing to configure and the file is safe to delete.
+
+### Itemized changes
+
+- **`tools/email-sync/gmail-state.ts`** (new) — banks the 429 window and the verified-account memo. Clamps Gmail's retry-after into `[15 min, 24 h]` so neither an over-eager window (which invites a re-poke) nor an absurd one (which would wedge the daemon) can hurt. Reads fail open: a missing or corrupt file yields empty state.
+- **`saveGmailStateBestEffort`** — the write side of that same fail-open rule. Two of three call sites in `collect.ts` previously threw on an unwritable state file, and the worse one sat inside the try block whose catch classifies *Gmail* failures, so a local `EACCES` surfaced as "Gmail health probe failed (network)" and exited 1. Reporting a permissions problem as a Gmail outage is the bug class this whole feature exists to remove.
+- **Bulk mail decided from RFC headers, not address shape.** `List-Unsubscribe` (RFC 2369/8058), `List-Id` (RFC 2919) and `Precedence: bulk` ride along in the metadata response at no extra API cost, and they catch what an address pattern structurally cannot: a newsletter sent from an address that looks like a person. `isBulk` is additive, so existing user filters keep working and `RECIPE_VERSION` stays at 1.
+- **Mail-merge collapsing in the digest.** Three or more outbound sends sharing a subject with differing recipient sets render as one entry, every Gmail link preserved. A thread where you replied three times to the same group stays expanded — those are three distinct things you said.
+- **Installer runtime-file manifest pinned by a test.** Adding a module and forgetting to copy it ships a daemon that dies on import: the repo typechecks, the tests pass, and it only breaks on a teammate's machine after an update.
+
 ## [0.49.4.0] - 2026-08-11
 
 ## **A background query read 5.1 GB to change 61 rows. It ran every 90 minutes for months.**
