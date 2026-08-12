@@ -22,8 +22,10 @@ As of v0.39, both ingestors use the **recipe model**: the plugin ships canonical
 - **Where:** `tools/email-sync/`, installed to `~/.dent-brain/email-sync/`
 - **Schedule:** every 6 hours (launchd `StartInterval=21600`)
 - **Pulls from:** Gmail API for the teammate's `workEmail` only (scoped — never personal inboxes)
-- **Auth:** one-time browser OAuth dance at install (shared "Dent Brain" Google Cloud OAuth app, test mode); refresh tokens stored locally
-- **Filter pipeline:** canonical `noise-filter.ts` (drops bulk-promo senders) → `user/filter.ts` (teammate-authored, runs after noise classification, receives `isNoise` + `isSignature` flags as hints, decides keep/drop) → digest. Daemon fatal-exits without a `user/filter.ts`. Contract: `tools/email-sync/recipe/RECIPE.md`.
+- **Auth:** one-time browser OAuth dance at install (shared "Dent Brain" Google Cloud OAuth app — **published, restricted to the internal team**, corrected 2026-08-11; earlier notes here said *test mode*); refresh tokens stored locally. Quota is pooled per-project across teammates, which is why one person's burst can rate-limit everyone — see the §B7 item in `TODOS.md`.
+- **Filter pipeline:** canonical `noise-filter.ts` → `user/filter.ts` (teammate-authored, runs after noise classification, receives `isNoise` + `isBulk` + `isSignature` flags as hints, decides keep/drop) → digest. Daemon fatal-exits without a `user/filter.ts`. Contract: `tools/email-sync/recipe/RECIPE.md`.
+  - `isNoise` is decided from the **sender address** (noreply@, marketing subdomains). `isBulk` (v0.49.5.0) is decided from the **RFC headers** the sender stamps — `List-Unsubscribe`, `List-Id`, `Precedence: bulk` — which is the only thing that catches a newsletter sent from an address that looks like a person. Both route to the digest's Noise section; neither reaches Triage.
+- **Rate-limit state:** `~/.dent-brain/email-sync/gmail-state.json` (v0.49.5.0) banks a 429's retry-after and memoizes the verified account. While a window is live the collector makes **zero** Gmail calls — a 429 window is restarted by every call against it, so probing to see whether it expired is what kept it open. Read the file to check status; do not run `verify`/`preview` to check. Safe to delete, rebuilds itself.
 - **Writes to brain:** `inbox/<email-slug>/<YYYY-MM-DD>.md` via `put_page` (db-only, no git commit — pages age out as Layer 2 stamps them `processed: true`)
 
 ## gws-sync (server-side, metadata-only)

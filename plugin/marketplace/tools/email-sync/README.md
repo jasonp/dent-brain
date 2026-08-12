@@ -24,9 +24,11 @@ A kept message is then classified:
 
 ## Auth model
 
-Direct Google OAuth via a shared **"Dent Brain" Google Cloud OAuth app** in test mode. The admin (you, if you set up the fork) creates the OAuth app once, adds each teammate's Gmail address as a Test User in the consent screen, and stores the Client ID + Client Secret to pass to install.sh.
+Direct Google OAuth via a shared **"Dent Brain" Google Cloud OAuth app**, **published and restricted to the internal team** (corrected 2026-08-11 — this section previously said *test mode*, which also meant the Test User step below was wrong). The admin creates the OAuth app once and stores the Client ID + Client Secret to pass to install.sh. There is no per-teammate Test User list to maintain.
 
-Each teammate runs the install once, completes a one-time browser OAuth dance ("this app isn't verified" → Advanced → "Go to Dent Brain (unsafe)" → Allow), and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
+Each teammate runs the install once, completes a one-time browser OAuth dance, and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
+
+**Quota is pooled per-project across everyone on the app.** That is the structural reason one teammate's burst can rate-limit the whole team, and it is not something the daemon can fix — see the §B7 item in `TODOS.md` for the two real options (raise the GCP quota, or issue per-teammate OAuth clients).
 
 No agent token to hunt down. No third-party broker. Each teammate authorizes their own Gmail; nobody else's tokens ever leave their laptop.
 
@@ -73,6 +75,7 @@ The collector writes one digest page per day in the range. The 3am Sonnet run pi
 | `noise-filter.ts` | Deterministic noise + signature classification. |
 | `link-gen.ts` | Gmail deep-link generator. Code, never LLM. |
 | `digest.ts` | Builds the daily digest markdown page. |
+| `gmail-state.ts` | Gmail call-avoidance state: the banked 429 cool-down + the identity memo that keeps `getProfile` off the per-fire path. |
 | `install.ts` | Cross-platform one-shot installer (collects config, runs OAuth dance, stages the schedule via the scheduler abstraction, drops Layer-2 skill body). macOS + Windows. |
 | `config.example.json` | Reference config shape. |
 
@@ -87,6 +90,12 @@ bun ~/.dent-brain/email-sync/collect.ts --dry-run --verbose
 
 # Backfill specific window
 bun ~/.dent-brain/email-sync/collect.ts --since 2026-04-01
+
+# Check whether a Gmail 429 cool-down is holding the daemon off
+cat ~/.dent-brain/email-sync/gmail-state.json
+
+# Override an active cool-down for one confirming probe (see below)
+bun ~/.dent-brain/email-sync/collect.ts --force
 
 # Inspect the launchd agent
 launchctl print gui/$(id -u)/com.dent.email-sync
@@ -104,6 +113,33 @@ bun ~/.dent-brain/email-sync/oauth-flow.ts \
   --tokens-path ~/.dent-brain/email-sync/google-tokens.json
 ```
 
+## Gmail rate limits (429)
+
+A 429 returns a **rolling ~16-minute window, restarted by every call**. Measured 2026-08-11:
+two calls 52 minutes apart each got a retry-after exactly `15m56s` out.
+
+That window is not the real constraint. The daemon waits 6h between fires — ~22x the stated
+window — and still hits 429s in streaks of 3–5 consecutive fires. The quota is pooled across
+the whole team's shared OAuth app, so those stalls are **someone's sustained usage, not
+something this daemon did to itself**. See the §B7 item in `TODOS.md`; that is the fix for
+stall frequency.
+
+What the collector does about it: banks the retry-after in `gmail-state.json` and makes **zero**
+Gmail calls until it passes, and aborts a run that hits its limit partway through rather than
+grinding the remaining fetches into 429s. The first clean run clears the banked window.
+
+Operator rules:
+
+- **Never re-authorize on a 429.** It is not an auth failure, and the OAuth dance spends more
+  quota. See `docs/issues/email-sync-429-and-reauth-ux.md`.
+- **Don't poll it.** `preview` / `verify` / a manual `collect.ts` run during an active window
+  re-extends it. Read `gmail-state.json` instead — that costs nothing.
+- **`--force` is one confirming probe, not a retry loop.** Use it after the deadline has passed
+  if you want to reopen the daemon early rather than waiting for the next scheduled fire.
+
+Because quota is pooled across the whole team's shared OAuth app, a window you did nothing to
+earn is usually someone else's burst. See the §B7 item in `TODOS.md`.
+
 ## Files written outside this directory
 
 | Path | What |
@@ -111,6 +147,7 @@ bun ~/.dent-brain/email-sync/oauth-flow.ts \
 | `~/.dent-brain/email-sync/config.json` | Required. Google OAuth creds + work email. Mode 0600. |
 | `~/.dent-brain/email-sync/google-tokens.json` | Refresh token + last access token. Mode 0600. Self-refreshing. |
 | `~/.dent-brain/email-sync/cursor.json` | Last-synced timestamp + recent message ids (dedup). |
+| `~/.dent-brain/email-sync/gmail-state.json` | Banked 429 cool-down + verified-account memo. Mode 0600. Safe to delete — it rebuilds itself. |
 | `~/.dent-brain/email-sync/sync.log` | launchd captures stdout + stderr here. |
 | `~/.dent-brain/skills/process-inbox.md` | Canonical Layer-2 skill body, referenced by the scheduled task. |
 | `~/Library/LaunchAgents/com.dent.email-sync.plist` | launchd schedule. |

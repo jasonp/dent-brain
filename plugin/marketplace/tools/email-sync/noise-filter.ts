@@ -56,7 +56,8 @@ const NOISE_SENDERS: ReadonlyArray<string> = [
  * What this does NOT catch by design (apex-domain marketing):
  *   seattle@axios.com — could be a person, the news org IS the apex
  *   googlecloud@google.com — transactional from a real apex
- * Those are user-specific calls; Layer 2 makes them.
+ * Address shape genuinely cannot decide those. `isBulkMail()` below decides
+ * them off the RFC bulk headers instead, which is evidence rather than a guess.
  */
 const MARKETING_SUBDOMAIN_RX = /@(?:e|em|email|mail|news|notify|notifications|updates|marketing|promo|promos|broadcast)\.[^.@]+\.[a-z.]{2,}$/i;
 
@@ -123,6 +124,39 @@ export function isNoise(fromEmail: string): boolean {
   if (NOISE_DOMAINS.some((d) => f.includes(d))) return true;
   if (MARKETING_SUBDOMAIN_RX.test(f)) return true;
   return false;
+}
+
+/** The header values `isBulkMail` decides on. All optional — a message that
+ *  carries none of them is, by definition, not marked as bulk by its sender. */
+export interface BulkHeaders {
+  listUnsubscribe?: string;
+  listId?: string;
+  precedence?: string;
+}
+
+/**
+ * Decide "is this bulk mail?" from the RFC headers rather than the address.
+ *
+ * This is the honest version of the marketing-subdomain heuristic above. A
+ * newsletter from `seattle@axios.com` or `welcome@supabase.com` looks exactly
+ * like a person by address, but every bulk sender stamps `List-Unsubscribe`
+ * (RFC 2369 / 8058) because deliverability depends on it — and no human MUA
+ * writing a one-to-one reply ever does. That makes it the kind of pattern the
+ * iron rule at the top of this file wants Layer 1 to own: code can decide it
+ * PERFECTLY, so Layer 2 shouldn't have to spend a token on it.
+ *
+ * `Precedence: bulk|list|junk` (RFC 2076) and `List-Id` (RFC 2919) are the
+ * older equivalents, kept for mailing lists that predate List-Unsubscribe.
+ *
+ * Deliberately NOT keyed on `List-Unsubscribe-Post`: that header is about
+ * one-click support, and its absence says nothing about whether mail is bulk.
+ */
+const BULK_PRECEDENCE = new Set(['bulk', 'list', 'junk']);
+
+export function isBulkMail(headers: BulkHeaders): boolean {
+  if ((headers.listUnsubscribe ?? '').trim()) return true;
+  if ((headers.listId ?? '').trim()) return true;
+  return BULK_PRECEDENCE.has((headers.precedence ?? '').trim().toLowerCase());
 }
 
 /** Test BOTH subject AND from. Signature requests come from services that

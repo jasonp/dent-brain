@@ -31,6 +31,28 @@ import { homedir } from 'os';
 import { spawnSync } from 'child_process';
 import { createInterface } from 'readline';
 import { GoogleClient, GoogleClientError, classifyProbeFailure, type ProbeFailureKind } from './google-client.ts';
+
+/**
+ * Every module the installed daemon imports at runtime, copied verbatim into
+ * `~/.dent-brain/email-sync/`.
+ *
+ * Adding a module to the collector and forgetting this list ships a daemon that
+ * cannot start — the copied `collect.ts` imports a file that was never copied,
+ * and every scheduled fire dies on the import. Nothing else catches it: the repo
+ * typechecks fine, the tests pass, and the break only appears on a teammate's
+ * machine after `/dent-update`. Pinned by `test/email-sync-install-manifest.test.ts`.
+ */
+export const RUNTIME_FILES = [
+  'collect.ts',
+  'types.ts',
+  'mcp-client.ts',
+  'google-client.ts',
+  'oauth-flow.ts',
+  'noise-filter.ts',
+  'link-gen.ts',
+  'digest.ts',
+  'gmail-state.ts',
+] as const;
 import { findExtension } from '../extensions/registry.ts';
 import { getScheduler, buildSpec } from '../extensions/scheduler/index.ts';
 
@@ -180,8 +202,7 @@ async function main() {
   //    owned by the teammate, authored via /dent-extensions setup.
   mkdirSync(join(INSTALL_DIR, 'recipe'), { recursive: true });
   mkdirSync(join(INSTALL_DIR, 'user'), { recursive: true });
-  const runtimeFiles = ['collect.ts', 'types.ts', 'mcp-client.ts', 'google-client.ts', 'oauth-flow.ts', 'noise-filter.ts', 'link-gen.ts', 'digest.ts'];
-  for (const f of runtimeFiles) copyFileSync(join(SCRIPT_DIR, f), join(INSTALL_DIR, f));
+  for (const f of RUNTIME_FILES) copyFileSync(join(SCRIPT_DIR, f), join(INSTALL_DIR, f));
   copyFileSync(join(SCRIPT_DIR, 'recipe', 'filter.example.ts'), join(INSTALL_DIR, 'recipe', 'filter.example.ts'));
   const recipeMd = join(SCRIPT_DIR, 'recipe', 'RECIPE.md');
   if (existsSync(recipeMd)) copyFileSync(recipeMd, join(INSTALL_DIR, 'recipe', 'RECIPE.md'));
@@ -189,7 +210,7 @@ async function main() {
   const bundleRoot = join(SCRIPT_DIR, '..', '..');
   const bundleVersion = join(bundleRoot, 'VERSION');
   writeFileSync(join(INSTALL_DIR, '.installed-version'), existsSync(bundleVersion) ? readFileSync(bundleVersion, 'utf-8') : 'unknown\n');
-  console.log(`    copied ${runtimeFiles.length} runtime files.`);
+  console.log(`    copied ${RUNTIME_FILES.length} runtime files.`);
 
   // 3b. Layer-2 skill body to a stable location (resolve {{prefix}} → dent).
   const skillSrc = join(bundleRoot, 'skills', 'dent', 'process-inbox', 'SKILL.md');

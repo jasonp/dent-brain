@@ -50,6 +50,15 @@ const ALLOWED_SENDERS: string[] = [
 // want in the brain.
 const DROP_NOISE = true;
 
+// Drop bulk mail identified by its RFC headers (List-Unsubscribe, List-Id,
+// Precedence: bulk) rather than by sender address. This is what catches
+// newsletters sent from human-looking addresses — `seattle@axios.com`,
+// `welcome@vendor.example` — that address patterns cannot distinguish from a
+// person. Leave true unless you actively want newsletters in the brain; set
+// false to keep them (they still land in the digest's Noise section for audit,
+// never in Triage).
+const DROP_BULK = true;
+
 // Drop e-signature requests (Docusign, Dropbox Sign, etc). Some teams want
 // these surfaced; flip to false to send them through.
 const DROP_SIGNATURES = false;
@@ -64,6 +73,9 @@ function senderDomain(email: string): string {
 export function filter(email: CollectedEmail): FilterResult {
   if (DROP_NOISE && email.isNoise) {
     return { keep: false, reason: 'noise sender (bulk/transactional)' };
+  }
+  if (DROP_BULK && email.isBulk) {
+    return { keep: false, reason: 'bulk mail (List-Unsubscribe / Precedence: bulk)' };
   }
   if (DROP_SIGNATURES && email.isSignature) {
     return { keep: false, reason: 'e-signature request' };

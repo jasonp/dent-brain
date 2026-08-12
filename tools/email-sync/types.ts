@@ -10,7 +10,8 @@
  * reads the digest pages and updates entity timelines.
  *
  * Auth: each teammate runs a one-time OAuth dance via install.sh against
- * the shared "Dent Brain" Google Cloud OAuth app (test mode, whitelisted).
+ * the shared "Dent Brain" Google Cloud OAuth app (published, restricted to the
+ * internal team). Quota is therefore pooled across teammates — see TODOS.
  * The resulting refresh token is written to ~/.dent-brain/email-sync/google-tokens.json
  * (chmod 0600). The collector self-refreshes the access token on every run.
  */
@@ -38,6 +39,10 @@ export interface CollectedEmail {
   gmailLink: string;
   /** True if from is a noise sender (noreply, notifications@, etc.). */
   isNoise: boolean;
+  /** True if the message carries RFC bulk-mail headers (List-Unsubscribe,
+   *  List-Id, Precedence: bulk). Catches newsletters sent from human-looking
+   *  addresses, which the address-pattern rules in `isNoise` cannot see. */
+  isBulk: boolean;
   /** True if subject or from matches a signature service (DocuSign etc.). */
   isSignature: boolean;
   /** True if the work-email-holder sent this (vs. received). */
@@ -80,6 +85,9 @@ export interface SyncConfig {
   authUser: string;
   /** Path to the cursor JSON. */
   cursorPath: string;
+  /** Path to the Gmail call-avoidance state (429 cool-down + identity memo).
+   *  Default: ~/.dent-brain/email-sync/gmail-state.json. See gmail-state.ts. */
+  gmailStatePath: string;
   /** Path to the local digest cache (for debugging / re-runs). */
   cacheDir: string;
 }
