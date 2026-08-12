@@ -9,6 +9,22 @@ WORKDIR /app
 # Only copy lockfile + package.json so dep install layer is cached when only
 # source code changes.
 COPY package.json bun.lock ./
+
+# scripts/postinstall.ts must be in THIS layer too. The v0.50.0.0 upstream sync
+# added `"postinstall": "bun run scripts/postinstall.ts"` to package.json, and
+# bun runs it as part of `bun install` — so without the file here the build dies
+# with `Module not found "scripts/postinstall.ts"` and the deploy never boots.
+#
+# Copied rather than skipped with --ignore-scripts: that flag would also suppress
+# postinstall for every DEPENDENCY, which is a silent way to break a native or
+# codegen-ing package later. This is one small file that changes almost never, so
+# the dep-install cache layer stays effectively as stable as before.
+#
+# The script itself is a no-op in a container (it looks for a `gbrain` binary on
+# PATH to apply migrations after a global install, and exits 0 when absent). The
+# server applies migrations on boot via initSchema, so nothing is lost.
+COPY scripts/postinstall.ts ./scripts/postinstall.ts
+
 RUN bun install --frozen-lockfile
 
 # ---- Stage 2: runtime ------------------------------------------------------
