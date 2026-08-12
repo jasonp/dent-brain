@@ -2331,6 +2331,27 @@ export class PostgresEngine implements BrainEngine {
     `;
   }
 
+  async hasStaleSignaturePages(opts: { signature: string; sourceId?: string }): Promise<boolean> {
+    // Predicate is deliberately identical to invalidateStaleSignatureEmbeddings'
+    // page-side clause — if these two ever drift, the gate starts hiding real
+    // work from the sweep. Pinned by test/embed-stale-signature-gate.test.ts.
+    const params: unknown[] = [opts.signature];
+    let srcClause = '';
+    if (opts.sourceId !== undefined) {
+      params.push(opts.sourceId);
+      srcClause = ` AND source_id = $${params.length}`;
+    }
+    const rows = await this.sql.unsafe(
+      `SELECT 1
+         FROM pages
+        WHERE embedding_signature IS NOT NULL
+          AND embedding_signature <> $1${srcClause}
+        LIMIT 1`,
+      params as Parameters<typeof this.sql.unsafe>[1],
+    );
+    return (rows as unknown[]).length > 0;
+  }
+
   async invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string }): Promise<number> {
     // NULL embeddings whose page signature is set AND differs from current.
     // GRANDFATHER: NULL signature untouched. Feeds the NULL-embedding cursor

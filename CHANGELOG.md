@@ -2,6 +2,58 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.49.4.0] - 2026-08-11
+
+## **A background query read 5.1 GB to change 61 rows. It ran every 90 minutes for months.**
+
+`embed --stale` opens every pass by invalidating embeddings whose page signature drifted from the current model. Sensible: swap the embedding model and the old vectors have to go. The query joins `pages` against every row of `content_chunks`, which is the largest table in a brain, and it ran unconditionally — before asking whether any page had actually drifted.
+
+On a production brain over 13.2 days that came to 173 runs, 5.1 GB of disk reads, 641 seconds of database time, and 61 rows invalidated. Forty-two percent of every byte the instance read from disk went to proving there was no work to do. The hosting provider's disk-IO budget warnings were the first visible symptom, and they pointed at the instance size rather than at the query.
+
+The fix is to ask the cheap question first. `hasStaleSignaturePages` reads `pages` alone and answers in under a millisecond; the expensive sweep runs only when the answer is yes.
+
+### The numbers that matter
+
+Measured on a production brain with `pg_stat_statements` over the 13.2 days since its last restart, not a synthetic benchmark:
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Disk read by the sweep | 5.1 GB | — | sweep skipped when nothing is stale |
+| Share of all instance disk reads | 42% | — | −42 pts |
+| Cost of "is there work?" | 30 MB / 3,706 ms | 0.6 ms probe | −99.98% |
+| Rows actually invalidated (173 runs) | 61 | 61 | 0 — same work, same result |
+| Duplicate indexes on `content_chunks` | 2 | 1 | −1 (752 kB, plus its write amplification) |
+| Tests covering this path | 6 | 19 | +13 |
+
+**The statistics were the real culprit, and that is the transferable lesson.** `pages` had never been analyzed — no `pg_stats` row for `embedding_signature` — so the planner fell back to a default selectivity for `<>`, estimated that ten thousand pages matched, and correctly concluded a hash join scanning `content_chunks` beat ten thousand index lookups. It was reasoning well from data it did not have. One `VACUUM ANALYZE` collapsed the estimate to one row, flipped the plan to a nested loop, and took the same query from 3,706 ms to 217 ms with zero disk reads. The gate ships anyway, because a fix that depends on statistics staying healthy is a fix that silently regresses the next time they don't — and these had been missing for months with nothing surfacing it.
+
+### What this means for operators
+
+Nothing to configure. The gate is unconditional and the migration runs on boot.
+
+If your brain is large and slow in ways that don't match its size, check whether autovacuum has ever run: `SELECT relname, last_autovacuum, last_autoanalyze FROM pg_stat_user_tables WHERE last_autoanalyze IS NULL`. A table that has never been analyzed will produce plans that look inexplicable.
+
+## To take advantage of v0.49.4.0
+
+No action required. Migration 116 runs automatically and is idempotent.
+
+Optionally, on a brain that has been running a while, hand the planner current statistics:
+
+```sql
+VACUUM (ANALYZE) pages;
+```
+
+On a brain that has never been vacuumed this also sets the visibility map, which is what lets the new index answer via an index-only scan instead of a heap read.
+
+### Itemized changes
+
+- **`hasStaleSignaturePages` gates the stale-signature sweep** (`src/core/{engine,postgres-engine,pglite-engine}.ts`, `src/core/embed-stale.ts`, `src/commands/embed.ts`). Page-only existence probe, identical predicate to the sweep's page-side clause. Both call sites gated.
+- **Migration 116** adds `pages_embedding_signature_idx`, a partial index on `(embedding_signature, source_id) WHERE embedding_signature IS NOT NULL`, so the probe is an index scan rather than a table scan in the steady state.
+- **Migration 116 drops `idx_chunks_embedding_null`.** v66 created it; v103 recreated the identical shape as `content_chunks_stale_idx`. Every migrated brain carried both and paid write amplification on both for one lookup path. The drop is guarded on the survivor being present and valid.
+- **v116 avoids the `DO $$ ... DROP INDEX CONCURRENTLY $$` shape** used by v66 and v103. A `DO` block is a transaction and `CONCURRENTLY` is illegal inside one, so that guard fails exactly when it is needed — recovering from an interrupted index build. v116 reads `pg_index` from TypeScript and issues bare DDL. The pre-existing instances are filed in `TODOS.md`, not edited in place.
+- **Test isolation fix** (`test/cohere-key-plumbing.test.ts`): the gateway-env assertion read the developer's ambient `COHERE_API_KEY` instead of the seam under test — green in CI, red on any machine that exports the key. Now pinned with `withEnv`.
+- **Corrected test-suite timing in the docs.** `bun run test` was documented at ~85s; an actual run is ~23 minutes across 10,667 tests. `CLAUDE.md` and `docs/reference/testing.md` now carry the measured figure and the consequence: it is a pre-push gate, not an inner-loop one.
+
 ## [0.49.2.0] - 2026-08-03
 
 ## **The Drive router carded every document anyone had ever shared with you. Ownership is the second gate now.**

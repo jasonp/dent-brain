@@ -588,13 +588,16 @@ async function embedAllStale(
   // swap). dry-run must NOT mutate, so it counts signature-stale via the
   // widened predicate; a live run NULLs them first so the existing
   // NULL-embedding cursor (listStaleChunks) picks them up unchanged.
+  // v0.49.4.0: gated on a page-only existence probe — the UPDATE below scans
+  // all of content_chunks whether or not there is anything to invalidate. See
+  // engine.hasStaleSignaturePages.
   if (!dryRun && signature) {
-    const invalidated = await engine.invalidateStaleSignatureEmbeddings({
-      signature,
-      ...(sourceId && { sourceId }),
-    });
-    if (invalidated > 0) {
-      slog(`[embed] invalidated ${invalidated} chunk(s) embedded under a prior model signature`);
+    const scopeOpt = { signature, ...(sourceId && { sourceId }) };
+    if (await engine.hasStaleSignaturePages(scopeOpt)) {
+      const invalidated = await engine.invalidateStaleSignatureEmbeddings(scopeOpt);
+      if (invalidated > 0) {
+        slog(`[embed] invalidated ${invalidated} chunk(s) embedded under a prior model signature`);
+      }
     }
   }
 
