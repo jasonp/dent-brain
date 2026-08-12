@@ -2,6 +2,53 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.50.0.0] - 2026-08-12
+
+## **Two migrations wanted the same slot number. Only one of them would ever have run.**
+
+This is the first upstream sync since v0.43 — 574 commits, v0.42.40.0 to v0.45.7.0, 1,690 files. Most of it is upstream's work arriving intact. The part worth reading is the collision.
+
+Both forks independently claimed migration slot **116**. Ours was the stale-signature index from v0.49.4.0, already applied in production. Upstream's repairs `code_edges.source_id`, which is written NULL by an older code path and makes scoped `code_callers` / `code_callees` return **zero rows instead of an error**.
+
+The migration runner is a high-water mark, not a ledger: `pending = filter(m => m.version > current)`. Once a brain records 116 as applied, *any* migration at slot 116 is skipped forever. Upstream's would never have run here, and its bug reports success by returning nothing.
+
+Ours renumbered to **v127**; upstream's 116 left where it is; its content re-issued verbatim as **v128** so it actually runs on brains that took ours first. Both idempotent in both directions. Same convention v102 already used ("originally v99, bumped to v102 after master merge").
+
+### The numbers that matter
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Commits behind upstream | 574 | 0 | merged |
+| `verify` checks | 15 (serial) | **39 (parallel)** | +24, and ~21s instead of ~12s serial |
+| `engine-parity` E2E | 16 pass / **3 fail** | **34 pass / 0 fail** | the P0 closes |
+| Schema version | 116 | 128 | +12 |
+| Transitive deps pinned | 0 | 10 | upstream `overrides` |
+
+**The three `relationalFanout` failures TODOS.md has carried as a P0 since v0.49.2.0 are fixed by this sync.** They were an inherited-upstream mismatch; upstream fixed them.
+
+### What we deliberately did NOT take
+
+Upstream still defaults to `zeroentropyai:zembed-1`. **ZeroEntropy sunsets 2026-09-04.** Taking that default would point every fresh install at a provider due to disappear in three weeks, so `DEFAULT_EMBEDDING_MODEL` stays `openai:text-embedding-3-large` and `src/core/config.ts` now says why — otherwise the next person diffing against upstream "fixes" it back.
+
+### A bug this found in our own code
+
+Upstream's `check:jsonb` catches a positional-parameter variant ours did not. `src/dent/exporter/repo.ts` bound `JSON.stringify(...)` into `$4::jsonb`; postgres.js double-encodes that, so `sources.config` stored a JSONB **string literal** and every read of `config->>'mirror'` returned NULL. That would silently un-mark the export repo as a mirror and let `sync_brain` import *from* it — the exact direction that contract prevents. PGLite hides it; only production Postgres bites. Fixed. It predates this sync; we simply had no check that could see it.
+
+## To take advantage of v0.50.0.0
+
+Migrations run automatically on boot; v127 and v128 are both idempotent.
+
+Teammates should re-run `/dent-update` — this sync changes CLI dispatch and adds commands, and the laptop daemons ship from this tree.
+
+### Itemized changes
+
+- **Merged v0.42.40.0 → v0.45.7.0.** 27 conflicts resolved; see the merge commit for per-file reasoning.
+- **Migration renumber + re-issue** (v127 / v128) for the slot-116 collision.
+- **`hasStaleSignaturePages` now accepts `includeNullSignature`**, matching upstream's widened sweep (#3391). Threading the flag into the sweep alone would have made the gate answer "nothing stale" while work existed — stranding chunks silently, the drift our own R-1 test exists to catch, introduced by the merge rather than by either side. Also closes the 27-pages / 524-chunks gap the v0.49.4.0 audit flagged.
+- **`scripts/run-verify-parallel.sh`** replaces the serial verify chain; our fork-only `check:plugin-version` is registered in its `CHECKS` array.
+- **Windows compatibility** — every script invocation is `bash`-prefixed upstream.
+- **JSONB double-encode fix** in `src/dent/exporter/repo.ts`.
+
 ## [0.49.5.0] - 2026-08-12
 ## [0.45.7.0] - 2026-08-12
 

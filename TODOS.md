@@ -86,63 +86,38 @@ means a new migration that re-runs the guard, not an edit in place. v116 avoids 
 it reads `pg_index` from TypeScript via `engine.executeRaw` and issues bare DDL outside any
 `DO` block. Use v116 as the pattern for any future CONCURRENTLY migration.
 
-## Upstream sync: 568 commits behind `garrytan/gbrain` (filed 2026-08-11, v0.49.4.0)
+## Upstream sync — DONE in v0.50.0.0 (filed 2026-08-11, completed 2026-08-12)
 
-**Priority:** P2
-**Filed:** 2026-08-11, from the upstream check run before the DB-IO hygiene work.
+Merged `garrytan/gbrain` v0.42.40.0 → **v0.45.7.0**, 574 commits, 1,690 files, 27 conflicts.
+All three cherry-picks this item called out arrived with the merge:
 
-Merge-base with `upstream/master` is `ecd6ae87` (v0.42.40.0). Upstream is now at
-v0.45.0.0 — **568 commits ahead of us, we are 198 ahead of it**. Note the default
-branch is `master`, not `main`.
+- **`db-pacer`** (#2240) — DB-contention pacing for embed/sync backfills.
+- **`getTags` federated-scope fix** (#2200) — the scalar-subquery form that THROWS when a slug
+  resolves to more than one page. Latent crash on multi-source brains, now gone.
+- **`includeNullSignature`** (#3391) — and it is the fix for the 27-pages / 524-chunks gap
+  recorded under the ZeroEntropy P1 below. `hasStaleSignaturePages` was widened to match, or
+  the gate would have started hiding work from the sweep.
 
-**Checked first, and worth recording so nobody re-checks:** upstream has NOT fixed
-any of the disk-IO problems found in the 2026-08-11 database audit. The stale-signature
-invalidation is the same full-scan shape and is still called unconditionally at the top
-of every `embedStale`; the health/stats `COUNT(*)` queries are identical; and the
-duplicate stale-chunk index (v66's `idx_chunks_embedding_null` vs v103's
-`content_chunks_stale_idx`) exists upstream too — worth reporting back to them.
+**Also resolved a migration slot collision that would have silently stranded upstream's v116.**
+Details in the v0.50.0.0 CHANGELOG entry and the merge commit. Ours → v127, theirs re-issued
+as v128.
 
-**Three things upstream has that we want:**
+**Next sync will be much cheaper.** The merge-base is now v0.45.7.0 instead of v0.42.40.0, and
+the two long-standing sources of conflict are gone: our verify chain now IS upstream's parallel
+runner (fork-only checks register in its `CHECKS` array rather than diverging the script), and
+the migration numbering convention is documented at v127.
 
-1. **`src/core/db-pacer.ts`** (v0.42.49.0, #2240) — native DB-contention pacing for
-   embed/sync backfills. We do not have this file at all. Directly relevant: it throttles
-   backfills when the database is contended, which is exactly the failure mode behind the
-   Disk IO budget warnings.
-2. **`getTags` federated-scope fix** (#2200) — ours is
-   `page_id = (SELECT id FROM pages WHERE slug = ...)`. A scalar subquery **throws** when a
-   slug resolves to more than one page. In a multi-source brain that is a latent crash;
-   upstream switched to `IN (...)` with `DISTINCT` across the matched pages. **This is the
-   highest-value single cherry-pick** — it is a correctness bug, not a perf nicety.
-3. **`includeNullSignature`** on `invalidateStaleSignatureEmbeddings` (#3390, fixes #3391) —
-   provider migrations otherwise strand pre-stamp pages in the old embedding space. We ran
-   exactly that migration (ZeroEntropy → OpenAI).
-
-   **Measured on production 2026-08-11 — the gap is real but not urgent:**
-
-   | `pages.embedding_signature` | pages | live |
-   |---|---|---|
-   | `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
-   | NULL (never stamped) | 46 | 46 |
-   | `zeroentropyai:zembed-1:1280` | 1 | 1 |
-
-   All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **no chunk is
-   actually stranded in the old embedding space today** — the corpus really is migrated.
-   The problem is bookkeeping: 27 of those unstamped pages carry **524 chunks**, and the
-   GRANDFATHER rule means a NULL signature is never stale, so the next model swap will
-   skip all 524 silently and leave them in the *then*-old space with nothing surfacing it.
-   The single `zeroentropyai` page is the opposite case and self-heals — its chunks are
-   already NULL and the next `embed --stale` picks it up.
-
-   Fix direction: either backfill the signature on pages whose chunks all carry the current
-   model, or take upstream's `includeNullSignature` and use it on provider migrations only.
-   Do this **before** the next embedding-model change, not after. Full measurement lives under
-   the v0.49.0.0 ZeroEntropy-migration P1 below — this is the same trap seen from the other end.
-
-**Cost:** 4 months of upstream work landing on files we have forked heavily
-(`postgres-engine.ts` alone is 4,700+ lines with our modifications). Prior syncs of this
-shape were their own dedicated PR (v0.43 sync, PR #27). Do not bundle this with feature work.
+**Standing divergence to preserve on every future sync:** `DEFAULT_EMBEDDING_MODEL` must stay
+`openai:text-embedding-3-large`. Upstream defaults to `zeroentropyai:zembed-1` and ZeroEntropy
+sunsets 2026-09-04. `src/core/config.ts` carries the reason inline.
 
 ## Pre-existing E2E reds observed during v0.49.2.0 ship (filed 2026-08-03)
+
+> **UPDATE 2026-08-12 — the `relationalFanout` P0 below is FIXED by the v0.50.0.0 upstream
+> sync.** It was an inherited-upstream mismatch, not our bug, and upstream fixed it.
+> `test/e2e/engine-parity.test.ts` went from 16 pass / 3 fail to **34 pass / 0 fail**. The
+> remaining items in this section still stand; re-baseline them against the new merge-base
+> before spending time on them.
 
 Surfaced by the full E2E gate on the v0.49.2.0 branch. All four were exonerated
 against clean `main` (stash the diff, re-run the same files, identical failures),
