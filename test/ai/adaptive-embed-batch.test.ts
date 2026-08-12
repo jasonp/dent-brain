@@ -28,7 +28,7 @@
  *      (excluding the OpenAI canonical fast-path recipe).
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import {
   configureGateway,
   resetGateway,
@@ -39,6 +39,22 @@ import {
   __getShrinkStateForTests,
 } from '../../src/core/ai/gateway.ts';
 import { AIConfigError, AITransientError } from '../../src/core/ai/errors.ts';
+
+// `configureGateway` writes MODULE-LEVEL singleton state that outlives this
+// file — bun runs every file in a shard inside one process, so whatever the
+// last test configured is still configured when the next file imports the
+// gateway. The per-describe `beforeEach(resetGateway)` below protects tests
+// INSIDE this file and does nothing for the file after it.
+//
+// That gap wedged the suite: this file's last test leaves the gateway pointed
+// at `google:gemini-embedding-001` with a fake key, and the next file that
+// embeds (test/commands/capture.test.ts) then attempts a real Google API call
+// and takes the whole shard process down with it — no summary block, no test
+// failure, `pass=0 fail=0 rc=1`. Reproduces with exactly these two files.
+//
+// Leave global state as you found it. Same rule as the isolation lint's
+// env-mutation guards (R1-R4), which do not cover module singletons.
+afterAll(() => resetGateway());
 
 // --------- Test helpers ---------
 

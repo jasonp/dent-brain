@@ -5186,6 +5186,107 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 116,
+    name: 'pages_embedding_signature_idx_and_dup_drop',
+    // v0.49.4.0 — the stale-signature gate index, plus one duplicate index drop.
+    //
+    // WHY (measured on production 2026-08-11, 13.2-day pg_stat_statements window):
+    // `invalidateStaleSignatureEmbeddings` ran 173 times, read 5.1 GB from disk,
+    // burned 641s of execution time, and invalidated 61 rows TOTAL. It is called
+    // unconditionally at the top of every `embedStale` pass and embed-cron fires
+    // every 90 minutes, so it is a no-op that costs a full `content_chunks` scan
+    // ~99% of the time it runs. That single query was 42% of ALL disk reads on
+    // the instance — the direct cause of the Supabase Disk IO budget warnings.
+    //
+    // The predicate `p.embedding_signature <> $current` is not indexable on its
+    // own, and the UPDATE joins it against every chunk row, so Postgres has no
+    // plan available except a sequential scan of the big table.
+    //
+    // (1) pages_embedding_signature_idx — partial btree on (embedding_signature,
+    //     source_id) WHERE embedding_signature IS NOT NULL. This does NOT make
+    //     the `<>` sargable; what it buys is a cheap EXISTENCE probe against
+    //     `pages` alone (~430 kB of index entries vs. a 30 MB heap+join scan),
+    //     which `hasStaleSignaturePages` uses to skip the UPDATE entirely when
+    //     nothing is stale. source_id rides along as a second column so the
+    //     source-scoped probe stays on the index instead of falling to the heap.
+    //     Rows with a NULL signature are excluded: the GRANDFATHER rule in v108
+    //     means they are NEVER stale, so indexing them would be dead weight.
+    //
+    // (2) DROP idx_chunks_embedding_null — created by v66, then re-created
+    //     byte-for-byte by v103 under the name content_chunks_stale_idx. Same
+    //     table, same columns (page_id, chunk_index), same predicate
+    //     (embedding IS NULL). Production carried both: 752 kB of duplicate
+    //     index paying write amplification on every chunk insert and update for
+    //     nothing. content_chunks_stale_idx is the survivor — it is the newer
+    //     name, and the one v103's comment documents against `embed --stale`.
+    //     Neither index is defined in schema.sql/pglite-schema.ts, so fresh
+    //     installs were never affected and no schema mirror needs editing.
+    //
+    // Engine-aware: Postgres uses CONCURRENTLY (+ invalid-remnant pre-drop, the
+    // #1178 guard) and therefore transaction: false; PGLite is single-writer
+    // WASM with no lock concern and uses the plain forms.
+    transaction: false,
+    sql: '',
+    handler: async (engine) => {
+      if (engine.kind === 'postgres') {
+        // DELIBERATELY NOT the `DO $$ ... EXECUTE 'DROP INDEX CONCURRENTLY' $$`
+        // shape used by v66/v103. A DO block runs as one statement inside an
+        // implicit transaction, and both CREATE INDEX CONCURRENTLY and DROP
+        // INDEX CONCURRENTLY are illegal inside a transaction block — so that
+        // guard raises "cannot run inside a transaction block" the moment it
+        // actually fires, i.e. exactly when recovering from a half-built index.
+        // (Pre-existing in v66/v103; filed in TODOS, not fixed here — those
+        // already ran everywhere and re-running them is its own migration.)
+        // Read the catalog from TypeScript instead and issue bare DDL.
+        const invalidRemnant = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'pages_embedding_signature_idx' AND NOT i.indisvalid`,
+        );
+        if (invalidRemnant.length > 0) {
+          await engine.runMigration(116, `DROP INDEX CONCURRENTLY IF EXISTS pages_embedding_signature_idx;`);
+        }
+        await engine.runMigration(
+          116,
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS pages_embedding_signature_idx
+             ON pages (embedding_signature, source_id)
+             WHERE embedding_signature IS NOT NULL;`
+        );
+
+        // Only drop the v66 duplicate once the v103 survivor is confirmed
+        // present AND valid. v103 runs earlier in the chain so this normally
+        // holds — but v103's own CREATE ... CONCURRENTLY can leave an INVALID
+        // index behind, and dropping the duplicate in that state would strip
+        // `embed --stale` of the last usable index for its cursor. Cheap check,
+        // and the failure it prevents is silent (a slow scan, not an error).
+        const survivor = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'content_chunks_stale_idx' AND i.indisvalid`,
+        );
+        if (survivor.length > 0) {
+          await engine.runMigration(116, `DROP INDEX CONCURRENTLY IF EXISTS idx_chunks_embedding_null;`);
+        }
+      } else {
+        await engine.runMigration(
+          116,
+          `CREATE INDEX IF NOT EXISTS pages_embedding_signature_idx
+             ON pages (embedding_signature, source_id)
+             WHERE embedding_signature IS NOT NULL;`
+        );
+        // PGLite builds indexes non-concurrently, so there is no INVALID state
+        // to recover from — but keep the same "survivor must exist" precondition
+        // so the two engines can't diverge on which indexes a brain ends up with.
+        const survivor = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_class WHERE relname = 'content_chunks_stale_idx'`,
+        );
+        if (survivor.length > 0) {
+          await engine.runMigration(116, `DROP INDEX IF EXISTS idx_chunks_embedding_null;`);
+        }
+      }
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

@@ -763,7 +763,7 @@ describe('migrate v66 — embed_stale_partial_index (D6)', () => {
   });
 });
 
-describe('migrate runner v66 — partial index materialized on PGLite', () => {
+describe('migrate runner v66 → v116 — the stale-chunk partial index, deduplicated', () => {
   let engine: PGLiteEngine;
 
   beforeAll(async () => {
@@ -776,9 +776,34 @@ describe('migrate runner v66 — partial index materialized on PGLite', () => {
     await engine.disconnect();
   });
 
-  test('v66 created idx_chunks_embedding_null on PGLite via handler branch', async () => {
+  // v66 created idx_chunks_embedding_null; v103 then created
+  // content_chunks_stale_idx with byte-identical columns and predicate, so
+  // every migrated brain carried the same index twice, paying write
+  // amplification on both for one lookup path. v116 drops the v66 name. What
+  // matters after the full chain is therefore the END STATE — exactly one
+  // index with that shape — not which migration materialized it.
+  test('v116 dropped the v66 duplicate', async () => {
     const rows = await (engine as any).db.query(
       `SELECT indexname FROM pg_indexes WHERE indexname = 'idx_chunks_embedding_null'`
+    );
+    expect(rows.rows.length).toBe(0);
+  });
+
+  test('the surviving index keeps v66/v103 shape (page_id, chunk_index) WHERE embedding IS NULL', async () => {
+    const rows = await (engine as any).db.query(
+      `SELECT indexdef FROM pg_indexes WHERE indexname = 'content_chunks_stale_idx'`
+    );
+    expect(rows.rows.length).toBe(1);
+    const def = String(rows.rows[0].indexdef);
+    expect(def).toContain('page_id');
+    expect(def).toContain('chunk_index');
+    expect(def).toMatch(/WHERE \(?embedding IS NULL\)?/);
+  });
+
+  test('exactly one index covers the stale-chunk lookup (no duplicate reintroduced)', async () => {
+    const rows = await (engine as any).db.query(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'content_chunks' AND indexdef LIKE '%embedding IS NULL%'`
     );
     expect(rows.rows.length).toBe(1);
   });

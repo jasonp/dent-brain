@@ -1,5 +1,147 @@
 # TODOS
 
+## `configureGateway` leaks across test files and kills the shard process (filed 2026-08-12, FIXED in v0.49.4.0)
+
+**Priority:** P2 (the instance is fixed; the missing static guard is what's left)
+**Status:** Root-caused and fixed. Keeping the writeup because the bug class is not yet linted.
+
+**Symptom:** `bun run test` shard 2/4 exited `rc=1` with **no summary block at all**
+(`pass=0 fail=0`), while the other shards and the serial phase passed with zero assertion
+failures. Reproduced three times at the identical point, including at `--max-concurrency=1`,
+which ruled out contention. Bisected to a **two-file minimal repro**:
+
+```bash
+bun test --max-concurrency=1 test/ai/adaptive-embed-batch.test.ts test/commands/capture.test.ts
+```
+
+**Root cause:** `test/ai/adaptive-embed-batch.test.ts` calls
+`configureGateway({ embedding_model: 'google:gemini-embedding-001', env: { GOOGLE_GENERATIVE_AI_API_KEY: 'fake' } })`.
+`configureGateway` writes **module-level singleton state**, and bun runs every file in a shard
+inside one process, so that config outlives the file. The file's per-describe
+`beforeEach(resetGateway)` protects tests *inside* it and does nothing for the file *after* it.
+`test/commands/capture.test.ts` then calls `put_page`, embeds through the leaked config,
+attempts a real Google API call with the key `fake`, and takes the process down — no test
+failure, no OOM, no stack.
+
+**Fix:** `afterAll(() => resetGateway())` in `test/ai/adaptive-embed-batch.test.ts`. One line.
+
+**Why CI never caught it:** CI buckets 10 shards by FNV-1a hash; local uses round-robin across
+4. The two files never shared a CI process. A green CI does not prove the absence of cross-file
+contamination — only that this run's bucketing avoided it.
+
+### What is still open
+
+1. **No lint rule for module-singleton leaks.** `scripts/check-test-isolation.sh` (R1–R4) covers
+   `process.env` mutation but not `configureGateway` / `__setEmbedTransportForTests` / any other
+   module-level setter. **Add a rule: a file calling `configureGateway` must also call
+   `resetGateway` in `afterAll`.** That is the fix that generalizes; the one-liner above only
+   closes this instance. Audit the other module-level setters for the same shape while there.
+
+2. **The wrapper's failure reporting is actively misleading.** On a dead shard it prints
+
+   ```
+   ❌ 0 TEST FAILURES — full details: .context/test-failures.log
+   ```
+
+   and exits 1, having already reported a green-looking `pass=10668 fail=0`. It took reading
+   `.context/test-summary.txt` to notice a whole shard was missing. `run-unit-parallel.sh` must
+   distinguish "a shard died" from "tests failed" in the banner, and must never print a passing
+   test count for a run where a shard produced no results.
+
+3. **The 1,500s per-shard timeout is too tight.** A healthy shard needs ~1,400s, leaving ~100s
+   of headroom, so ordinary variance wedges the run — and a wedged shard presents as the same
+   illegible `pass=0 fail=0 rc=1`. Raise the default, or bound memory by recycling the shard
+   process every N files.
+
+## `DROP INDEX CONCURRENTLY` inside a `DO $$` block can never work (filed 2026-08-11, v0.49.4.0)
+
+**Priority:** P2
+**Filed:** 2026-08-11, found during the v0.49.4.0 pre-landing review.
+
+Migrations **v66** (`idx_chunks_embedding_null`, `src/core/migrate.ts:3272`) and **v103**
+(`content_chunks_stale_idx`, `src/core/migrate.ts:4710`) both guard their index build with:
+
+```sql
+DO $$ BEGIN
+  IF EXISTS (... AND NOT i.indisvalid) THEN
+    EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS <name>';
+  END IF;
+END $$;
+```
+
+A `DO` block executes as a single statement inside an implicit transaction, and
+`DROP INDEX CONCURRENTLY` is illegal inside a transaction block. **So the guard raises
+`DROP INDEX CONCURRENTLY cannot run inside a transaction block` the moment it actually
+fires** — which is precisely when a prior `CREATE INDEX CONCURRENTLY` was interrupted and
+left an INVALID index. The guard exists to make that case recoverable and instead makes the
+migration fail hard.
+
+Invisible so far because the invalid-remnant branch only runs after an interrupted index
+build, which no test reproduces and no install has hit. `e7439828` upstream applied this
+same pattern to 10 more sites, so upstream carries it too — **worth reporting to
+`garrytan/gbrain`**.
+
+**Not fixed here** (Rule 3, surgical): both already ran on every install, so correcting them
+means a new migration that re-runs the guard, not an edit in place. v116 avoids the shape —
+it reads `pg_index` from TypeScript via `engine.executeRaw` and issues bare DDL outside any
+`DO` block. Use v116 as the pattern for any future CONCURRENTLY migration.
+
+## Upstream sync: 568 commits behind `garrytan/gbrain` (filed 2026-08-11, v0.49.4.0)
+
+**Priority:** P2
+**Filed:** 2026-08-11, from the upstream check run before the DB-IO hygiene work.
+
+Merge-base with `upstream/master` is `ecd6ae87` (v0.42.40.0). Upstream is now at
+v0.45.0.0 — **568 commits ahead of us, we are 198 ahead of it**. Note the default
+branch is `master`, not `main`.
+
+**Checked first, and worth recording so nobody re-checks:** upstream has NOT fixed
+any of the disk-IO problems found in the 2026-08-11 database audit. The stale-signature
+invalidation is the same full-scan shape and is still called unconditionally at the top
+of every `embedStale`; the health/stats `COUNT(*)` queries are identical; and the
+duplicate stale-chunk index (v66's `idx_chunks_embedding_null` vs v103's
+`content_chunks_stale_idx`) exists upstream too — worth reporting back to them.
+
+**Three things upstream has that we want:**
+
+1. **`src/core/db-pacer.ts`** (v0.42.49.0, #2240) — native DB-contention pacing for
+   embed/sync backfills. We do not have this file at all. Directly relevant: it throttles
+   backfills when the database is contended, which is exactly the failure mode behind the
+   Disk IO budget warnings.
+2. **`getTags` federated-scope fix** (#2200) — ours is
+   `page_id = (SELECT id FROM pages WHERE slug = ...)`. A scalar subquery **throws** when a
+   slug resolves to more than one page. In a multi-source brain that is a latent crash;
+   upstream switched to `IN (...)` with `DISTINCT` across the matched pages. **This is the
+   highest-value single cherry-pick** — it is a correctness bug, not a perf nicety.
+3. **`includeNullSignature`** on `invalidateStaleSignatureEmbeddings` (#3390, fixes #3391) —
+   provider migrations otherwise strand pre-stamp pages in the old embedding space. We ran
+   exactly that migration (ZeroEntropy → OpenAI).
+
+   **Measured on production 2026-08-11 — the gap is real but not urgent:**
+
+   | `pages.embedding_signature` | pages | live |
+   |---|---|---|
+   | `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
+   | NULL (never stamped) | 46 | 46 |
+   | `zeroentropyai:zembed-1:1280` | 1 | 1 |
+
+   All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **no chunk is
+   actually stranded in the old embedding space today** — the corpus really is migrated.
+   The problem is bookkeeping: 27 of those unstamped pages carry **524 chunks**, and the
+   GRANDFATHER rule means a NULL signature is never stale, so the next model swap will
+   skip all 524 silently and leave them in the *then*-old space with nothing surfacing it.
+   The single `zeroentropyai` page is the opposite case and self-heals — its chunks are
+   already NULL and the next `embed --stale` picks it up.
+
+   Fix direction: either backfill the signature on pages whose chunks all carry the current
+   model, or take upstream's `includeNullSignature` and use it on provider migrations only.
+   Do this **before** the next embedding-model change, not after. Full measurement lives under
+   the v0.49.0.0 ZeroEntropy-migration P1 below — this is the same trap seen from the other end.
+
+**Cost:** 4 months of upstream work landing on files we have forked heavily
+(`postgres-engine.ts` alone is 4,700+ lines with our modifications). Prior syncs of this
+shape were their own dedicated PR (v0.43 sync, PR #27). Do not bundle this with feature work.
+
 ## Pre-existing E2E reds observed during v0.49.2.0 ship (filed 2026-08-03)
 
 Surfaced by the full E2E gate on the v0.49.2.0 branch. All four were exonerated
@@ -104,6 +246,26 @@ WHERE model='<old-model>'` followed by `embed --stale --catch-up`.
 **Regression test:** simulate a mid-run page failure under `--all`, then
 assert either a non-zero exit or that a follow-up `--stale` fully converges
 `content_chunks.model` to the configured model.
+
+**Re-measured 2026-08-11 (v0.49.4.0) — the damage is repaired, the trap is not.**
+Production now reads:
+
+| `pages.embedding_signature` | Pages | Live |
+|---|---|---|
+| `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
+| `<NULL>` (never stamped) | 46 | 46 |
+| `zeroentropyai:zembed-1:1280` | 1 | 1 |
+
+All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **nothing is
+stranded in the old space today** — the manual remediation above worked. But 27 of
+those NULL-signature pages still carry **524 chunks**, and the grandfather rule means
+`--stale` cannot see them. The next model swap strands all 524 the same silent way.
+
+This is now the strongest argument for the fourth fix direction above (let a
+`content_chunks.model` mismatch override the NULL-signature grandfather). Upstream's
+`includeNullSignature` option on `invalidateStaleSignatureEmbeddings` (#3390, fixes
+#3391) is the same idea and is one of the reasons to do the sync — see the upstream-sync
+item at the top of this file. **Do it before the next embedding-model change, not after.**
 
 ### Embed path needs a higher `statement_timeout` for large pages
 
