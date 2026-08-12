@@ -555,6 +555,60 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(await pgliteEngine.countStalePagesForExtraction({ sourceId: SRC })).toBe(2);
   });
 
+  test('v116 hasStaleSignaturePages parity (grandfather + drift + source scope + agrees with sweep)', async () => {
+    const SRC = 'sig-gate-parity';
+    const CURRENT = 'openai:text-embedding-3-large:1280';
+    const PRIOR = 'zeroentropyai:zembed-1:1280';
+
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.executeRaw(`INSERT INTO sources (id, name, config) VALUES ($1, 'Sig Gate Parity', '{}'::jsonb) ON CONFLICT DO NOTHING`, [SRC]);
+      await eng.executeRaw(
+        `INSERT INTO pages (slug, source_id, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at)
+         SELECT 'sg/' || g, $1, 'concept', 'SG' || g, 'body ' || g, '', '{}'::jsonb, 'sgh' || g, now(), now()
+           FROM generate_series(1, 3) g`,
+        [SRC],
+      );
+    }
+
+    // GRANDFATHER: every page NULL-signature → both engines answer false. This
+    // is the arm that matters most — a `true` here would make the gate useless
+    // (it would run the full sweep every time on an unstamped brain), and a
+    // divergence would mean PGLite dev runs and Postgres prod runs disagree
+    // about whether there is embedding work to do.
+    expect(await pgEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(false);
+    expect(await pgliteEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(false);
+
+    // All stamped current → still false on both.
+    for (const eng of [pgEngine, pgliteEngine]) {
+      for (const n of [1, 2, 3]) {
+        await eng.setPageEmbeddingSignature(`sg/${n}`, { sourceId: SRC, signature: CURRENT });
+      }
+    }
+    expect(await pgEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(false);
+    expect(await pgliteEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(false);
+
+    // One drifted → true on both.
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.setPageEmbeddingSignature('sg/2', { sourceId: SRC, signature: PRIOR });
+    }
+    expect(await pgEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(true);
+    expect(await pgliteEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: SRC })).toBe(true);
+
+    // Source scoping: a different source must not see this source's drift.
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.executeRaw(`INSERT INTO sources (id, name, config) VALUES ('sig-gate-other', 'Other', '{}'::jsonb) ON CONFLICT DO NOTHING`);
+    }
+    expect(await pgEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: 'sig-gate-other' })).toBe(false);
+    expect(await pgliteEngine.hasStaleSignaturePages({ signature: CURRENT, sourceId: 'sig-gate-other' })).toBe(false);
+
+    // Gate agrees with the sweep on BOTH engines. If the gate ever says false
+    // while the sweep would invalidate rows, chunks silently stay in the old
+    // embedding space and nothing surfaces it.
+    const pgSwept = await pgEngine.invalidateStaleSignatureEmbeddings({ signature: CURRENT, sourceId: SRC });
+    const plSwept = await pgliteEngine.invalidateStaleSignatureEmbeddings({ signature: CURRENT, sourceId: SRC });
+    expect(pgSwept).toBe(plSwept);
+  });
+
   test('v0.41.39 listEnrichCandidates parity (thin filter + source-aware inbound + order)', async () => {
     const stub = 'Stub page.';
     const pageSql = `
