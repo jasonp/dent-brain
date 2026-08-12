@@ -102,6 +102,31 @@ export function saveGmailState(path: string, state: GmailState): void {
 }
 
 /**
+ * `saveGmailState` that warns instead of throwing — the write-side half of this
+ * module's stated invariant, and the form every caller should use.
+ *
+ * `loadGmailState` already fails open. The write side has to as well: an
+ * unwritable state file must degrade to "we redo some Gmail work next fire,"
+ * never to a failed run. Two of collect.ts's three call sites got this wrong
+ * before v0.49.5.0, and one failed badly — the identity-probe write sat inside
+ * the try block whose catch classifies GMAIL failures, so an EACCES on this
+ * file surfaced to the operator as "Gmail health probe failed (network)" and
+ * exited 1. Misreporting a local permissions problem as a Gmail failure is the
+ * exact bug class this feature exists to remove
+ * (docs/issues/email-sync-429-and-reauth-ux.md §A).
+ *
+ * `what` names the thing being saved, for the warning line.
+ */
+export function saveGmailStateBestEffort(path: string, state: GmailState, what: string): void {
+  try {
+    saveGmailState(path, state);
+  } catch (e) {
+    console.error(`[email-sync] WARN: could not persist ${what} to ${path}: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`  The run continues; the next fire will redo the Gmail work this file would have saved.`);
+  }
+}
+
+/**
  * Stable, non-reversible identifier for a refresh token, so we can tell
  * "same tokens as last run" from "re-authorized since last run" without ever
  * writing the credential to a second file.

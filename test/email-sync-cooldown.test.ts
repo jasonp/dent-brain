@@ -27,6 +27,7 @@ import {
   needsIdentityProbe,
   recordVerifiedAccount,
   saveGmailState,
+  saveGmailStateBestEffort,
   startCooldown,
   tokenFingerprint,
 } from '../tools/email-sync/gmail-state.ts';
@@ -190,5 +191,67 @@ describe('formatDuration', () => {
     expect(formatDuration(38_000)).toBe('38s');
     expect(formatDuration(0)).toBe('0s');
     expect(formatDuration(-1000)).toBe('0s');
+  });
+});
+
+describe('saveGmailStateBestEffort — the write side fails open', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'email-sync-besteffort-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // loadGmailState already fails open on a missing/corrupt file. The write side
+  // has to as well, or this "optimization and courtesy to the quota" becomes a
+  // reason to fail runs that did all their work.
+  //
+  // v0.49.5.0 fixed two unguarded call sites in collect.ts. The worse one sat
+  // inside the try block whose catch classifies GMAIL failures, so an EACCES on
+  // this file reported "Gmail health probe failed (network)" and exited 1 —
+  // a local permissions problem misreported as a Gmail outage, which is the
+  // exact bug class docs/issues/email-sync-429-and-reauth-ux.md §A is about.
+
+  test('an unwritable path warns instead of throwing', () => {
+    const state = startCooldown(emptyGmailState(), null, NOW, 'a message fetch');
+    // A path whose PARENT is an existing regular file: mkdirSync -> ENOTDIR.
+    const blocker = join(dir, 'not-a-directory');
+    writeFileSync(blocker, 'x', 'utf-8');
+    const doomed = join(blocker, 'nested', 'gmail-state.json');
+
+    expect(() => saveGmailState(doomed, state)).toThrow(); // raw form still throws
+    expect(() => saveGmailStateBestEffort(doomed, state, 'the Gmail cool-down')).not.toThrow();
+  });
+
+  test('the happy path is identical to saveGmailState', () => {
+    const p = join(dir, 'best-effort.json');
+    const state = recordVerifiedAccount(
+      startCooldown(emptyGmailState(), null, NOW, 'the identity probe'),
+      'someone@example.com',
+      tokenFingerprint('refresh-token-abc'),
+    );
+    saveGmailStateBestEffort(p, state, 'the verified-account memo');
+
+    const round = loadGmailState(p);
+    expect(round.cooldownUntil).toBe(state.cooldownUntil);
+    expect(round.cooldownReason).toBe('the identity probe');
+    expect(round.verifiedAccount?.email).toBe('someone@example.com');
+    // Still owner-only — the best-effort wrapper must not weaken the mode.
+    expect(statSync(p).mode & 0o777).toBe(0o600);
+  });
+
+  test('a failed write leaves the caller free to continue with in-memory state', () => {
+    const blocker = join(dir, 'blocker-2');
+    writeFileSync(blocker, 'x', 'utf-8');
+    const doomed = join(blocker, 'gmail-state.json');
+    const state = startCooldown(emptyGmailState(), null, NOW, 'the message list');
+
+    saveGmailStateBestEffort(doomed, state, 'the Gmail cool-down');
+    // The in-memory value is untouched, so the run can still make its decision.
+    expect(cooldownRemainingMs(state, NOW)).toBeGreaterThan(0);
+    // And nothing was persisted, so the next fire starts from empty rather than
+    // from a half-written file.
+    expect(loadGmailState(doomed)).toEqual(emptyGmailState());
   });
 });

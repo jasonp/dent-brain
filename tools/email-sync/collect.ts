@@ -38,7 +38,7 @@ import {
   loadGmailState,
   needsIdentityProbe,
   recordVerifiedAccount,
-  saveGmailState,
+  saveGmailStateBestEffort,
   startCooldown,
   tokenFingerprint,
   type GmailState,
@@ -301,14 +301,7 @@ function bankCooldownAndExit(
 ): never {
   const retryAfter = err instanceof GoogleClientError ? err.retryAfter : null;
   const next = startCooldown(state, retryAfter, Date.now(), phase);
-  try {
-    saveGmailState(statePath, next);
-  } catch (e) {
-    // A state file we can't write means the next fire will probe again and
-    // re-extend the window — bad, but not worth failing the run over. Say so
-    // loudly so the operator can fix the permissions.
-    console.error(`[email-sync] WARN: could not persist the Gmail cool-down to ${statePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  saveGmailStateBestEffort(statePath, next, 'the Gmail cool-down');
   console.error(
     `[email-sync] Gmail rate-limited (429) during ${phase}${retryAfter ? ` (Gmail says retry after ${retryAfter})` : ' (no retry-after given)'}.`,
   );
@@ -383,7 +376,9 @@ async function main() {
       }
       if (fingerprint) {
         gmailState = recordVerifiedAccount(gmailState, profile.emailAddress.toLowerCase(), fingerprint);
-        saveGmailState(config.gmailStatePath, gmailState);
+        // Best-effort: this sits inside the Gmail-failure catch below, so an
+        // unguarded throw here would be misreported as a Gmail probe failure.
+        saveGmailStateBestEffort(config.gmailStatePath, gmailState, 'the verified-account memo');
       }
     } catch (e) {
       // A transient rate-limit must NOT be treated as a fatal auth failure
@@ -565,7 +560,10 @@ async function main() {
   // written even on a dry run — the Gmail calls it describes really happened.
   if (gmailState.cooldownUntil) {
     gmailState = clearCooldown(gmailState);
-    saveGmailState(config.gmailStatePath, gmailState);
+    // Best-effort: this is the LAST thing a successful run does, after every
+    // MCP write has already landed. Throwing here would exit non-zero on a run
+    // that did all its work, and the scheduler log would read as a failure.
+    saveGmailStateBestEffort(config.gmailStatePath, gmailState, 'the cleared cool-down');
     console.error(`[email-sync] Gmail cool-down cleared — the run completed with no rate-limit.`);
   }
 
