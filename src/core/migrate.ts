@@ -5230,28 +5230,44 @@ export const MIGRATIONS: Migration[] = [
     sql: '',
     handler: async (engine) => {
       if (engine.kind === 'postgres') {
-        await engine.runMigration(
-          116,
-          `DO $$ BEGIN
-             IF EXISTS (
-               SELECT 1 FROM pg_index i
-               JOIN pg_class c ON c.oid = i.indexrelid
-               WHERE c.relname = 'pages_embedding_signature_idx' AND NOT i.indisvalid
-             ) THEN
-               EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS pages_embedding_signature_idx';
-             END IF;
-           END $$;`
+        // DELIBERATELY NOT the `DO $$ ... EXECUTE 'DROP INDEX CONCURRENTLY' $$`
+        // shape used by v66/v103. A DO block runs as one statement inside an
+        // implicit transaction, and both CREATE INDEX CONCURRENTLY and DROP
+        // INDEX CONCURRENTLY are illegal inside a transaction block — so that
+        // guard raises "cannot run inside a transaction block" the moment it
+        // actually fires, i.e. exactly when recovering from a half-built index.
+        // (Pre-existing in v66/v103; filed in TODOS, not fixed here — those
+        // already ran everywhere and re-running them is its own migration.)
+        // Read the catalog from TypeScript instead and issue bare DDL.
+        const invalidRemnant = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'pages_embedding_signature_idx' AND NOT i.indisvalid`,
         );
+        if (invalidRemnant.length > 0) {
+          await engine.runMigration(116, `DROP INDEX CONCURRENTLY IF EXISTS pages_embedding_signature_idx;`);
+        }
         await engine.runMigration(
           116,
           `CREATE INDEX CONCURRENTLY IF NOT EXISTS pages_embedding_signature_idx
              ON pages (embedding_signature, source_id)
              WHERE embedding_signature IS NOT NULL;`
         );
-        await engine.runMigration(
-          116,
-          `DROP INDEX CONCURRENTLY IF EXISTS idx_chunks_embedding_null;`
+
+        // Only drop the v66 duplicate once the v103 survivor is confirmed
+        // present AND valid. v103 runs earlier in the chain so this normally
+        // holds — but v103's own CREATE ... CONCURRENTLY can leave an INVALID
+        // index behind, and dropping the duplicate in that state would strip
+        // `embed --stale` of the last usable index for its cursor. Cheap check,
+        // and the failure it prevents is silent (a slow scan, not an error).
+        const survivor = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'content_chunks_stale_idx' AND i.indisvalid`,
         );
+        if (survivor.length > 0) {
+          await engine.runMigration(116, `DROP INDEX CONCURRENTLY IF EXISTS idx_chunks_embedding_null;`);
+        }
       } else {
         await engine.runMigration(
           116,
@@ -5259,10 +5275,15 @@ export const MIGRATIONS: Migration[] = [
              ON pages (embedding_signature, source_id)
              WHERE embedding_signature IS NOT NULL;`
         );
-        await engine.runMigration(
-          116,
-          `DROP INDEX IF EXISTS idx_chunks_embedding_null;`
+        // PGLite builds indexes non-concurrently, so there is no INVALID state
+        // to recover from — but keep the same "survivor must exist" precondition
+        // so the two engines can't diverge on which indexes a brain ends up with.
+        const survivor = await engine.executeRaw<{ ok: boolean }>(
+          `SELECT true AS ok FROM pg_class WHERE relname = 'content_chunks_stale_idx'`,
         );
+        if (survivor.length > 0) {
+          await engine.runMigration(116, `DROP INDEX IF EXISTS idx_chunks_embedding_null;`);
+        }
       }
     },
   },
