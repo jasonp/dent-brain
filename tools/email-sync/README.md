@@ -24,9 +24,11 @@ A kept message is then classified:
 
 ## Auth model
 
-Direct Google OAuth via a shared **"Dent Brain" Google Cloud OAuth app** in test mode. The admin (you, if you set up the fork) creates the OAuth app once, adds each teammate's Gmail address as a Test User in the consent screen, and stores the Client ID + Client Secret to pass to install.sh.
+Direct Google OAuth via a shared **"Dent Brain" Google Cloud OAuth app**, **published and restricted to the internal team** (corrected 2026-08-11 — this section previously said *test mode*, which also meant the Test User step below was wrong). The admin creates the OAuth app once and stores the Client ID + Client Secret to pass to install.sh. There is no per-teammate Test User list to maintain.
 
-Each teammate runs the install once, completes a one-time browser OAuth dance ("this app isn't verified" → Advanced → "Go to Dent Brain (unsafe)" → Allow), and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
+Each teammate runs the install once, completes a one-time browser OAuth dance, and the resulting refresh token lands in `~/.dent-brain/email-sync/google-tokens.json` (chmod 0600). The collector self-refreshes the access token on every run.
+
+**Quota is pooled per-project across everyone on the app.** That is the structural reason one teammate's burst can rate-limit the whole team, and it is not something the daemon can fix — see the §B7 item in `TODOS.md` for the two real options (raise the GCP quota, or issue per-teammate OAuth clients).
 
 No agent token to hunt down. No third-party broker. Each teammate authorizes their own Gmail; nobody else's tokens ever leave their laptop.
 
