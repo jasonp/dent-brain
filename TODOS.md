@@ -1,61 +1,57 @@
 # TODOS
 
-## Unit shard 2 dies without reporting; the wrapper then prints "0 TEST FAILURES" and exits 1 (filed 2026-08-12, v0.49.4.0)
+## `configureGateway` leaks across test files and kills the shard process (filed 2026-08-12, FIXED in v0.49.4.0)
 
-**Priority:** P1
-**Filed:** 2026-08-12, from the v0.49.4.0 ship gate.
+**Priority:** P2 (the instance is fixed; the missing static guard is what's left)
+**Status:** Root-caused and fixed. Keeping the writeup because the bug class is not yet linted.
 
-**What happens:** `bun run test` shard 2/4 exits `rc=1` having emitted **no summary block at
-all** (`pass=0 fail=0`). Each shard is a single `bun test` invocation over its 236 files, so a
-mid-run process death means no per-file results are ever printed. The other three shards and
-the serial phase pass with **zero assertion failures**:
+**Symptom:** `bun run test` shard 2/4 exited `rc=1` with **no summary block at all**
+(`pass=0 fail=0`), while the other shards and the serial phase passed with zero assertion
+failures. Reproduced three times at the identical point, including at `--max-concurrency=1`,
+which ruled out contention. Bisected to a **two-file minimal repro**:
 
-```
-shard 1/4: pass=3404 fail=0 skip=3  rc=0
-shard 2/4: pass=0    fail=0 skip=0  rc=1   <-- died
-shard 3/4: pass=3360 fail=0 skip=0  rc=0
-shard 4/4: pass=3230 fail=0 skip=12 rc=0
-serial:    pass=674              rc=0   (67/67 files)
+```bash
+bun test --max-concurrency=1 test/ai/adaptive-embed-batch.test.ts test/commands/capture.test.ts
 ```
 
-**Reproducible**, not a flake — died at the identical point on two consecutive runs (full suite,
-then shard 2 alone). Both times the last output is:
+**Root cause:** `test/ai/adaptive-embed-batch.test.ts` calls
+`configureGateway({ embedding_model: 'google:gemini-embedding-001', env: { GOOGLE_GENERATIVE_AI_API_KEY: 'fake' } })`.
+`configureGateway` writes **module-level singleton state**, and bun runs every file in a shard
+inside one process, so that config outlives the file. The file's per-describe
+`beforeEach(resetGateway)` protects tests *inside* it and does nothing for the file *after* it.
+`test/commands/capture.test.ts` then calls `put_page`, embeds through the leaked config,
+attempts a real Google API call with the key `fake`, and takes the process down — no test
+failure, no OOM, no stack.
 
-```
-test/commands/capture.test.ts:
-gbrain capture: put_page failed: [embed(google:gemini-embedding-001)] API key not valid.
-```
+**Fix:** `afterAll(() => resetGateway())` in `test/ai/adaptive-embed-batch.test.ts`. One line.
 
-**What is known:**
-- `test/commands/capture.test.ts` passes standalone: **21 pass, 0 fail, exit 0**.
-- No `GOOGLE_API_KEY` / `GEMINI_API_KEY` is set in the developer shell, and no test assigns one
-  via `process.env` directly. So the invalid key is reaching the gateway through the
-  **file-plane config seam** (a test writing `google_api_key` into a shared `GBRAIN_HOME`),
-  which another file then picks up — the cross-file contamination class the isolation lint
-  (R1–R4) exists to prevent. Same class as the `COHERE_API_KEY` bug fixed in v0.49.4.0.
-- Process memory climbs steadily to ~19.6% of 48 GB (~9.4 GB) over the run, so resource
-  pressure may be a co-factor, but the determinism points at the leak.
-- No OOM message, no fatal, no stack — the process simply exits.
+**Why CI never caught it:** CI buckets 10 shards by FNV-1a hash; local uses round-robin across
+4. The two files never shared a CI process. A green CI does not prove the absence of cross-file
+contamination — only that this run's bucketing avoided it.
 
-**Not yet known:** whether this predates v0.49.4.0. The obvious comparison (run shard 2 on
-`main`) was attempted with a git worktree whose `node_modules` was symlinked back to the primary
-checkout — module resolution then reached the primary tree's `src/`, producing 45 mixed-state
-failures that mean nothing. **Redo it with a real `bun install` in the worktree, not a symlink.**
-Evidence against it being new: the full suite passed 10,667/1 across all four shards on this same
-branch the previous day, before the last three commits.
+### What is still open
 
-**The second bug, and arguably the worse one:** the wrapper prints
+1. **No lint rule for module-singleton leaks.** `scripts/check-test-isolation.sh` (R1–R4) covers
+   `process.env` mutation but not `configureGateway` / `__setEmbedTransportForTests` / any other
+   module-level setter. **Add a rule: a file calling `configureGateway` must also call
+   `resetGateway` in `afterAll`.** That is the fix that generalizes; the one-liner above only
+   closes this instance. Audit the other module-level setters for the same shape while there.
 
-```
-❌ 0 TEST FAILURES — full details: .context/test-failures.log
-```
+2. **The wrapper's failure reporting is actively misleading.** On a dead shard it prints
 
-and exits non-zero. A gate that reports zero failures while failing is not actionable — it took
-a summary-file read to discover a whole shard was missing. `run-unit-parallel.sh` should
-distinguish "a shard died" from "tests failed" in the banner, and should never report a green
-test count for a run where a shard produced no results.
+   ```
+   ❌ 0 TEST FAILURES — full details: .context/test-failures.log
+   ```
 
-**Repro:** `SHARD=2/4 env -u DATABASE_URL bash scripts/run-unit-shard.sh --max-concurrency 4`
+   and exits 1, having already reported a green-looking `pass=10668 fail=0`. It took reading
+   `.context/test-summary.txt` to notice a whole shard was missing. `run-unit-parallel.sh` must
+   distinguish "a shard died" from "tests failed" in the banner, and must never print a passing
+   test count for a run where a shard produced no results.
+
+3. **The 1,500s per-shard timeout is too tight.** A healthy shard needs ~1,400s, leaving ~100s
+   of headroom, so ordinary variance wedges the run — and a wedged shard presents as the same
+   illegible `pass=0 fail=0 rc=1`. Raise the default, or bound memory by recycling the shard
+   process every N files.
 
 ## `DROP INDEX CONCURRENTLY` inside a `DO $$` block can never work (filed 2026-08-11, v0.49.4.0)
 
