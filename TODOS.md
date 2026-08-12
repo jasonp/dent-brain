@@ -1,5 +1,38 @@
 # TODOS
 
+## `DROP INDEX CONCURRENTLY` inside a `DO $$` block can never work (filed 2026-08-11, v0.49.4.0)
+
+**Priority:** P2
+**Filed:** 2026-08-11, found during the v0.49.4.0 pre-landing review.
+
+Migrations **v66** (`idx_chunks_embedding_null`, `src/core/migrate.ts:3272`) and **v103**
+(`content_chunks_stale_idx`, `src/core/migrate.ts:4710`) both guard their index build with:
+
+```sql
+DO $$ BEGIN
+  IF EXISTS (... AND NOT i.indisvalid) THEN
+    EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS <name>';
+  END IF;
+END $$;
+```
+
+A `DO` block executes as a single statement inside an implicit transaction, and
+`DROP INDEX CONCURRENTLY` is illegal inside a transaction block. **So the guard raises
+`DROP INDEX CONCURRENTLY cannot run inside a transaction block` the moment it actually
+fires** — which is precisely when a prior `CREATE INDEX CONCURRENTLY` was interrupted and
+left an INVALID index. The guard exists to make that case recoverable and instead makes the
+migration fail hard.
+
+Invisible so far because the invalid-remnant branch only runs after an interrupted index
+build, which no test reproduces and no install has hit. `e7439828` upstream applied this
+same pattern to 10 more sites, so upstream carries it too — **worth reporting to
+`garrytan/gbrain`**.
+
+**Not fixed here** (Rule 3, surgical): both already ran on every install, so correcting them
+means a new migration that re-runs the guard, not an edit in place. v116 avoids the shape —
+it reads `pg_index` from TypeScript via `engine.executeRaw` and issues bare DDL outside any
+`DO` block. Use v116 as the pattern for any future CONCURRENTLY migration.
+
 ## Upstream sync: 568 commits behind `garrytan/gbrain` (filed 2026-08-11, v0.49.4.0)
 
 **Priority:** P2
@@ -49,7 +82,8 @@ duplicate stale-chunk index (v66's `idx_chunks_embedding_null` vs v103's
 
    Fix direction: either backfill the signature on pages whose chunks all carry the current
    model, or take upstream's `includeNullSignature` and use it on provider migrations only.
-   Do this **before** the next embedding-model change, not after.
+   Do this **before** the next embedding-model change, not after. Full measurement lives under
+   the v0.49.0.0 ZeroEntropy-migration P1 below — this is the same trap seen from the other end.
 
 **Cost:** 4 months of upstream work landing on files we have forked heavily
 (`postgres-engine.ts` alone is 4,700+ lines with our modifications). Prior syncs of this
@@ -159,6 +193,26 @@ WHERE model='<old-model>'` followed by `embed --stale --catch-up`.
 **Regression test:** simulate a mid-run page failure under `--all`, then
 assert either a non-zero exit or that a follow-up `--stale` fully converges
 `content_chunks.model` to the configured model.
+
+**Re-measured 2026-08-11 (v0.49.4.0) — the damage is repaired, the trap is not.**
+Production now reads:
+
+| `pages.embedding_signature` | Pages | Live |
+|---|---|---|
+| `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
+| `<NULL>` (never stamped) | 46 | 46 |
+| `zeroentropyai:zembed-1:1280` | 1 | 1 |
+
+All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **nothing is
+stranded in the old space today** — the manual remediation above worked. But 27 of
+those NULL-signature pages still carry **524 chunks**, and the grandfather rule means
+`--stale` cannot see them. The next model swap strands all 524 the same silent way.
+
+This is now the strongest argument for the fourth fix direction above (let a
+`content_chunks.model` mismatch override the NULL-signature grandfather). Upstream's
+`includeNullSignature` option on `invalidateStaleSignatureEmbeddings` (#3390, fixes
+#3391) is the same idea and is one of the reasons to do the sync — see the upstream-sync
+item at the top of this file. **Do it before the next embedding-model change, not after.**
 
 ### Embed path needs a higher `statement_timeout` for large pages
 
