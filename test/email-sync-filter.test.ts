@@ -26,6 +26,7 @@ function makeEmail(overrides: Partial<CollectedEmail> = {}): CollectedEmail {
     snippet: 'Hi there',
     gmailLink: 'https://mail.google.com/x',
     isNoise: false,
+    isBulk: false,
     isSignature: false,
     isOutbound: false,
     ...overrides,

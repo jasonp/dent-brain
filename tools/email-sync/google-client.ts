@@ -166,7 +166,11 @@ export class GoogleClient {
     const url = new URL(`${GMAIL_BASE}/users/me/messages/${encodeURIComponent(id)}`);
     url.searchParams.set('format', format);
     if (format === 'metadata') {
-      for (const h of ['From', 'To', 'Cc', 'Bcc', 'Date', 'Subject']) {
+      // List-Unsubscribe / List-Id / Precedence are the RFC bulk-mail markers.
+      // They ride along in the same metadata response at no extra API cost, and
+      // they are the only reliable way to tell a newsletter sent from a
+      // human-looking address (`seattle@axios.com`) from an actual human.
+      for (const h of ['From', 'To', 'Cc', 'Bcc', 'Date', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence']) {
         url.searchParams.append('metadataHeaders', h);
       }
     }

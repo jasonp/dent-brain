@@ -4,10 +4,37 @@
 **Discovered:** 2026-06-12, during a `/dent-update` (v0.38.0.0 → v0.45.0.0 re-install) on macOS (darwin).
 **Severity:** High — a transient Gmail rate-limit (429) is misclassified as an auth/config failure, which (a) forces an unnecessary OAuth re-consent, (b) prints a misleading error that sends the operator down the wrong path, and (c) hammers the Gmail API hard enough to trip a *sticky, self-extending* per-user rate limit that blocks setup for an extended window. A previously-working daemon ends up inert and un-armable.
 
-> Status: fix landed in v0.46.0.0 (`tools/email-sync/{google-client,install,collect}.ts`,
+> Status: §A1–A4 landed in v0.46.0.0 (`tools/email-sync/{google-client,install,collect}.ts`,
 > `tools/extensions/cli.ts`, `skills/dent/update/SKILL.md`). The `file:line` references below
-> were read from the v0.45.0.0 bundle and verified against `main` during the fix. §B7
-> (shared OAuth app / quota) is deferred — see TODOS.
+> were read from the v0.45.0.0 bundle and verified against `main` during the fix.
+>
+> §A4 (respect retry-after) and §A5 (stop probing so often) landed later, once the sync log
+> showed the v0.46 fix had made 429s *survivable* but not *rarer*: 40 of 224 fires were
+> rate-limited (~18%), arriving in streaks of 3–5 consecutive fires — 18–30h of stalled
+> ingestion each. `tools/email-sync/gmail-state.ts` banks the window to disk so the collector
+> makes **zero** Gmail calls until it passes, the identity probe is memoized against a
+> refresh-token fingerprint (once per authorization, not once per fire), and a run that hits
+> its limit partway through aborts instead of grinding the remaining fetches into 429s.
+>
+> **§3 below is wrong about the mechanism — corrected 2026-08-11.** The window is not
+> *escalating*; it is a **rolling ~16-minute window restarted by every call**. Two independent
+> measurements that day (a scheduled fire, and a manual probe 52 minutes later) each got a
+> retry-after exactly `15m56s` in the future, and every historical retry-after in the sync log
+> sits at the same minute-of-hour, 6h apart — i.e. tracking the *fire cadence*, not compounding.
+> §3's observed `19:16 → 19:34 → 19:56` progression was an operator retrying every ~18 minutes
+> and restarting the window each time, not the window growing.
+>
+> **The corrected diagnosis matters for prioritization.** At a 6h cadence the daemon waits ~22x
+> the stated window and *still* gets 429'd, so the multi-hour stalls are sustained exhaustion of
+> the pooled per-project quota, not self-inflicted extension. §B7 is the fix for those; the
+> cool-down work is quota hygiene that reduces consumption and removes the ways an operator or a
+> partial run can make things worse. Do not expect it to move the streak frequency on its own —
+> measure §B7 against the streak rate, not against this.
+>
+> §A6 (idempotent-upgrade guard) is still open. §B7 (shared OAuth app / quota) is deferred —
+> see TODOS. **Correction to §B7 below:** the OAuth app is *published and restricted to the
+> internal team*, not in test mode, so the "move from test to production" option is moot; the
+> live question is per-project quota vs. per-teammate clients.
 
 ---
 
@@ -99,7 +126,7 @@ Note the contradiction: fresh full-scope tokens were minted and saved, then the 
 
 ### B. Server / OAuth-app config
 
-7. **Per-teammate OAuth clients or quota review.** All teammates share one "Dent Brain" Google Cloud OAuth app in *test mode*. Gmail API per-user/per-project quotas are shared and easy to exhaust. Options: request a Gmail API quota increase in the GCP project; move the app from *test* to *production/verified*; or issue each teammate their own OAuth client so one person's burst doesn't throttle others. Check **GCP Console → APIs & Services → Gmail API → Quotas** for the specific limit being hit (per-user vs per-project).
+7. **Per-teammate OAuth clients or quota review.** All teammates share one "Dent Brain" Google Cloud OAuth app — *published, restricted to the internal team* (not test mode; corrected 2026-08-11). Gmail API per-project quota is therefore pooled across everyone, so one teammate's burst throttles the rest. Two live options: request a Gmail API quota increase in the GCP project; or issue each teammate their own OAuth client so bursts are isolated. Check **GCP Console → APIs & Services → Gmail API → Quotas** for the specific limit being hit (per-user vs per-project) before choosing.
 
 ### C. Google-side / operational
 
