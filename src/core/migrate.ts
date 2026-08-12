@@ -5707,15 +5707,17 @@ export const MIGRATIONS: Migration[] = [
     sql: '',
     handler: async (engine) => {
       if (engine.kind === 'postgres') {
-        // DELIBERATELY NOT the `DO $$ ... EXECUTE 'DROP INDEX CONCURRENTLY' $$`
-        // shape used by v66/v103. A DO block runs as one statement inside an
-        // implicit transaction, and both CREATE INDEX CONCURRENTLY and DROP
-        // INDEX CONCURRENTLY are illegal inside a transaction block — so that
-        // guard raises "cannot run inside a transaction block" the moment it
-        // actually fires, i.e. exactly when recovering from a half-built index.
-        // (Pre-existing in v66/v103; filed in TODOS, not fixed here — those
-        // already ran everywhere and re-running them is its own migration.)
-        // Read the catalog from TypeScript instead and issue bare DDL.
+        // Catalog read happens HERE, in TypeScript, and the DDL is issued bare.
+        //
+        // The alternative — wrapping the invalid-remnant check in a DO block that
+        // EXECUTEs the concurrent drop — cannot work: a DO block runs as a single
+        // statement inside an implicit transaction, and concurrent index DDL is
+        // illegal inside a transaction block. Such a guard raises "cannot run
+        // inside a transaction block" at the exact moment it fires, i.e. while
+        // recovering from a half-built index. v66/v103 shipped that shape; both
+        // this fork (filed during v0.49.4.0) and upstream found it independently,
+        // and the v0.50.0.0 sync brought upstream's fix plus a file-wide guard
+        // that keeps the shape from coming back. Copy THIS migration, not v66.
         const invalidRemnant = await engine.executeRaw<{ ok: boolean }>(
           `SELECT true AS ok FROM pg_index i
              JOIN pg_class c ON c.oid = i.indexrelid

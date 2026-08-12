@@ -136,6 +136,32 @@ export function isSupabasePoolerUrl(url: string): boolean {
  *
  * Returns null when the URL isn't a recognized Supabase pooler.
  */
+// FORK DIVERGENCE (v0.48.1, RE-CONFIRMED during the v0.50.0.0 upstream sync).
+//
+// Upstream derives `db.<ref>.supabase.co` and strips the username to bare
+// `postgres`. We deliberately do NEITHER. Two independent reasons, both of
+// which our own tests below pin:
+//
+//   1. HOST. `db.<ref>.supabase.co` is IPv6-only without Supabase's paid IPv4
+//      add-on. Railway is IPv4-only, so deriving it turns every direct-pool
+//      init into a failed connection. Upstream absorbs that with an
+//      ENOTFOUND fallback to the pooler — which works, but costs a timeout at
+//      init and then drops to single-pool anyway. Swapping 6543→5432 on the
+//      pooler host reaches a genuinely session-capable endpoint on the first
+//      try.
+//
+//   2. USERNAME. Supavisor routes tenants BY the `postgres.<ref>` suffix.
+//      Stripping it is correct for a direct host and WRONG for the pooler:
+//      auth fails with `password authentication failed for user "postgres"`
+//      even though the password is right. Since our derived endpoint stays on
+//      the pooler, the suffix must stay too.
+//
+// Taking upstream's version was attempted during the sync and reverted — the
+// tests in test/connection-manager.serial.test.ts caught it. If a future sync
+// makes this conflict again, read those tests before "fixing" it toward
+// upstream. Production sets GBRAIN_DIRECT_DATABASE_URL explicitly to the
+// session pooler (:5432), which passes through untouched either way, so the
+// blast radius is fresh installs and teammates without the override.
 export function deriveDirectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));

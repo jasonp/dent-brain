@@ -44,15 +44,32 @@ describe('check-privacy.sh CI wiring', () => {
     expect((stat.mode & 0o100) !== 0).toBe(true);
   });
 
-  it('package.json "verify" script chains the privacy + plugin-version gates', () => {
+  it('verify dispatches the privacy + plugin-version gates', () => {
+    // REWRITTEN in v0.50.0.0. This used to assert that `verify` was an explicit
+    // `&&` chain containing both gate names, because the fork ran a serial chain
+    // while upstream ran a parallel dispatcher. The upstream sync adopted the
+    // dispatcher (39 checks in ~21s against our 15 serial), so substring-matching
+    // package.json now tests the wrong thing — and would pass on a `verify` that
+    // dispatches neither gate.
+    //
+    // What must remain true is that both gates actually RUN. Assert that against
+    // the dispatcher's own --dry-list, the same authoritative mechanism the
+    // sibling test below uses. check:plugin-version is fork-only and registered
+    // in the CHECKS array; if a future upstream sync overwrites that array, this
+    // test is what catches the loss.
+    expect(existsSync(VERIFY_DISPATCHER)).toBe(true);
+    const r = spawnSync('bash', [VERIFY_DISPATCHER, '--dry-list'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+    });
+    expect(r.status).toBe(0);
+    const checks = r.stdout.trim().split('\n').map(s => s.trim());
+    expect(checks).toContain('check:privacy');
+    expect(checks).toContain('check:plugin-version');
+
+    // And `verify` must route through that dispatcher, not something else.
     const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf-8'));
-    expect(typeof pkg.scripts?.verify).toBe('string');
-    // dent-brain fork keeps the explicit `&&` chain (not the parallel
-    // dispatcher) so the dent-only gates ride along. Assert the two that
-    // matter most: privacy (the regression guard's whole reason to exist)
-    // and plugin-version (marketplace-bundle drift gate).
-    expect(pkg.scripts.verify).toContain('check:privacy');
-    expect(pkg.scripts.verify).toContain('check:plugin-version');
+    expect(pkg.scripts?.verify).toContain('run-verify-parallel.sh');
   });
 
   it('run-verify-parallel.sh dispatches check:privacy', () => {

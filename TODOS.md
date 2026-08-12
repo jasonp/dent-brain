@@ -53,38 +53,25 @@ contamination — only that this run's bucketing avoided it.
    illegible `pass=0 fail=0 rc=1`. Raise the default, or bound memory by recycling the shard
    process every N files.
 
-## `DROP INDEX CONCURRENTLY` inside a `DO $$` block can never work (filed 2026-08-11, v0.49.4.0)
+## `DROP INDEX CONCURRENTLY` inside a `DO $$` block — RESOLVED by the v0.50.0.0 upstream sync (filed 2026-08-11)
 
-**Priority:** P2
-**Filed:** 2026-08-11, found during the v0.49.4.0 pre-landing review.
+Filed during the v0.49.4.0 ship: v66 and v103 guarded their concurrent index build with a
+`DO` block that EXECUTEs a concurrent drop. A `DO` block is a single statement inside an
+implicit transaction and concurrent index DDL is illegal there, so the guard raises
+`cannot run inside a transaction block` at exactly the moment it fires — while recovering
+from a half-built index. We left it filed rather than fixed (Rule 3: both had already run
+everywhere, so correcting them means a new migration, not an edit).
 
-Migrations **v66** (`idx_chunks_embedding_null`, `src/core/migrate.ts:3272`) and **v103**
-(`content_chunks_stale_idx`, `src/core/migrate.ts:4710`) both guard their index build with:
+**Upstream found the same bug independently and fixed it.** The v0.50.0.0 sync brings their
+fix — zero occurrences remain in `src/core/migrate.ts` — plus a **file-wide regression guard**
+(`test/migrate.test.ts`, "#1178 file-wide") that fails if the shape reappears anywhere.
 
-```sql
-DO $$ BEGIN
-  IF EXISTS (... AND NOT i.indisvalid) THEN
-    EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS <name>';
-  END IF;
-END $$;
-```
+That guard is strict enough to trip on a code COMMENT quoting the pattern, which is how it
+caught our v127 explanatory note during this sync. Reworded rather than suppressed: a guard
+that can be talked around by prose is worth less than one that cannot.
 
-A `DO` block executes as a single statement inside an implicit transaction, and
-`DROP INDEX CONCURRENTLY` is illegal inside a transaction block. **So the guard raises
-`DROP INDEX CONCURRENTLY cannot run inside a transaction block` the moment it actually
-fires** — which is precisely when a prior `CREATE INDEX CONCURRENTLY` was interrupted and
-left an INVALID index. The guard exists to make that case recoverable and instead makes the
-migration fail hard.
-
-Invisible so far because the invalid-remnant branch only runs after an interrupted index
-build, which no test reproduces and no install has hit. `e7439828` upstream applied this
-same pattern to 10 more sites, so upstream carries it too — **worth reporting to
-`garrytan/gbrain`**.
-
-**Not fixed here** (Rule 3, surgical): both already ran on every install, so correcting them
-means a new migration that re-runs the guard, not an edit in place. v116 avoids the shape —
-it reads `pg_index` from TypeScript via `engine.executeRaw` and issues bare DDL outside any
-`DO` block. Use v116 as the pattern for any future CONCURRENTLY migration.
+Copy **v127** as the pattern for any future CONCURRENTLY migration: read `pg_index` from
+TypeScript via `engine.executeRaw`, then issue bare DDL outside any `DO` block.
 
 ## Upstream sync — DONE in v0.50.0.0 (filed 2026-08-11, completed 2026-08-12)
 

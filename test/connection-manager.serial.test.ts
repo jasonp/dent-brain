@@ -115,12 +115,19 @@ describe('deriveDirectUrl', () => {
 });
 
 describe('normalizeDirectUrl', () => {
-  test('normalizes a transaction-pooler (6543) override to the real direct host', () => {
+  // FORK: upstream asserts this normalizes to `db.<ref>.supabase.co` with a bare
+  // `postgres` user. We normalize to the SESSION POOLER on the same host, keeping
+  // the `postgres.<ref>` suffix — see the divergence note on deriveDirectUrl.
+  // Short version: the db.<ref> host is IPv6-only without the paid add-on, and
+  // stripping the suffix breaks Supavisor tenant routing. The BEHAVIOR under test
+  // (a 6543 override is normalized, not used as-is) is identical; only the target
+  // differs.
+  test('normalizes a transaction-pooler (6543) override to the session pooler', () => {
     const direct = normalizeDirectUrl(
       'postgresql://postgres.abcxyz:p@aws-0-us-west-2.pooler.supabase.com:6543/postgres',
       'postgresql://postgres.abcxyz:p@aws-0-us-west-2.pooler.supabase.com:6543/postgres',
     );
-    expect(direct).toBe('postgresql://postgres:p@db.abcxyz.supabase.co:5432/postgres');
+    expect(direct).toBe('postgresql://postgres.abcxyz:p@aws-0-us-west-2.pooler.supabase.com:5432/postgres');
   });
 
   test('keeps a non-pooler direct override', () => {
@@ -144,7 +151,8 @@ describe('normalizeDirectUrl', () => {
     const direct = normalizeDirectUrl(
       'postgresql://postgres.abc:p@aws.pooler.supabase.com:6543/db',
     );
-    expect(direct).toContain('db.abc.supabase.co:5432');
+    // FORK: session pooler on the same host, not db.<ref>.supabase.co.
+    expect(direct).toContain('aws.pooler.supabase.com:5432');
   });
 
   test('no override, non-Supabase primary: null', () => {
@@ -269,22 +277,24 @@ describe('ConnectionManager — describeMode + dual-pool routing', () => {
     expect(cm.resolveDirectUrl()).toContain('custom-direct.example.com');
   });
 
-  test('explicit transaction-pooler directUrl override is normalized to direct host', () => {
+  // FORK: normalized to the SESSION POOLER, not db.<ref> — see deriveDirectUrl.
+  test('explicit transaction-pooler directUrl override is normalized to session pooler', () => {
     const cm = new ConnectionManager({
       url: 'postgresql://postgres.abc:p@aws.pooler.supabase.com:6543/db',
       directUrl: 'postgresql://postgres.abc:p@aws.pooler.supabase.com:6543/db',
     });
-    expect(cm.resolveDirectUrl()).toContain('db.abc.supabase.co:5432');
+    expect(cm.resolveDirectUrl()).toContain('aws.pooler.supabase.com:5432');
     expect(cm.resolveDirectUrl()).not.toContain(':6543');
   });
 
-  test('env transaction-pooler directUrl override is normalized to direct host', () => {
+  // FORK: normalized to the SESSION POOLER, not db.<ref> — see deriveDirectUrl.
+  test('env transaction-pooler directUrl override is normalized to session pooler', () => {
     process.env.GBRAIN_DIRECT_DATABASE_URL =
       'postgresql://postgres.abc:p@aws.pooler.supabase.com:6543/db';
     const cm = new ConnectionManager({
       url: 'postgresql://postgres.abc:p@aws.pooler.supabase.com:6543/db',
     });
-    expect(cm.resolveDirectUrl()).toContain('db.abc.supabase.co:5432');
+    expect(cm.resolveDirectUrl()).toContain('aws.pooler.supabase.com:5432');
     expect(cm.resolveDirectUrl()).not.toContain(':6543');
   });
 
