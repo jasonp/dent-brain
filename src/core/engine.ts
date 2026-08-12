@@ -1025,6 +1025,23 @@ export interface BrainEngine {
    */
   invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string }): Promise<number>;
   /**
+   * Cheap existence probe: is ANY page stamped with a signature that differs
+   * from `signature`? Answers the only question the caller actually needs
+   * before deciding whether to run `invalidateStaleSignatureEmbeddings`.
+   *
+   * Exists because the invalidation UPDATE joins `pages` against every row of
+   * `content_chunks`, so its cost is a full scan of the largest table in the
+   * brain whether or not there is anything to invalidate. Measured on a
+   * production brain: 173 runs, 5.1 GB read, 61 rows actually invalidated —
+   * 42% of all disk reads on the instance spent proving there was no work.
+   *
+   * This probe touches `pages` only and rides `pages_embedding_signature_idx`
+   * (v116), so the common "nothing is stale" answer costs a small index scan
+   * instead. GRANDFATHER matches the UPDATE exactly: a NULL signature is never
+   * stale, so a brain that has never stamped one always answers false.
+   */
+  hasStaleSignaturePages(opts: { signature: string; sourceId?: string }): Promise<boolean>;
+  /**
    * Return every chunk where embedding IS NULL, with the metadata needed
    * to call embedBatch + upsertChunks. The `embedding` column is omitted
    * by design — stale rows have NULL embeddings, so shipping them wastes

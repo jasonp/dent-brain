@@ -122,9 +122,19 @@ export async function embedStaleForSource(
   // v0.41.31: invalidate embeddings stamped under a prior model signature so
   // the NULL cursor below re-embeds them. GRANDFATHER: NULL signature
   // untouched. Best-effort — a failure here must not abort the backfill.
+  //
+  // v0.49.4.0: gated on a page-only existence probe first. The invalidation
+  // UPDATE joins pages against every chunk row, so it costs a full scan of the
+  // largest table in the brain even when it invalidates nothing — and since
+  // embed-cron calls this every 90 minutes, "nothing" is the overwhelmingly
+  // common case. Measured on production: 173 runs, 5.1 GB read, 61 rows
+  // invalidated, 42% of all disk reads on the instance. The probe answers the
+  // same question against `pages` alone via pages_embedding_signature_idx.
   if (signature) {
     try {
-      await engine.invalidateStaleSignatureEmbeddings({ signature, sourceId });
+      if (await engine.hasStaleSignaturePages({ signature, sourceId })) {
+        await engine.invalidateStaleSignatureEmbeddings({ signature, sourceId });
+      }
     } catch {
       // Non-fatal: fall through to the NULL-only stale loop.
     }

@@ -5,7 +5,8 @@
  *
  *  - Static case: every chunk visited exactly once across multiple batches.
  *  - Cursor monotonically advances on `(page_id, chunk_index)`.
- *  - Migration v66's partial index `idx_chunks_embedding_null` exists.
+ *  - The stale-chunk partial index backing the cursor exists (v116 end state:
+ *    content_chunks_stale_idx survives, the v66 duplicate is gone).
  *  - D7: source-scoped scan returns ONLY that source's NULLs even when
  *    same-slug pages exist across sources.
  *  - Failed-page semantics: a failed upsert keeps `embedding IS NULL` and
@@ -117,9 +118,13 @@ describeE2E('embed --stale cursor pagination (D7 + REGRESSION)', () => {
     await teardownDB();
   });
 
-  test('migration v66 created partial index idx_chunks_embedding_null', async () => {
-    const exists = await indexExists('idx_chunks_embedding_null');
-    expect(exists).toBe(true);
+  // v66 created idx_chunks_embedding_null, v103 recreated the same shape as
+  // content_chunks_stale_idx, v116 dropped the v66 duplicate. What this walk
+  // needs is that SOME partial index still backs the cursor — assert the
+  // survivor, and that the duplicate did not come back.
+  test('the stale-chunk partial index backs the cursor (v116 dedup end state)', async () => {
+    expect(await indexExists('content_chunks_stale_idx')).toBe(true);
+    expect(await indexExists('idx_chunks_embedding_null')).toBe(false);
   });
 
   test('static case: every chunk visited exactly once across multiple batches', async () => {

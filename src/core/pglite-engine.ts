@@ -2215,6 +2215,27 @@ export class PGLiteEngine implements BrainEngine {
     );
   }
 
+  async hasStaleSignaturePages(opts: { signature: string; sourceId?: string }): Promise<boolean> {
+    // Predicate is deliberately identical to invalidateStaleSignatureEmbeddings'
+    // page-side clause — if these two ever drift, the gate starts hiding real
+    // work from the sweep. Pinned by test/embed-stale-signature-gate.test.ts.
+    const params: unknown[] = [opts.signature];
+    let srcClause = '';
+    if (opts.sourceId !== undefined) {
+      params.push(opts.sourceId);
+      srcClause = ` AND source_id = $${params.length}`;
+    }
+    const { rows } = await this.db.query(
+      `SELECT 1
+         FROM pages
+        WHERE embedding_signature IS NOT NULL
+          AND embedding_signature <> $1${srcClause}
+        LIMIT 1`,
+      params,
+    );
+    return (rows as unknown[]).length > 0;
+  }
+
   async invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string }): Promise<number> {
     // NULL out embeddings whose page signature is set AND differs from the
     // current model signature. GRANDFATHER: NULL signature untouched. Feeds
