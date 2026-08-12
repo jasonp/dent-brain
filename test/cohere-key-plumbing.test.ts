@@ -23,14 +23,22 @@ import { resolveSchemaEmbeddingDim } from '../src/core/embedding-dim-check.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 describe('cohere_api_key file-plane plumbing', () => {
-  test('maps cohere_api_key onto COHERE_API_KEY in the gateway env', () => {
-    const cfg = buildGatewayConfig({
-      engine: 'pglite',
-      cohere_api_key: 'test-cohere-key',
-    } as any);
-    // Guard against the v0.37 ZE bug class: the key must actually land in the
-    // env dict the recipe reads, not just exist on GBrainConfig.
-    expect(cfg.env?.COHERE_API_KEY).toBe('test-cohere-key');
+  test('maps cohere_api_key onto COHERE_API_KEY in the gateway env', async () => {
+    // Clear the ambient key first. `process.env` wins over the config field by
+    // design (see the next test), so on any machine that exports a real
+    // COHERE_API_KEY this assertion read the developer's shell instead of the
+    // seam under test and failed — green in CI, red locally, for a reason that
+    // has nothing to do with the mapping. Pinning the env makes the test
+    // measure the file-plane → gateway-env hop and nothing else.
+    await withEnv({ COHERE_API_KEY: undefined }, () => {
+      const cfg = buildGatewayConfig({
+        engine: 'pglite',
+        cohere_api_key: 'test-cohere-key',
+      } as any);
+      // Guard against the v0.37 ZE bug class: the key must actually land in the
+      // env dict the recipe reads, not just exist on GBrainConfig.
+      expect(cfg.env?.COHERE_API_KEY).toBe('test-cohere-key');
+    });
   });
 
   test('omits COHERE_API_KEY when the config field is absent', () => {
