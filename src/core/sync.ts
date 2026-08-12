@@ -11,7 +11,7 @@
  *   pathToSlug()  →  convert file paths to page slugs
  */
 
-import { CJK_SLUG_CHARS } from './cjk.ts';
+import { SLUG_WORD_CHARS } from './cjk.ts';
 // v0.37.7.0 #1169 submodule-detection helpers. Bottom-of-file already
 // aliases existsSync as `_existsSync` for other purposes; the top-of-file
 // import keeps the pruneDir helper's deps near its callsite.
@@ -99,8 +99,31 @@ const CODE_EXTENSIONS = new Set<string>([
  * Input format (tab-separated):
  *   A       path/to/new-file.md
  *   M       path/to/modified-file.md
+ *   T       path/to/retyped-file.md      (file <-> symlink; content changed)
  *   D       path/to/deleted-file.md
  *   R100    old/path.md     new/path.md
+ *
+ * Status coverage, against the options gbrain actually passes (name-status with
+ * `-M` only, see `sync-delta.ts` — note NO `-C` copy detection):
+ *   A/M/D/R — the everyday statuses.
+ *   T       — TYPECHANGE. Reachable in normal operation: replacing a file with
+ *             a symlink (or vice versa) emits `T`, and it was silently dropped,
+ *             so the change never reached the index until something else
+ *             touched the path. Treated as `modified`: the path still exists and
+ *             its blob changed, which is exactly what re-import handles. (When a
+ *             file becomes a symlink, import-file SKIPS symlinks by design —
+ *             the exfil guard — so the old regular-file content stays indexed;
+ *             routing the typechange to delete-then-skip is a filed follow-up.)
+ *   C       — COPY. Unreachable without `-C`, handled defensively.
+ *   U       — UNMERGED. Only in a conflicted worktree, which sync does not run
+ *             against; handled defensively so a conflicted tree degrades to
+ *             "re-import this path" rather than silently skipping it.
+ *
+ * NOTE for future editors: git option names appear here WITHOUT the leading
+ * double-dash on purpose. The CLI flag-registry generator string-scans module
+ * source including comments, so a bare double-dash token in prose registers as
+ * a real, accepted CLI flag on every command that imports this file. Pinned by
+ * `test/cli-flag-validation.test.ts`.
  */
 export function buildSyncManifest(gitDiffOutput: string): SyncManifest {
   const manifest: SyncManifest = {
@@ -120,20 +143,27 @@ export function buildSyncManifest(gitDiffOutput: string): SyncManifest {
     if (parts.length < 2) continue;
 
     const action = parts[0];
-    const path = parts[parts.length === 3 ? 2 : 1]; // For renames, new path is 3rd column
 
     if (action === 'A') {
-      manifest.added.push(path);
-    } else if (action === 'M') {
-      manifest.modified.push(path);
+      manifest.added.push(parts[1]);
+    } else if (action === 'M' || action === 'T' || action === 'U') {
+      // T (typechange) and U (unmerged) both mean "this path exists and its
+      // content is not what we imported" — the same remedy as M.
+      manifest.modified.push(parts[1]);
     } else if (action === 'D') {
       manifest.deleted.push(parts[1]);
-    } else if (action.startsWith('R')) {
-      // Rename: R100\told-path\tnew-path
+    } else if (action.startsWith('R') || action.startsWith('C')) {
+      // Rename/copy: R100\told-path\tnew-path. Copy is unreachable without -C,
+      // but if the flags ever change, the destination must still be imported.
       const oldPath = parts[1];
       const newPath = parts[2];
       if (oldPath && newPath) {
-        manifest.renamed.push({ from: oldPath, to: newPath });
+        if (action.startsWith('C')) {
+          // A copy leaves the source in place — only the destination is new.
+          manifest.added.push(newPath);
+        } else {
+          manifest.renamed.push({ from: oldPath, to: newPath });
+        }
       }
     }
   }
@@ -219,7 +249,7 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(regex);
 }
 
-function matchesAnyGlob(path: string, patterns?: string[]): boolean {
+export function matchesAnyGlob(path: string, patterns?: string[]): boolean {
   if (!patterns || patterns.length === 0) return false;
   const normalized = path.replace(/\\/g, '/');
   return patterns.some((pattern) => globToRegex(pattern).test(normalized));
@@ -241,8 +271,26 @@ function matchesAnyGlob(path: string, patterns?: string[]): boolean {
  */
 const PRUNE_DIR_NAMES = new Set<string>([
   'node_modules',
+  // Dependency / build-output trees that are git-ignored on virtually every
+  // repo and never contain hand-authored source worth indexing. `vendor`
+  // (PHP Composer / Go / Ruby bundle), `dist` + `build` (compiled output).
+  // Closes the silent-pollution bug where a Laravel/PHP repo's full code sync
+  // walked ~50k `vendor/` files (#1483 / #1159 / maintainer #1942).
+  'vendor',
+  'dist',
+  'build',
+  // Python venv: vendored dependency tree, the `node_modules` analogue (#2020).
+  // Like `node_modules` it lacks a leading dot so isSyncable's dot-prefix
+  // exclusion misses it; explicit entry keeps incremental sync consistent
+  // with the first-sync walker in commands/import.ts.
+  'venv',
   '.raw',
-  'ops',
+  // NOTE (#2404): `'ops'` used to be in this list (a v0.2.0-era carve-out for
+  // one brain layout). Matching the bare segment pruned EVERY user `ops/`
+  // directory at any depth — sync silently deleted `ops/*` pages and never
+  // imported `ops/*` files, while the bundled daily-task-manager skill
+  // prescribes `ops/tasks` as its canonical page. `ops/` is ordinary content;
+  // do NOT re-add it. Only generated/vendored trees belong here.
 ]);
 
 /**
@@ -311,10 +359,18 @@ export type SyncableReason =
  * surface them in user-facing logs / docs without re-declaring the list.
  *
  * These files are append-only domain logs / index pages / boilerplate
- * READMEs — not typed brain pages — by convention. A user who genuinely
- * wants to index one of these basenames as a page should rename it.
+ * READMEs / the master filing decision-tree — not typed brain pages — by
+ * convention. A user who genuinely wants to index one of these basenames as
+ * a page should rename it.
+ *
+ * `RESOLVER.md` is the brain's master routing/decision-tree config file. The
+ * recommended-schema docs group it with `schema.md` / `index.md` / `log.md`
+ * as a structural document ("a document … plus schema.md and RESOLVER.md …
+ * that tells the agent how the brain is structured"), NOT searchable content.
+ * It was the lone structural sibling missing from this list, so it leaked
+ * into the index as a content page (slug `resolver`).
  */
-export const SYNC_SKIP_FILES = ['schema.md', 'index.md', 'log.md', 'README.md'] as const;
+export const SYNC_SKIP_FILES = ['schema.md', 'index.md', 'log.md', 'README.md', 'RESOLVER.md'] as const;
 
 /**
  * Internal classifier. Returns null when the path IS syncable, or a tagged
@@ -331,8 +387,8 @@ function classifySync(path: string, opts: SyncableOptions = {}): SyncableReason 
   if (!isAllowedByStrategy(path, strategy)) return 'strategy';
 
   // Skip every path segment that pruneDir would block walkers from descending
-  // into. Catches hidden dirs (`.git`, `.obsidian`), `.raw/` sidecars,
-  // `node_modules/` (latent bug fix), and `ops/` at any depth.
+  // into. Catches hidden dirs (`.git`, `.obsidian`), `.raw/` sidecars, and
+  // vendor/generated trees (`node_modules/`, `vendor/`, …) at any depth.
   const segments = path.split('/');
   if (segments.some(p => !pruneDir(p))) return 'pruned-dir';
 
@@ -370,8 +426,10 @@ export function unsyncableReason(path: string, opts: SyncableOptions = {}): Sync
 
 /**
  * Character class for the lowercase-canonical form of a slug segment after
- * slugifySegment() has run. Lowercase letters, digits, dots, underscores,
- * hyphens. Exposed so adjacent code (e.g. takes-fence holder validation,
+ * slugifySegment() has run. Letters/numbers in any script (lowercase where
+ * the script has case — #3417), dots, underscores, hyphens. Uses \p{...}
+ * classes, so composed regexes need the `u` flag (this one carries it).
+ * Exposed so adjacent code (e.g. takes-fence holder validation,
  * v0.32 EXP-4) can reuse the actual repo slug grammar instead of inventing
  * a stricter parallel one and emitting false-positive warnings on legitimate
  * `companies/acme.io` / `people/foo_bar` slugs (codex review #3).
@@ -379,15 +437,18 @@ export function unsyncableReason(path: string, opts: SyncableOptions = {}): Sync
  * Pattern is the inner character class only (no anchors); callers wrap it
  * in `^...$` or compose it with prefixes like `(?:people|companies)/...`.
  */
-export const SLUG_SEGMENT_PATTERN = new RegExp(`[a-z0-9._\\-${CJK_SLUG_CHARS}]+`);
+export const SLUG_SEGMENT_PATTERN = new RegExp(`[${SLUG_WORD_CHARS}._\\-]+`, 'u');
 
 /**
  * Slugify a single path segment: lowercase, strip special chars, spaces → hyphens.
- * CJK ranges (Han / Hiragana / Katakana / Hangul Syllables) are preserved (v0.32.7).
- * NFC re-normalize after the NFD-strip-accents pass so Hangul Jamo recomposes back
- * into precomposed syllables that fall inside the whitelist.
+ * Letters and numbers from EVERY script are preserved (#3417): previously only
+ * Latin + CJK survived, so Hebrew/Arabic/Cyrillic/Greek/Thai/... filenames
+ * collapsed to empty segments and distinct files silently merged onto one slug.
+ * NFC re-normalize after the NFD-strip-accents pass so Hangul Jamo recomposes
+ * back into precomposed syllables, and so NFD filenames (macOS) and NFC
+ * filenames (Linux/git) of the same name produce the SAME slug.
  */
-const SLUGIFY_KEEP_RE = new RegExp(`[^a-z0-9.\\s_\\-${CJK_SLUG_CHARS}]`, 'g');
+const SLUGIFY_KEEP_RE = new RegExp(`[^${SLUG_WORD_CHARS}.\\s_\\-]`, 'gu');
 
 export function slugifySegment(segment: string): string {
   return segment

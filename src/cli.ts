@@ -9,7 +9,7 @@ installSigchldHandler();
 import { installSignalHandlers as installCleanupSignalHandlers } from './core/process-cleanup.ts';
 installCleanupSignalHandlers();
 
-import { readFileSync, existsSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync, fstatSync } from 'fs';
 import { spawn } from 'child_process';
 import {
   readUpdateCache,
@@ -24,14 +24,17 @@ import type { GBrainConfig } from './core/config.ts';
 import type { AIGatewayConfig } from './core/ai/types.ts';
 import type { BrainEngine } from './core/engine.ts';
 import { operations, OperationError } from './core/operations.ts';
+import { resolveSourceIdEngineFree } from './core/source-resolver.ts';
+import { formatVolunteeredPage } from './core/context/volunteer.ts';
 import type { Operation, OperationContext } from './core/operations.ts';
-import { drainAllBackgroundWorkForCliExit } from './core/background-work.ts';
-import { shouldForceExitAfterMain } from './core/cli-force-exit.ts';
+import { shouldForceExitAfterMain, finishCliTeardown, flushThenExit, currentExitCode, setCliExitVerdict } from './core/cli-force-exit.ts';
 import { serializeMarkdown } from './core/markdown.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-options.ts';
+import { conceptNudge } from './core/search/query-intent.ts';
 import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-client.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
+import { CLI_FLAG_REGISTRY } from './core/cli-flag-registry.generated.ts';
 import { VERSION } from './version.ts';
 
 // Build CLI name -> operation lookup
@@ -43,13 +46,47 @@ for (const op of operations) {
   }
 }
 
+/**
+ * JSON replacer: `bigint` → string, matching the postgres.js wire shape (int8
+ * comes back as a string on the routed path). Lets the local-engine output
+ * normalizer round-trip bigint columns (e.g. a `BIGSERIAL` `id`) instead of
+ * throwing `TypeError: Do not know how to serialize a BigInt`.
+ */
+export function bigintToStringReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
+}
+
+// ENG-2 renderer parity: round-trip a local-engine op's return value so
+// renderers see the same shape the routed path produces. Bigint-safe via
+// bigintToStringReplacer. Exported for tests (same import-safety contract as
+// cliAliases/formatResult). (#2450)
+export function normalizeLocalResult(rawResult: unknown): unknown {
+  return JSON.parse(JSON.stringify(rawResult, bigintToStringReplacer));
+}
+
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'ingest', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade']);
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'protocol', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill',
+  // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
+  // full handler at `case 'notability-eval'` but never dispatchable.
+  'notability-eval',
+// Agent-bootstrap family (ENG-2 three-touchpoint rule): `bootstrap` + `hook`
+// are ENGINE-FREE (dispatched in handleCliOnly before the connectEngine
+// terminator) and must NEVER enter THIN_CLIENT_REFUSED_COMMANDS. `sweep` is
+// the trusted local sweep entry [CX2-5] and needs the engine (switch case).
+'bootstrap', 'hook', 'sweep',
+// Fork-only commands (dent-brain). Kept through the v0.50.0.0 upstream sync;
+// upstream has no equivalent dispatch for these.
+'ingest']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
+  // #3502 sweep: pages + bench print their own usage (pages.ts printHelp,
+  // bench-publish.ts printHelp). Both were documented but undispatchable —
+  // `pages` had a live handleCliOnly case but was missing from CLI_ONLY
+  // (the #2035 calibration bug class); `bench` was never wired at all.
+  'pages', 'bench',
   'embed', 'config',
   'skillpack', 'skillpack-check',
   'integrations', 'friction',
@@ -68,16 +105,26 @@ const CLI_ONLY_SELF_HELP = new Set([
   'capture',
   // v0.42 self-upgrade ships its own usage (flags + the agent-skill story).
   'self-upgrade',
+  // maintain (#3015) prints its own usage block (modes + not-auto-applied list).
+  'maintain',
+  // v0.43 (#2095): watch ships WATCH_HELP (flags + the stdin-turn protocol).
+  'watch',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
   // short-circuit fired before runSync could print its own usage block.
   // Adding `sync` here routes `gbrain sync --help` into runSync.
   'sync',
+  // #3834: extract ships detailed help for its mode-specific flags. Keep the
+  // generic CLI-only stub from hiding that contract.
+  'extract',
   // v0.37 fix wave (deferred TODO, shipped): reinit-pglite has its
   // own --help in runReinitPglite. Routing through SELF_HELP avoids
   // the generic short-circuit so the destructive-action warning text
   // reaches the user.
   'reinit-pglite',
+  // WAL-repair wave: pglite-repair ships its own --help with the
+  // dry-run/repair semantics + the un-checkpointed-tail caveat.
+  'pglite-repair',
   // v0.40.6.0 Schema Cathedral v3 — `gbrain schema --help` should hit
   // schema.ts printHelp() with the full 22+ verb taxonomy, not the
   // generic short-circuit's one-line stub.
@@ -92,7 +139,54 @@ const CLI_ONLY_SELF_HELP = new Set([
   // `gbrain connect --help` prints its own usage (flags + examples) from
   // runConnect; route around the generic one-line short-circuit.
   'connect',
+  // MEMORY_VERBS v1 (Cathedral 1): protocol ships its own detailed HELP
+  // (subcommands, conformance targets, the cost-gated --synthesize flag).
+  'protocol',
+  // `gbrain init --help` prints its own usage from runInit; route around the
+  // generic one-line short-circuit (matches `connect`). Without this, `init`
+  // is in CLI_ONLY but not CLI_ONLY_SELF_HELP, so the dispatcher's generic
+  // short-circuit fires and the printInitHelp() guard in init.ts is dead code.
+  'init',
+  // #3390 — `gbrain migrate embeddings --help` / `gbrain retrieval-upgrade
+  // --help` print the migration flags from runMigrateEmbeddings. `migrate`
+  // (engine transfer) keeps its own dispatch too.
+  'migrate', 'retrieval-upgrade',
+  // Agent-bootstrap family: each prints its own detailed usage (BOOTSTRAP_HELP
+  // in bootstrap.ts, the hook USAGE block, SWEEP_HELP). Omitting them here
+  // would leave that help dead code behind the generic stub (the init.ts:117
+  // trap ENG-2 names).
+  'bootstrap', 'hook', 'sweep',
 ]);
+
+/**
+ * Commands in CLI_ONLY_SELF_HELP whose handler honours `--help` as its first
+ * action, before reading the engine. Dispatching them here keeps `--help`
+ * answerable with no brain configured.
+ *
+ * Membership is behaviour, not taste: each entry is pinned by
+ * test/cli-help-without-brain.test.ts, which runs the CLI with an empty
+ * GBRAIN_HOME and requires exit 0 plus real help output.
+ */
+const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, args: string[]) => unknown>> = {
+  models: async () => (await import('./commands/models.ts')).runModels as never,
+  watch: async () => (await import('./commands/watch.ts')).runWatch as never,
+  skillopt: async () => (await import('./commands/skillopt.ts')).runSkillOptCommand as never,
+  maintain: async () => (await import('./commands/maintain.ts')).runMaintain as never,
+  'extract-conversation-facts': async () =>
+    (await import('./commands/extract-conversation-facts.ts')).runExtractConversationFacts as never,
+};
+
+/** Returns true when the command's own help was printed. */
+async function printSelfHelpWithoutEngine(command: string, args: string[]): Promise<boolean> {
+  const load = SELF_HELP_WITHOUT_ENGINE[command];
+  if (!load) return false;
+  const run = await load();
+  // The engine is never read on the help path; passing a placeholder keeps the
+  // handler signatures untouched. skillopt already declares `BrainEngine | null`
+  // for exactly this reason.
+  await run(null as never, args);
+  return true;
+}
 
 // v114 (#1941): alias -> operation lookup, kept separate from `cliOps` so
 // aliases don't double-list in printHelp's auto-generated section. Collisions
@@ -118,6 +212,12 @@ for (const op of operations) {
 // GBRAIN_SKIP_STARTUP_HOOKS for any children they spawn.
 const STARTUP_HOOK_SKIP_COMMANDS = new Set([
   'upgrade', 'post-upgrade', 'check-update', 'self-upgrade',
+  // hook runs once per harness EVENT (user-prompt fires per prompt): a stale
+  // update cache would spawn a detached network-touching check-update child
+  // per prompt and emit UPGRADE_AVAILABLE stderr per turn. NOTE: this path
+  // no-ops under NODE_ENV=test, so membership is pinned by a source grep
+  // (test/hook-command.serial.test.ts), not a runtime test.
+  'hook',
 ]);
 
 /**
@@ -233,6 +333,17 @@ async function main() {
     command = 'query';
   }
 
+  // Local patch 2026-06-11 — mark one-shot CLI processes so the facts
+  // backstop routes absorb work to the durable jobs worker instead of the
+  // in-process queue that the exit teardown drains-then-aborts after ~1-2s
+  // (the `pipeline_error: [chat(...)] The operation was aborted.` class in
+  // ingest_log). Daemons keep the in-process queue: their event loop
+  // outlives the work. See src/core/facts/cli-process-mode.ts.
+  if (!['serve', 'jobs', 'autopilot'].includes(command)) {
+    const { markShortLivedCliProcess } = await import('./core/facts/cli-process-mode.ts');
+    markShortLivedCliProcess();
+  }
+
   // T5 — `gbrain search modes|stats|tune` is the read-only config dashboard,
   // NOT a free-text search for the literal word "modes". Free-text
   // `gbrain search "<query>"` falls through to the cheap-hybrid `search` op
@@ -260,22 +371,71 @@ async function main() {
         await withTimeout(runSearch(engine, subArgs), timeoutMs, label);
       }
     } finally {
-      await engine.disconnect();
+      // #2084: `search diagnose` runs real hybrid retrieval (arms search-cache
+      // writes) — route through the shared bounded teardown like every other
+      // one-shot path. The connect-timeout process.exit(124) above is reviewed
+      // and intentionally unchanged: no engine exists at that point.
+      await finishCliTeardown({ engine });
     }
     return;
   }
 
   // Per-command --help
   if (hasHelpFlag(subArgs)) {
+    // `eval brainbench` ships a published foreign-runner flag surface — its
+    // own usage() must win over the generic eval stub (codex P3). Fall
+    // through to handleCliOnly's no-DB brainbench route, which prints it.
+    const selfHelpSub = command === 'eval' && subArgs[0] === 'brainbench';
     const op = cliOps.get(command) ?? cliAliases.get(command);
-    if (op) {
+    if (op && !selfHelpSub) {
       printOpHelp(op, command);
       return;
     }
-    if (CLI_ONLY.has(command) && !CLI_ONLY_SELF_HELP.has(command)) {
+    if (!selfHelpSub && CLI_ONLY.has(command) && !CLI_ONLY_SELF_HELP.has(command)) {
       printCliOnlyHelp(command);
       return;
     }
+    // Self-help members whose handler answers --help before it touches the
+    // engine. Without this they fall through to the normal dispatch, which
+    // connects first — so `gbrain models --help` on a machine with no brain
+    // exits 1 with "No brain configured", and the handler's own help block is
+    // unreachable. That is the state a reader is most likely to be in.
+    if (await printSelfHelpWithoutEngine(command, subArgs)) return;
+  }
+
+  // #2185: strict unknown-flag validation — pre-dispatch, pre-engine. A flag
+  // no handler consults (the repro: `init --migrate-only --dry-run` applying
+  // REAL migrations while the user asked for a rehearsal) fails loud here
+  // instead of silently doing the destructive thing. Runs after the --help
+  // short-circuit so `gbrain x --help` never errors; runs before any dispatch
+  // or engine connect so the error is instant and side-effect-free.
+  {
+    const unknown = validateCommandFlags(command, subArgs);
+    if (unknown) {
+      // Message contract shared with init.ts's in-handler check (which this
+      // pre-dispatch validator now reaches first): lowercase 'unknown flag'
+      // on stderr; --json callers get the structured error on stdout with
+      // reason 'invalid_flag' (pinned by test/init-migrate-only.test.ts).
+      const message = `unknown flag ${unknown} for 'gbrain ${command}'`;
+      // Both --json spellings get the structured envelope (--json=false opts out).
+      if (subArgs.some(a => a === '--json' || (a.startsWith('--json=') && a !== '--json=false'))) {
+        process.stdout.write(JSON.stringify({ status: 'error', reason: 'invalid_flag', message }) + '\n');
+      }
+      console.error(`gbrain ${command}: ${message}`);
+      console.error(`Run: gbrain ${command} --help`);
+      process.exit(1);
+    }
+  }
+
+  // DB-free durability pull (v0.42.44 D2): the harden cron calls
+  // `gbrain sources pull --path <dir>` every ~30 min. It must NOT open PGLite
+  // (a live long-lived session holds the single-writer lock), so handle it
+  // BEFORE connectEngine. The `sources pull <id>` form (no --path) still routes
+  // through handleCliOnly → runSources with an engine.
+  if (command === 'sources' && subArgs[0] === 'pull' && subArgs.includes('--path')) {
+    const { runPull } = await import('./commands/sources-harden.ts');
+    await runPull(null, subArgs.slice(1));
+    return;
   }
 
   // CLI-only commands
@@ -298,6 +458,11 @@ async function main() {
   // transform, and required-param check are all engine-free; refactoring
   // them out of the engine try/catch is safe and unlocks routing.
   const params = parseOpArgs(op, subArgs);
+
+  // #3513: stdin fill moved out of parseOpArgs so a non-TTY stdin with no
+  // piped input can't block the parse forever — the bounded read leaves the
+  // param unset on timeout and the required-param check below fails fast.
+  await applyStdinParam(op, params);
 
   // v0.27.1 (`gbrain query --image <path>`): swap the `image` param from
   // a filesystem path into base64 bytes + mime. The op accepts base64; the
@@ -344,79 +509,131 @@ async function main() {
     if (op.localOnly) {
       refuseThinClient(command, cfgPre!.remote_mcp!.mcp_url);
     }
+    // A thin client has no local mounts — an explicit --brain cannot be
+    // honored and must not be silently dropped (same loud-beats-silent rule
+    // as applyThinClientSourceScope's --source refusal). Ambient tiers
+    // (GBRAIN_BRAIN_ID / .gbrain-mount) are ignored here, matching the
+    // source axis's ambient-with-nowhere-to-send behavior.
+    if (cliOpts.brain) {
+      console.error(
+        '--brain is not supported on a thin-client install: the remote server is a single brain. ' +
+        'Remove the flag, or run from a machine with local mounts (gbrain mounts list).',
+      );
+      process.exit(1);
+    }
+    // #2098: the local path resolves --source / GBRAIN_SOURCE / .gbrain-source
+    // inside makeContext (ctx.sourceId), which this route never reaches — so
+    // scope must be mapped onto the op's source_id wire param before the call.
+    try {
+      applyThinClientSourceScope(op, params);
+    } catch (e: unknown) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
     await runThinClientRouted(op, params, cfgPre!, cliOpts);
     return;
   }
 
   // Local engine path (unchanged behavior for local installs).
   const engine = await connectEngine();
-  // v0.41.8.0 (#1247, #1269, #1290): the search / query / get_page
-  // op handlers fire-and-forget `bumpLastRetrievedAt` after returning
-  // results. On PGLite that IIFE keeps Bun's event loop alive past
-  // engine.disconnect(), hanging the CLI at ~95-98% CPU until SIGKILL.
-  // Drain the fire-and-forget set BEFORE disconnect; force-exit only
-  // if the drain itself times out (preserves stderr diagnostic signal
-  // AND guarantees the CLI doesn't re-hang at the disconnect layer).
-  //
-  // Defense-in-depth (adversarial-review C13): `engine.disconnect()` itself
-  // can hang on PGLite (db.close() or releaseLock racing OS-level FS state).
-  // Install an unref'd setTimeout hard-exit fallback BEFORE entering the
-  // try/catch/finally so a hung disconnect cannot defeat the force-exit
-  // contract. Daemons (`serve`) are excluded so they stay alive.
-  const DISCONNECT_HARD_DEADLINE_MS = 10_000;
-  let forceExitTimer: ReturnType<typeof setTimeout> | undefined;
-  if (shouldForceExitAfterMain()) {
-    forceExitTimer = setTimeout(() => {
-      console.warn(
-        `[cli] engine.disconnect() did not return within ${DISCONNECT_HARD_DEADLINE_MS}ms — force-exiting`,
-      );
-      // v0.42.20.0 (codex): honor an exit code an errored op already set —
-      // a bare process.exit(0) here would mask a failed op as success if the
-      // drain/disconnect then hangs.
-      process.exit(process.exitCode ?? 0);
-    }, DISCONNECT_HARD_DEADLINE_MS);
-    // unref so the timer itself doesn't keep the event loop alive — only
-    // the actual pending work (PGLite WASM handle) does. Without unref,
-    // we'd block a clean exit by 10s on every successful CLI run.
-    forceExitTimer.unref?.();
-  }
+  // #2084: the teardown contract (bounded drain of every background-work sink,
+  // bounded disconnect, computed-deadline backstop) lives in finishCliTeardown
+  // — see src/core/cli-force-exit.ts for the full design. The hard-deadline
+  // timer arms at TEARDOWN start inside the helper, never before the handler:
+  // the pre-#2084 placement here measured handler + teardown combined, so a
+  // slow-but-healthy query burned the teardown budget (the flat-10s-banner
+  // bug) and any >10s op was force-killed mid-run with exit 0. The explicit
+  // process exit happens once, in the import.meta.main seam at the bottom of
+  // this file — NOT here.
+
+  // v0.42.41.0 (merged): wallclock bound for READ-scope op handlers. With the
+  // teardown backstop correctly scoped to teardown, a genuinely WEDGED read
+  // handler (hung pooler connection mid-query) would otherwise hang the CLI
+  // forever — the #1633 zombie class the old pre-try timer accidentally
+  // bounded at 10s. 180s sits far above any healthy slow-pooler run
+  // (6-10s/connection); --timeout=Ns overrides. Writes/admin stay unbounded:
+  // a long import/embed must never be killed by a default deadline. On
+  // timeout the abandoned handler may hold ref'd sockets — harmless here,
+  // because the import.meta.main seam exits explicitly on every one-shot path.
+  const READ_OP_TIMEOUT_MS = 180_000;
 
   try {
-    const ctx = await makeContext(engine, params);
-    const rawResult = await op.handler(ctx, params);
+    const { withTimeout, OperationTimeoutError } = await import('./core/timeout.ts');
+    const wallclockMs = getCliOptions().timeoutMs ?? READ_OP_TIMEOUT_MS;
+    const onWallclockTimeout = (e: InstanceType<typeof OperationTimeoutError>) => {
+      const hint = getCliOptions().timeoutMs
+        ? ''
+        : ` (default ${e.ms}ms; pass --timeout=Ns to override)`;
+      console.error(`${e.label} timed out${hint}.`);
+      // 124 = timeout convention (matches the read-only dispatch path). Set
+      // through the verdict channel — a raw process.exitCode write is invisible
+      // to the exit seam and PGLite's WASM runtime can scribble over it.
+      setCliExitVerdict(124);
+    };
+
+    // Context build does DB I/O (resolveSourceId) and runs for EVERY op —
+    // a wedged pooler connection here would otherwise hang reads, writes,
+    // and admin alike with no bound at all (adversarial review finding).
+    let ctx: Awaited<ReturnType<typeof makeContext>>;
+    try {
+      ctx = await withTimeout(
+        makeContext(engine, params),
+        wallclockMs,
+        `gbrain ${command}: context`,
+      );
+    } catch (e: unknown) {
+      if (e instanceof OperationTimeoutError) {
+        onWallclockTimeout(e);
+        return; // the finally drains + disconnects; the import.meta.main seam exits
+      }
+      throw e;
+    }
+
+    let rawResult: unknown;
+    if (op.scope === 'read') {
+      try {
+        rawResult = await withTimeout(
+          op.handler(ctx, params),
+          wallclockMs,
+          `gbrain ${command}`,
+        );
+      } catch (e: unknown) {
+        if (e instanceof OperationTimeoutError) {
+          onWallclockTimeout(e);
+          return; // the finally drains + disconnects; the import.meta.main seam exits
+        }
+        throw e;
+      }
+    } else {
+      rawResult = await op.handler(ctx, params);
+    }
     // ENG-2 (renderer parity by data shape): JSON-round-trip the local-engine
     // path's return value so renderers see the same shape they'd see on the
     // routed path. Date → ISO string; bigint → string (postgres.js shape);
     // Buffer → object. Microsecond-cost; eliminates a whole drift bug class.
-    const result = JSON.parse(JSON.stringify(rawResult));
-    const output = formatResult(op.name, result);
+    const result = normalizeLocalResult(rawResult);
+    const output = formatResult(op.name, result, params);
     if (output) process.stdout.write(output);
+    maybePrintConceptNudge(op.name, params);
   } catch (e: unknown) {
     // v0.42.20.0 (codex D4): on error, set exitCode + return so the `finally`
     // STILL runs (drains every background-work sink + disconnects). A bare
     // process.exit(1) here would skip the finally → skip the drain + disconnect
     // (leaves facts/cache/eval-capture writes racing teardown). The finally's
-    // drain bounds teardown; the outer hard-deadline timer bounds a hung one.
+    // drain bounds teardown; the hard-deadline timer armed at teardown entry
+    // bounds a hung one.
     if (e instanceof OperationError) {
       console.error(`Error [${e.code}]: ${e.message}`);
       if (e.suggestion) console.error(`  Fix: ${e.suggestion}`);
     } else {
       console.error(e instanceof Error ? e.message : String(e));
     }
-    process.exitCode = 1;
+    setCliExitVerdict(1);
   } finally {
-    // v0.42.20.0 — drain ALL fire-and-forget sinks (facts, last-retrieved,
-    // search-cache, eval-capture) via the background-work registry BEFORE
-    // disconnect, so a PGLite db.close() can't race in-flight work into the
-    // re-pump busy-loop (#1762). facts drains first (order 0) so its abort-path
-    // DB logIngest gets the freshest live-engine window. 1s per-sink timeout:
-    // read paths with no pending work pay the ~0ms fast path; capture/import
-    // that DO enqueue pay up to 1s (+ facts shutdown grace) while in-flight
-    // Haiku finishes. The unref'd hard-deadline timer above is the backstop if
-    // disconnect or a lingering socket keeps Bun's loop alive.
-    await drainAllBackgroundWorkForCliExit({ timeoutMs: 1000 });
-    await engine.disconnect();
-    if (forceExitTimer) clearTimeout(forceExitTimer);
+    // 1s per-sink drain budget: read paths with no pending work pay the ~0ms
+    // fast path; capture/import that DO enqueue pay up to 1s (+ facts shutdown
+    // grace) while in-flight Haiku finishes (#1762 drain-before-disconnect).
+    await finishCliTeardown({ engine, drainTimeoutMs: 1000 });
   }
 }
 
@@ -479,8 +696,9 @@ async function runThinClientRouted(
       signal: sigintController.signal,
     });
     const result = unpackToolResult(raw);
-    const output = formatResult(op.name, result);
+    const output = formatResult(op.name, result, params);
     if (output) process.stdout.write(output);
+    maybePrintConceptNudge(op.name, params);
   } catch (e: unknown) {
     if (e instanceof RemoteMcpError) {
       const url = cfg.remote_mcp!.mcp_url;
@@ -697,6 +915,29 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg.startsWith('--')) {
+      // #2185: `--key=value` inline form. Pre-fix this parsed as junk key
+      // 'key=value' and consumed the NEXT token as its value, corrupting
+      // positional parsing. Recognized here so the strict-flag validator and
+      // the parser agree on the idiom.
+      const eq = arg.indexOf('=');
+      if (eq > 2) {
+        const key = arg.slice(2, eq).replace(/-/g, '_');
+        // CLI-local booleans: `--json=<v>` / `--dry-run=<v>` must parse as
+        // booleans, not fall through to the junk-key path (which would
+        // consume the NEXT token as a value and corrupt positional parsing).
+        if (key === 'json' || key === 'dry_run') {
+          params[key] = arg.slice(eq + 1) !== 'false';
+          continue;
+        }
+        const def = op.params[key];
+        if (def) {
+          const raw = arg.slice(eq + 1);
+          params[key] = def.type === 'boolean' ? raw !== 'false'
+            : def.type === 'number' ? Number(raw)
+            : raw;
+          continue;
+        }
+      }
       if (arg.startsWith('--no-')) {
         const positiveKey = arg.slice(5).replace(/-/g, '_');
         const positiveDef = op.params[positiveKey];
@@ -709,6 +950,14 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
       const paramDef = op.params[key];
       if (paramDef?.type === 'boolean') {
         params[key] = true;
+      } else if (key === 'json' || key === 'dry_run') {
+        // CLI-local booleans, intentionally NOT on the operation contract
+        // exposed over MCP/tools: json is the formatter flag; dry_run feeds
+        // makeContext's ctx.dryRun. Both must never consume a value token —
+        // pre-fix, `gbrain delete x --dry-run` (trailing) set NOTHING, so
+        // ctx.dryRun stayed false and the REAL delete ran despite the
+        // rehearsal request (the resurrected #2185 class the red team caught).
+        params[key] = true;
       } else if (i + 1 < args.length) {
         params[key] = args[++i];
         if (paramDef?.type === 'number') params[key] = Number(params[key]);
@@ -720,34 +969,296 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
     }
   }
 
-  // Read stdin for content params
-  if (op.cliHints?.stdin && !params[op.cliHints.stdin] && !process.stdin.isTTY) {
-    const stdinContent = readFileSync(0, 'utf-8');
-    const MAX_STDIN = 5_000_000; // 5MB
-    if (Buffer.byteLength(stdinContent, 'utf-8') > MAX_STDIN) {
-      console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
-      process.exit(1);
-    }
-    params[op.cliHints.stdin] = stdinContent;
-  }
-
   return params;
 }
 
-async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
+/**
+ * #3513: read stdin into an op's stdin-capable param without ever blocking
+ * forever. The old inline `readFileSync(0)` in parseOpArgs assumed non-TTY
+ * implies piped content; a non-TTY stdin with NO input (CI step, cron job,
+ * agent harness holding an unwritten pipe open) blocked the read until kill.
+ *
+ * Strategy by fd kind (fstat):
+ *  - TTY: skip, as before (interactive input is not an op-param source).
+ *  - regular file / /dev/null / anything not a pipe or socket: readFileSync
+ *    returns without blocking (`gbrain put x < file`, `< /dev/null` → '').
+ *  - FIFO/socket: stream-read with a deadline on the FIRST byte only. A real
+ *    pipe (`echo foo | gbrain put x`, heredocs) delivers its first byte
+ *    within milliseconds; once any data arrives the deadline is lifted and
+ *    we read to EOF like readFileSync did (slow producers stay supported).
+ *    An empty-but-closed pipe (`: | gbrain put x`) EOFs immediately → ''.
+ *    A pipe that never delivers a byte times out → param stays unset, so
+ *    the existing required-param usage error fires (fail fast, exit 1).
+ *
+ * GBRAIN_STDIN_TIMEOUT_MS overrides the first-byte deadline (default 5000).
+ * Exported for tests; called by the op dispatch right after parseOpArgs.
+ */
+export async function applyStdinParam(
+  op: Operation,
+  params: Record<string, unknown>,
+): Promise<void> {
+  // Branch shape (stdin hint + missing param + `!process.stdin.isTTY` gate +
+  // 5MB cap) is pinned by the R4 regression test for PR #1325's Windows fix
+  // (test/cycle/regression-pr-wave-r1-r2-r4.test.ts) — keep the spelling.
+  if (op.cliHints?.stdin && !params[op.cliHints.stdin] && !process.stdin.isTTY) {
+    const content = await readStdinBounded();
+    if (content === null) return; // no input arrived — let the required-param check fail fast
+    const MAX_STDIN = 5_000_000; // 5MB
+    if (Buffer.byteLength(content, 'utf-8') > MAX_STDIN) {
+      console.error(`Error: stdin content exceeds ${MAX_STDIN} bytes. Split into smaller inputs.`);
+      process.exit(1);
+    }
+    params[op.cliHints.stdin] = content;
+  }
+}
+
+/** First-byte deadline for pipe/socket stdin (#3513). Env-overridable escape hatch. */
+function stdinFirstByteTimeoutMs(): number {
+  const n = Number(process.env.GBRAIN_STDIN_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 5000;
+}
+
+/**
+ * Returns the full stdin content, '' for a readable-but-empty stdin, or
+ * null when stdin is a pipe/socket that never delivered a byte within the
+ * first-byte deadline (or the fd is closed/unreadable).
+ */
+export async function readStdinBounded(): Promise<string | null> {
+  let isPipeOrSocket: boolean;
+  try {
+    const st = fstatSync(0);
+    isPipeOrSocket = st.isFIFO() || st.isSocket();
+  } catch {
+    return null; // closed/invalid fd — treat as no input
+  }
+  if (!isPipeOrSocket) {
+    // Regular file redirect, /dev/null, etc. — read returns without blocking.
+    try {
+      return readFileSync(0, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+  return await new Promise<string | null>((resolve) => {
+    const chunks: Buffer[] = [];
+    let gotData = false;
+    const timer = setTimeout(() => {
+      if (!gotData) {
+        process.stdin.destroy();
+        resolve(null);
+      }
+    }, stdinFirstByteTimeoutMs());
+    const finish = () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks).toString('utf-8'));
+    };
+    process.stdin.on('data', (c: Buffer) => {
+      if (!gotData) {
+        gotData = true;
+        clearTimeout(timer); // deadline applies to the FIRST byte only
+      }
+      chunks.push(c);
+    });
+    process.stdin.once('end', finish);
+    process.stdin.once('error', finish);
+  });
+}
+
+/**
+ * #2098: thin-client source scoping. Locally, --source / GBRAIN_SOURCE /
+ * .gbrain-source resolve to ctx.sourceId in makeContext; the thin-client
+ * route short-circuits before that, so `gbrain query --source X` against a
+ * remote brain silently searched unscoped. This runs the engine-free tiers
+ * (flag → env → dotfile; the DB-backed tiers can't run without an engine —
+ * the server's grant scoping covers the rest) and maps the result onto the
+ * op's `source_id` wire param.
+ *
+ * Ops that declare their OWN `source` param (facts add, etc.) are left
+ * untouched — their --source is an op param, not scope. An explicit --source
+ * on an op with no source_id wire param throws (loud beats silent drop);
+ * ambient env/dotfile scope with nowhere to send it is ignored, matching the
+ * pre-fix behavior for non-scopeable ops. Exported for tests.
+ */
+// Ops whose `source_id` wire param is NOT read-scope semantics: get_skill's
+// source_id flips the lookup from host catalog to brain-resident-pack
+// (getResidentSkillDetail). Ambient env/dotfile scope must never leak into
+// these; an explicit --source-id still passes through untouched above.
+const NON_SCOPE_SOURCE_ID_OPS = new Set(['get_skill']);
+
+export function applyThinClientSourceScope(
+  op: Operation,
+  params: Record<string, unknown>,
+  cwd?: string,
+): void {
+  if ('source' in op.params) return; // the op owns --source; not a scope flag
+  const explicit = typeof params.source === 'string' && params.source.length > 0
+    ? (params.source as string)
+    : null;
+  delete params.source; // never a wire param on these ops — don't leak it
+  // Explicit per-call scope already on the wire wins over ambient tiers.
+  if (params.source_id !== undefined || params.all_sources === true) {
+    if (explicit) {
+      throw new Error('Pass either --source or --source-id/--all-sources, not both.');
+    }
+    return;
+  }
+  const resolved = resolveSourceIdEngineFree(explicit, cwd);
+  if (!resolved) return;
+  if (!('source_id' in op.params) || NON_SCOPE_SOURCE_ID_OPS.has(op.name)) {
+    if (explicit) {
+      const hint = NON_SCOPE_SOURCE_ID_OPS.has(op.name)
+        ? `(its source_id parameter is not a scope filter; pass --source-id explicitly if you mean it)`
+        : `(the remote op has no source_id parameter; the server scopes it to your grant)`;
+      throw new Error(
+        `gbrain ${op.cliHints?.name || op.name} does not accept --source on a thin-client install ${hint}.`,
+      );
+    }
+    return; // ambient env/dotfile scope with nowhere to send it
+  }
+  params.source_id = resolved;
+}
+
+// Exported for tests (same import-safety contract as applyThinClientSourceScope).
+// ─────────────────────────────────────────────────────────────────
+// #2185 — strict unknown-flag validation (pre-dispatch, pre-engine).
+// A flag no handler consults must fail loud instead of silently doing the
+// destructive thing (`init --migrate-only --dry-run` applied REAL migrations
+// while the user asked for a rehearsal). Two lanes:
+//   - op commands: legal flags derive from the operation contract
+//     (op.params) + the CLI-local formatter flags, mirroring parseOpArgs's
+//     traversal so values that begin with '--' are never misread.
+//   - CLI_ONLY commands: legal flags come from the generated
+//     CLI_FLAG_REGISTRY (scripts/generate-flag-registry.ts scans each
+//     command's source; freshness + coverage pinned by
+//     test/cli-flag-validation.test.ts).
+// Everything after a literal `--` is passthrough and never validated.
+// ─────────────────────────────────────────────────────────────────
+
+// Exempt by contract, not oversight:
+//  - call: the generic op invoker — arbitrary --param names are its interface.
+//  - config: `config set <key> <value>` values are arbitrary strings.
+//  - jobs submit: job payloads carry handler-defined params (shell lane incl.).
+//  - eval brainbench: owns the 0/1/2 CI exit-code contract (0 pass · 1
+//    regression · 2 error/inconclusive) via its own arg parser. The global
+//    validator's exit(1) on an unknown flag would be read by a CI harness as a
+//    memory REGRESSION rather than a typo; brainbench maps a bad flag to exit 2
+//    (error) with its own usage. Its legal flags still land in the generated
+//    registry (the generator scans eval's modules), so freshness/drift hold.
+function flagValidationExempt(command: string, subArgs: string[]): boolean {
+  return command === 'call' || command === 'config'
+    || (command === 'jobs' && subArgs[0] === 'submit')
+    || (command === 'eval' && subArgs[0] === 'brainbench');
+}
+
+/** Returns the first unknown flag (e.g. '--dry-run') or null when clean. */
+export function validateCommandFlags(command: string, subArgs: string[]): string | null {
+  if (flagValidationExempt(command, subArgs)) return null;
+  // Lane order MUST mirror dispatch order (CLI_ONLY first): commands that are
+  // BOTH an op and a CLI_ONLY member (think, salience, anomalies) dispatch to
+  // handleCliOnly, whose handlers parse flags the op contract doesn't declare
+  // (`salience --kind`, `think --with-calibration`) — validating those
+  // against op.params rejected documented invocations.
+  if (CLI_ONLY.has(command)) {
+    const legal = CLI_FLAG_REGISTRY[command];
+    // Registry drift fails OPEN at runtime (never brick a command); the
+    // drift-guard test fails the build instead.
+    if (!legal) return null;
+    return findUnknownFlag(subArgs, new Set(legal));
+  }
+  const op = cliOps.get(command) ?? cliAliases.get(command);
+  if (op) return findUnknownOpFlag(op, subArgs);
+  return null; // unknown command — the dispatcher's own error handles it
+}
+
+/** CLI_ONLY lane: token scan against the generated legal set. */
+export function findUnknownFlag(args: string[], legal: ReadonlySet<string>): string | null {
+  for (const a of args) {
+    if (a === '--') break;
+    const m = /^--([a-z0-9][a-z0-9-]*)(?:=.*)?$/i.exec(a);
+    if (!m) continue;
+    // Casing typo = unknown flag: every handler in the repo is
+    // case-sensitive-lowercase, so `--MIGRATE-ONLY` passing validation would
+    // just be silently ignored downstream — the exact class this validator
+    // exists to kill.
+    if (/[A-Z]/.test(m[1])) return `--${m[1]}`;
+    const name = `--${m[1]}`;
+    if (legal.has(name)) continue;
+    // --no-<flag> negation of a known flag is legal.
+    if (name.startsWith('--no-') && legal.has(`--${name.slice(5)}`)) continue;
+    return name;
+  }
+  return null;
+}
+
+/** Op lane: mirrors parseOpArgs so flag VALUES starting with '--' are skipped. */
+export function findUnknownOpFlag(op: Operation, args: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') break;
+    const m = /^--([a-z0-9][a-z0-9-]*)(?:=(.*))?$/i.exec(a);
+    if (!m) continue;
+    // Casing typo = unknown flag (see findUnknownFlag).
+    if (/[A-Z]/.test(m[1])) return `--${m[1]}`;
+    const rawKey = m[1];
+    // CLI-local flags consumed OUTSIDE the op contract (never wire params):
+    //   json/explain — formatter flags; help — short-circuits pre-dispatch;
+    //   source — makeContext's 6-tier source resolution (deleted before wire);
+    //   dry-run — makeContext's ctx.dryRun projection.
+    // Pre-fix, rejecting these broke documented invocations
+    // (`gbrain search "x" --source y`, `gbrain put x --dry-run`).
+    if (rawKey === 'json') continue;
+    if ((rawKey === 'explain' || rawKey === 'help') && m[2] === undefined) continue;
+    if (rawKey === 'source' || rawKey === 'dry-run') {
+      // Non-boolean-style CLI-locals consume the next token as their value
+      // in parseOpArgs (source does; dry-run is boolean-read) — mirror the
+      // parser: source consumes a value when not inline-`=`.
+      if (rawKey === 'source' && m[2] === undefined) i++;
+      continue;
+    }
+    if (rawKey.startsWith('no-')) {
+      const positive = rawKey.slice(3).replace(/-/g, '_');
+      if (op.params[positive]?.type === 'boolean') continue;
+    }
+    const key = rawKey.replace(/-/g, '_');
+    const paramDef = op.params[key];
+    if (paramDef) {
+      // Non-boolean flags consume the next token as their value unless
+      // provided inline via `=` — exactly like parseOpArgs.
+      if (paramDef.type !== 'boolean' && m[2] === undefined) i++;
+      continue;
+    }
+    return `--${rawKey}`;
+  }
+  return null;
+}
+
+export async function makeContext(engine: BrainEngine, params: Record<string, unknown>): Promise<OperationContext> {
   // v0.31.8 (D11): resolve sourceId via the canonical 6-tier chain. Honors
   // --source / GBRAIN_SOURCE / .gbrain-source / path-match / brain default /
   // 'default'. Wrapped in try/catch so a doctor / single-source brain that
   // never set up sources still returns 'default' silently.
   let sourceId: string | undefined;
+  // #2561: when the source resolved via a NON-explicit tier (path-match /
+  // brain default / sole-non-default / seed default), unqualified search-shaped
+  // reads span every `config.federated = true` source. Computed here (the
+  // trusted local boundary) and consumed by federatedSearchScope in
+  // operations.ts, which additionally gates on ctx.remote === false.
+  let localFederated: string[] | undefined;
+  // params.source is set when a CLI flag was parsed for the op (rare; most
+  // CLI ops don't take --source). Falls through to env/dotfile/path-match.
+  const explicit = (params.source as string | undefined) ?? null;
   try {
-    const { resolveSourceId } = await import('./core/source-resolver.ts');
-    // params.source is set when a CLI flag was parsed for the op (rare; most
-    // CLI ops don't take --source). Falls through to env/dotfile/path-match.
-    const explicit = (params.source as string | undefined) ?? null;
-    sourceId = await resolveSourceId(engine, explicit);
-  } catch {
-    // Source resolution failed (e.g. sources table doesn't exist on a fresh
+    const { resolveSourceWithTier, localFederatedSourceIds } = await import('./core/source-resolver.ts');
+    const resolved = await resolveSourceWithTier(engine, explicit);
+    sourceId = resolved.source_id;
+    localFederated = await localFederatedSourceIds(engine, resolved.source_id, resolved.tier);
+  } catch (err) {
+    // #1712: an EXPLICIT --source that fails to resolve (invalid id, or a
+    // source that doesn't exist) must error loudly — the blanket swallow
+    // turned `--source __all__` and typos into a silent `default` scope,
+    // which is how three bug reports became debugging sessions.
+    if (explicit) throw err;
+    // Ambient resolution failed (e.g. sources table doesn't exist on a fresh
     // pre-init brain). Leave sourceId unset; engine read methods fall through
     // to the cross-source view (D16 back-compat path).
     sourceId = undefined;
@@ -766,11 +1277,53 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
     // table). Matches dispatch.ts's auto-fill so the contract holds across
     // every transport.
     sourceId: sourceId ?? 'default',
+    // Brain axis: the id connectEngine resolved for this process. Module
+    // state, NEVER params — caller-supplied params.brain must not select a
+    // brain (that would be an untrusted-caller cross-brain hole over MCP).
+    brainId: activeBrainId,
+    ...(localFederated ? { localFederatedSourceIds: localFederated } : {}),
   };
 }
 
-function formatResult(opName: string, result: unknown): string {
+// Exported for tests (same import-safety contract as cliAliases/printOpHelp).
+/**
+ * #2416: hint-only steering — a concept-shaped `search` gets a one-line
+ * stderr nudge toward `query`. Never fires for other ops, never reroutes
+ * (search stays the cheap hot path), and honors --quiet — the same silence
+ * discipline as the identity banner. Called from BOTH result paths (local
+ * engine + thin-client routed); formatResult can't host this because it
+ * never sees the query text.
+ */
+export function maybePrintConceptNudge(opName: string, params: Record<string, unknown>): void {
+  if (opName !== 'search' || getCliOptions().quiet) return;
+  const nudge = conceptNudge(String(params.query ?? ''));
+  if (nudge) process.stderr.write(nudge + '\n');
+}
+
+export function formatResult(
+  opName: string,
+  result: unknown,
+  params: Record<string, unknown> = {},
+): string {
   switch (opName) {
+    case 'volunteer_context': {
+      const r = result as any;
+      // Stats mode (the feedback loop).
+      if (r && r.approximate === true && Array.isArray(r.by_arm)) {
+        const lines = [
+          `volunteered-context precision — last ${r.days} day(s) (${r.note})`,
+          `total: ${r.total_volunteered} volunteered, ${r.total_used} used`,
+        ];
+        for (const a of r.by_arm) {
+          lines.push(`  ${a.match_arm}/${a.channel}: ${a.used}/${a.volunteered} used (precision ${a.precision})`);
+        }
+        if (!r.by_arm.length) lines.push('  (no volunteer events in the window)');
+        return lines.join('\n') + '\n';
+      }
+      const pages = (r?.pages ?? []) as any[];
+      if (!pages.length) return 'Nothing volunteered (no entity cleared the confidence gate).\n';
+      return pages.map((p) => formatVolunteeredPage(p)).join('\n') + '\n';
+    }
     case 'get_page': {
       const r = result as any;
       if (r.error === 'ambiguous_slug') {
@@ -790,6 +1343,7 @@ function formatResult(opName: string, result: unknown): string {
     case 'search':
     case 'query': {
       const results = result as any[];
+      if (params.json === true) return JSON.stringify(results, null, 2) + '\n';
       if (results.length === 0) return 'No results.\n';
       // v0.40.4 — --explain switches to per-stage attribution formatter.
       // Reads CliOptions.explain via the module-level singleton.
@@ -848,7 +1402,10 @@ function formatResult(opName: string, result: unknown): string {
         lines.push(`Link coverage (entities): ${(h.link_coverage * 100).toFixed(1)}%`);
       }
       if (h.timeline_coverage !== undefined) {
-        lines.push(`Timeline coverage (entities): ${(h.timeline_coverage * 100).toFixed(1)}%`);
+        lines.push(`Timeline coverage (entity pages): ${(h.timeline_coverage * 100).toFixed(1)}%`);
+      }
+      if (h.timeline_coverage_score !== undefined) {
+        lines.push(`Timeline density (all pages): ${h.timeline_coverage_score}/15 (whole-brain brain-score component)`);
       }
       if (Array.isArray(h.most_connected) && h.most_connected.length > 0) {
         lines.push('Most connected entities:');
@@ -872,9 +1429,70 @@ function formatResult(opName: string, result: unknown): string {
         `#${v.id}  ${v.snapshot_at?.toString().slice(0, 19) || '?'}  ${v.compiled_truth?.slice(0, 60) || ''}...`,
       ).join('\n') + '\n';
     }
+    // MEMORY_VERBS v1 [F-E]: human-readable by default; trailing `--json`
+    // escapes to the raw envelope (parseOpArgs ignores an unmatched trailing
+    // flag, so the argv probe is safe).
+    case 'remember': {
+      if (process.argv.includes('--json')) break;
+      const r = result as any;
+      if (r.dry_run) return `[dry-run] would remember: ${r.fact}\n`;
+      const lines = [r.status_text || `${r.status} (fact #${r.id})`];
+      if (r.entity_slug) lines.push(`  entity: ${r.entity_slug}`);
+      if (r.valid_until) lines.push(`  expires: ${r.valid_until}`);
+      if (r.degraded_dedup) lines.push('  note: no embedding provider — duplicate detection degraded');
+      return lines.join('\n') + '\n';
+    }
+    case 'entity': {
+      if (process.argv.includes('--json')) break;
+      const r = result as any;
+      if (!r.found) {
+        const lines = [`No entity found. (${r.latency_ms}ms)`];
+        if (Array.isArray(r.suggestions) && r.suggestions.length) {
+          lines.push('Did you mean:');
+          for (const s of r.suggestions) lines.push(`  ${s.slug} — ${s.title} [${s.create_safety}]`);
+        }
+        return lines.join('\n') + '\n';
+      }
+      const c = r.card;
+      const lines = [`${c.entity.title} (${c.entity.slug})${c.entity.type ? ` [${c.entity.type}]` : ''}  (${r.latency_ms}ms)`];
+      if (c.summary) lines.push(`  ${c.summary}`);
+      if (c.aka?.length) lines.push(`  aka: ${c.aka.join(', ')}`);
+      const lt = c.last_touched || {};
+      const touched = lt.updated_at || lt.last_retrieved_at || lt.last_timeline_date;
+      if (touched) lines.push(`  last touched: ${String(touched).slice(0, 10)}`);
+      if (c.open_threads?.length) {
+        lines.push('  open threads:');
+        for (const t of c.open_threads) lines.push(`    [${t.kind}] ${t.text}${t.date ? ` (${String(t.date).slice(0, 10)})` : ''}`);
+      }
+      if (c.edges?.length) {
+        lines.push('  edges:');
+        for (const e of c.edges) lines.push(`    ${e.direction === 'out' ? '→' : '←'} ${e.type} ${e.slug}`);
+      }
+      lines.push(`  backlinks: ${c.backlink_count} | active facts: ${c.active_fact_count}`);
+      if (Array.isArray(r.suggestions) && r.suggestions.length) {
+        lines.push('  other matches:');
+        for (const s of r.suggestions) lines.push(`    ${s.slug} — ${s.title}`);
+      }
+      return lines.join('\n') + '\n';
+    }
+    case 'synthesize': {
+      if (process.argv.includes('--json')) break;
+      const r = result as any;
+      const lines = [r.answer || '(no answer)'];
+      if (Array.isArray(r.sources) && r.sources.length) lines.push('', `sources: ${r.sources.join(', ')}`);
+      if (Array.isArray(r.gaps) && r.gaps.length) lines.push(`gaps: ${r.gaps.join('; ')}`);
+      const cost = r.cost || {};
+      const tok = cost.input_tokens != null ? `${cost.input_tokens} in / ${cost.output_tokens} out` : 'tokens n/a';
+      const usd = cost.usd_estimate != null ? ` (~$${Number(cost.usd_estimate).toFixed(4)})` : '';
+      lines.push(`cost: ${cost.model} — ${tok}${usd}`);
+      return lines.join('\n') + '\n';
+    }
     default:
-      return JSON.stringify(result, null, 2) + '\n';
+      // bigintToStringReplacer keeps this fallback renderer crash-proof even
+      // if a future caller hands it a not-yet-normalized result. (#2450)
+      return JSON.stringify(result, bigintToStringReplacer, 2) + '\n';
   }
+  return JSON.stringify(result, null, 2) + '\n';
 }
 
 /**
@@ -889,9 +1507,15 @@ function formatResult(opName: string, result: unknown): string {
  * `doctor` is intentionally NOT in this set — task 4 routes it to
  * `runRemoteDoctor` for thin-client installs.
  */
-const THIN_CLIENT_REFUSED_COMMANDS = new Set([
-  'sync', 'embed', 'extract', 'extract-conversation-facts', 'enrich', 'migrate', 'apply-migrations',
+// Exported for the CLI_ONLY membership tests (#2035 precedent): `bootstrap`
+// and `hook` must NEVER appear here (ENG-2) — they are engine-free and must
+// work on any install shape.
+export const THIN_CLIENT_REFUSED_COMMANDS = new Set([
+  'sync', 'embed', 'extract', 'extract-conversation-facts', 'enrich', 'migrate', 'retrieval-upgrade', 'apply-migrations',
   'repair-jsonb', 'orphans', 'integrity', 'serve',
+  // v0.43 (#2095): watch streams against a LOCAL engine; thin clients get
+  // the volunteer_context MCP op instead.
+  'watch',
   // v0.31.1 (CDX-2 op coverage matrix): more local-only commands
   'dream', 'transcripts', 'storage',
   // v0.31.1 CDX-2 audit: takes/sources have multiple subcommands; some
@@ -908,6 +1532,18 @@ const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   // - `code-def`/`code-refs`/`code-callers`/`code-callees` have NO MCP ops
   //   in operations.ts:2630-2671; cannot be "fixed by routing" yet
   'pages', 'files', 'eval', 'code-def', 'code-refs', 'code-callers', 'code-callees',
+  // scratch-DB audit: `config` get/set operate on the host brain's config
+  // plane (DB rows / host file-plane). On a thin client they fabricated an
+  // ephemeral local PGLite (full migration replay per call) and read/wrote
+  // config nobody would ever see. NOTE: `jobs` is deliberately NOT here —
+  // it gets a partial dispatch (list/get route over MCP engine-free, the
+  // rest refuse) in the main dispatch before connectEngine().
+  'config',
+  // Agent-bootstrap [CX2-5]: the maintenance sweep runs against the LOCAL
+  // engine (the serve-resident sweep's trusted CLI entry). On a thin client
+  // it would fabricate a scratch PGLite and sweep nothing anyone reads.
+  // `bootstrap` and `hook` are deliberately NOT here (ENG-2).
+  'sweep',
 ]);
 
 /**
@@ -927,6 +1563,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   'extract-conversation-facts': 'extract-conversation-facts runs on the host (requires local engine + chat gateway). Run on the host machine.',
   enrich: 'enrich runs on the host (requires local engine + chat gateway for grounded synthesis). Run on the host machine.',
   migrate: "migrate runs on the host's local engine. Run on the host machine.",
+  'retrieval-upgrade': "retrieval-upgrade (embedding migration) rebuilds the host brain's schema + re-embeds. Run on the host machine.",
   'apply-migrations': 'schema migrations run on the host. SSH and run there.',
   'repair-jsonb': 'repair-jsonb operates on the local DB only.',
   integrity: 'integrity scans local files. Run on the host machine.',
@@ -937,6 +1574,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   storage: 'storage operates on the local repo on disk. Run on the host.',
   takes: 'takes mutate subcommands edit local .md files; routing the read subcommands lands in v0.31.x. For now: use `takes_list` and `takes_search` MCP tools from your agent, or run on the host.',
   sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
+  sweep: 'sweep runs the serve-resident maintenance passes against the LOCAL engine. Run it on the host (the serve process also runs it automatically).',
   // v0.32 audit additions
   pages: '`pages purge-deleted` is admin+localOnly (hard-deletes from the local DB). Run on the host.',
   files: '`files list` and `files url` MCP ops are localOnly (paths live on the host filesystem). Use `gbrain files` on the host machine.',
@@ -945,6 +1583,9 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   'code-refs': '`code-refs` has no MCP op yet. Run on the host.',
   'code-callers': '`code-callers` has no MCP op yet. Run on the host.',
   'code-callees': '`code-callees` has no MCP op yet. Run on the host.',
+  // scratch-DB audit additions
+  config: "config reads/writes the host brain's config plane. Edit the host's .gbrain/config.json (file-plane keys) or run on the host with GBRAIN_HOME set.",
+  jobs: '`jobs list` and `jobs get <id>` are thin-client routable; this subcommand runs against the host queue. Use the submit_job / list_jobs / get_job MCP tools from your agent, or run on the host with GBRAIN_HOME set.',
 };
 
 /**
@@ -985,16 +1626,45 @@ async function handleCliOnly(command: string, args: string[]) {
     await runSchema(args);
     return;
   }
+  // MEMORY_VERBS v1 (Cathedral 1): protocol introspection + conformance +
+  // local usage stats. No pre-bound engine — conformance spawns its own
+  // server; stats reads the local JSONL sidecar.
+  if (command === 'protocol') {
+    const { runProtocol } = await import('./commands/protocol.ts');
+    await runProtocol(args);
+    return;
+  }
   if (command === 'init') {
     const { runInit } = await import('./commands/init.ts');
     await runInit(args);
     return;
+  }
+  if (command === 'bench') {
+    // #3502 sweep: `gbrain bench publish` was documented (docs/eval-bench.md,
+    // KEY_FILES.md, and eval-gate's own --help text) but never dispatched —
+    // the promised-but-unwired class retrieval-upgrade (#3390) fixed before.
+    // Pure file-in/file-out (NDJSON → baseline); no DB, no engine.
+    if (args[0] === 'publish') {
+      const { runBenchPublish } = await import('./commands/bench-publish.ts');
+      await runBenchPublish(args.slice(1));
+      return;
+    }
+    console.error('Usage: gbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson> [flags]');
+    console.error('Run `gbrain bench publish --help` for the full flag list.');
+    process.exit(args[0] === '--help' || args[0] === '-h' ? 0 : 2);
   }
   // v0.37 fix wave (deferred TODO, shipped): one-command wipe-and-reinit.
   // Spawns its own engine internally so no pre-bound engine needed.
   if (command === 'reinit-pglite') {
     const { runReinitPglite } = await import('./commands/reinit-pglite.ts');
     await runReinitPglite(args);
+    return;
+  }
+  // WAL-repair wave (#223/#1670/#2575): in-place torn-WAL recovery. Never
+  // connects an engine — the whole point is that the DB won't open.
+  if (command === 'pglite-repair') {
+    const { runPgliteRepair } = await import('./commands/pglite-repair.ts');
+    setCliExitVerdict(await runPgliteRepair(args));
     return;
   }
   if (command === 'auth') {
@@ -1015,6 +1685,31 @@ async function handleCliOnly(command: string, args: string[]) {
     // --install talks to the remote, not the local engine.
     const { runConnect } = await import('./commands/connect.ts');
     await runConnect(args);
+    return;
+  }
+  if (command === 'bootstrap') {
+    // Agent-bootstrap dispatcher (plan D3/ENG-2): ENGINE-FREE by contract —
+    // a live serve may hold the PGLite lock mid-install. The `verify`
+    // subcommand manages its OWN engine inside bootstrap.ts (cache.ts
+    // pattern) precisely when no serve is live [CX2-5].
+    const { runBootstrap } = await import('./commands/bootstrap.ts');
+    setCliExitVerdict(await runBootstrap(args));
+    return;
+  }
+  if (command === 'hook') {
+    // `gbrain hook <event>` — harness hook entry (plan D5): NEVER opens an
+    // engine (talks to serve's IPC socket only); fail-open exit-0 contract
+    // lives inside runHook.
+    const { runHook } = await import('./commands/hook.ts');
+    setCliExitVerdict(await runHook(args));
+    return;
+  }
+  if (command === 'sweep' && (args.includes('--help') || args.includes('-h'))) {
+    // SWEEP_HELP is engine-independent and must print on a fresh install
+    // (the sync/capture/enrich pre-engine-bind precedent). runSweep's --help
+    // path returns before touching the engine argument.
+    const { runSweep } = await import('./commands/sweep.ts');
+    await runSweep(null as never, args);
     return;
   }
   if (command === 'upgrade') {
@@ -1123,11 +1818,14 @@ async function handleCliOnly(command: string, args: string[]) {
   }
   if (command === 'friction') {
     const { runFriction } = await import('./commands/friction.ts');
-    process.exit(runFriction(args));
+    // #2084 inner-exit sweep: verdict + return so teardown + the flush seam run.
+    setCliExitVerdict(runFriction(args));
+    return;
   }
   if (command === 'claw-test') {
     const { runClawTest } = await import('./commands/claw-test.ts');
-    process.exit(await runClawTest(args));
+    setCliExitVerdict(await runClawTest(args));
+    return;
   }
   if (command === 'report') {
     const { runReport } = await import('./commands/report.ts');
@@ -1173,13 +1871,13 @@ async function handleCliOnly(command: string, args: string[]) {
     if (args.includes('--remediation-plan')) {
       const { runRemediationPlan } = await import('./commands/doctor.ts');
       const eng = await connectEngine();
-      try { await runRemediationPlan(eng, args); } finally { await eng.disconnect(); }
+      try { await runRemediationPlan(eng, args); } finally { await finishCliTeardown({ engine: eng }); }
       return;
     }
     if (args.includes('--remediate')) {
       const { runRemediate } = await import('./commands/doctor.ts');
       const eng = await connectEngine();
-      try { await runRemediate(eng, args); } finally { await eng.disconnect(); }
+      try { await runRemediate(eng, args); } finally { await finishCliTeardown({ engine: eng }); }
       return;
     }
 
@@ -1192,13 +1890,21 @@ async function handleCliOnly(command: string, args: string[]) {
       // "user chose --fast while config is present".
       await runDoctor(null, args, getDbUrlSource());
     } else {
+      // #2084: both failure kinds (connect throw, runDoctor(eng) throw) still
+      // fall back to filesystem-only checks — identical to the prior shape.
+      // The finally closes the gap where a runDoctor(eng) throw used to skip
+      // the in-try disconnect. NOTE: runDoctor normally calls process.exit
+      // itself, which preempts this finally — in-command exit sites bypassing
+      // teardown are a pre-existing class, tracked as a TODOS.md follow-up.
+      let eng: BrainEngine | null = null;
       try {
-        const eng = await connectEngine();
+        eng = await connectEngine();
         await runDoctor(eng, args);
-        await eng.disconnect();
       } catch {
         // DB unavailable — still run filesystem checks
         await runDoctor(null, args, getDbUrlSource());
+      } finally {
+        if (eng) await finishCliTeardown({ engine: eng });
       }
     }
     return;
@@ -1212,7 +1918,7 @@ async function handleCliOnly(command: string, args: string[]) {
     try {
       await runZeSwitch(args, eng);
     } finally {
-      await eng.disconnect();
+      await finishCliTeardown({ engine: eng });
     }
     return;
   }
@@ -1228,7 +1934,7 @@ async function handleCliOnly(command: string, args: string[]) {
       execSync(`bash "${scriptPath}"`, { stdio: 'inherit', env: { ...process.env } });
     } catch (e: any) {
       // Non-zero exit = some tests failed (exit code = failure count)
-      process.exit(e.status ?? 1);
+      setCliExitVerdict(e.status ?? 1);
     }
     return;
   }
@@ -1257,12 +1963,15 @@ async function handleCliOnly(command: string, args: string[]) {
       await runDream(eng, args);
     } finally {
       // #1471 invariant tripwire (the dream-cycle owner): `eng` created the
-      // module singleton (first module connector) and is disconnected LAST,
+      // module singleton (first module connector) and is torn down LAST,
       // here, after the whole cycle. The ownership fix relies on this owner's
       // lifetime strictly dominating every borrower (lint/doctor probe engines
-      // created mid-cycle). Do NOT disconnect `eng` before runDream returns, or
+      // created mid-cycle). Do NOT tear down `eng` before runDream returns, or
       // a borrower could outlive the owner and lose the shared singleton.
-      if (eng) await eng.disconnect();
+      // #2084: routed through the shared bounded teardown — dream runs as an
+      // overnight cron, where a lingering-socket hang is a silent zombie
+      // (closes the TODOS.md drain-before-owner-disconnect item).
+      if (eng) await finishCliTeardown({ engine: eng });
     }
     return;
   }
@@ -1286,7 +1995,20 @@ async function handleCliOnly(command: string, args: string[]) {
   // The handler self-configures the AI gateway from loadConfig() + process.env.
   if (command === 'eval' && args[0] === 'cross-modal') {
     const { runEvalCrossModal } = await import('./commands/eval-cross-modal.ts');
-    process.exit(await runEvalCrossModal(args.slice(1)));
+    setCliExitVerdict(await runEvalCrossModal(args.slice(1)));
+    return;
+  }
+
+  // `eval run-all` is a pure orchestrator — its engine arg is unused
+  // (`_engine`), the brainbench suite it runs in-process is hermetic (brings
+  // its own PGLite via createBenchmarkBrain), and the remaining suites write
+  // stub records. Bypass connectEngine so run-all works with no brain
+  // configured — e.g. in CI, where `--suites brainbench` otherwise died with
+  // "No brain configured" before reaching the hermetic run.
+  if (command === 'eval' && args[0] === 'run-all') {
+    const { runEvalRunAll } = await import('./commands/eval-run-all.ts');
+    await runEvalRunAll(null, args.slice(1));
+    return;
   }
 
   // v0.32 EXP-5 (codex review #10): `eval takes-quality replay <receipt>`
@@ -1297,7 +2019,25 @@ async function handleCliOnly(command: string, args: string[]) {
   // engine-required path below.
   if (command === 'eval' && args[0] === 'takes-quality' && args[1] === 'replay') {
     const { runReplayNoBrain } = await import('./commands/eval-takes-quality.ts');
-    process.exit(await runReplayNoBrain(args.slice(2)));
+    setCliExitVerdict(await runReplayNoBrain(args.slice(2)));
+    return;
+  }
+
+  // BrainBench brings its own in-memory PGLite (longmemeval pattern) and is
+  // hermetic by default — no gateway, no user brain, no config required. The
+  // command owns its exit codes (0 pass / 1 regression / 2 error) and exits
+  // explicitly via its grace-tick exit path (PGLite exitCode-hijack guard).
+  if (command === 'eval' && args[0] === 'brainbench') {
+    const { runEvalBrainBench } = await import('./commands/eval-brainbench.ts');
+    if (args.includes('--llm') && !args.includes('--help') && !args.includes('-h')) {
+      // --llm is the one mode that talks to a provider; mirror the
+      // longmemeval gateway bootstrap so extraction calls are priced.
+      const config = loadConfig() ?? ({} as GBrainConfig);
+      const { configureGateway } = await import('./core/ai/gateway.ts');
+      configureGateway(buildGatewayConfig(config));
+    }
+    await runEvalBrainBench(args.slice(1));
+    return; // unreachable — runEvalBrainBench always exits — but keeps control flow explicit
   }
 
   // v0.28.8: longmemeval brings its own in-memory PGLite. Bypassing
@@ -1323,13 +2063,22 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // v0.42.x (#2390): `gbrain eval chronicle` is deterministic — brings its own
+  // in-memory PGLite, no DB/gateway. CI fixture gate runs anywhere.
+  if (command === 'eval' && args[0] === 'chronicle') {
+    const { runEvalChronicle } = await import('./commands/eval-chronicle.ts');
+    setCliExitVerdict(await runEvalChronicle(args.slice(1)));
+    return;
+  }
+
   // v0.41.13.0: `gbrain eval conversation-parser` is pure-function
   // (parses fixture JSONL, runs parseConversation, scores results).
   // No DB access; bypass connectEngine entirely so the CI fixture
   // gate runs on machines with no `~/.gbrain/config.json`.
   if (command === 'eval' && args[0] === 'conversation-parser') {
     const { runEvalConversationParser } = await import('./commands/eval-conversation-parser.ts');
-    process.exit(await runEvalConversationParser(args.slice(1)));
+    setCliExitVerdict(await runEvalConversationParser(args.slice(1)));
+    return;
   }
 
   // v0.41.13.0: `gbrain conversation-parser list-builtins | validate
@@ -1357,7 +2106,8 @@ async function handleCliOnly(command: string, args: string[]) {
     const cfgPre = loadConfig();
     if (isThinClient(cfgPre)) {
       const { runEvalWhoknows } = await import('./commands/eval-whoknows.ts');
-      process.exit(await runEvalWhoknows(null, args.slice(1)));
+      setCliExitVerdict(await runEvalWhoknows(null, args.slice(1)));
+      return;
     }
   }
 
@@ -1371,7 +2121,8 @@ async function handleCliOnly(command: string, args: string[]) {
     if (cfgPre && isThinClient(cfgPre)) {
       const { runStatus } = await import('./commands/status.ts');
       const result = await runStatus(null, args);
-      process.exit(result.exitCode);
+      setCliExitVerdict(result.exitCode);
+      return;
     }
   }
 
@@ -1384,6 +2135,14 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'sync' && (args.includes('--help') || args.includes('-h'))) {
     const { runSync } = await import('./commands/sync.ts');
     await runSync(null as any, args);
+    return;
+  }
+
+  // #3834: extract help is engine-independent and must work on a fresh
+  // install before a brain has been configured.
+  if (command === 'extract' && (args.includes('--help') || args.includes('-h'))) {
+    const { runExtract } = await import('./commands/extract.ts');
+    await runExtract(null as never, args);
     return;
   }
 
@@ -1417,14 +2176,12 @@ async function handleCliOnly(command: string, args: string[]) {
   // Per-command default: search 30s, sources list 10s. User --timeout=Ns wins.
   // Other commands (import, embed, doctor, etc.) keep their existing
   // unbounded connect — destructive / long-running commands shouldn't get
-  // a default kill switch.
-  const readOnlyDefaultTimeoutMs =
-    command === 'search' ? 30_000 :
-    command === 'sources' && (args[0] === 'list' || args[0] === undefined) ? 10_000 :
-    null;
+  // a default kill switch. The gate below is per-command (#3013): only the
+  // commands dispatchReadOnlyCommand handles may enter this path — a
+  // user-supplied --timeout on a write command must never reroute it here.
   const cliOptsResolved = getCliOptions();
   const userTimeoutMs = cliOptsResolved.timeoutMs;
-  const readOnlyTimeoutMs = userTimeoutMs ?? readOnlyDefaultTimeoutMs;
+  const readOnlyTimeoutMs = resolveReadOnlyDispatchTimeoutMs(command, args, userTimeoutMs);
 
   if (readOnlyTimeoutMs !== null) {
     const { withTimeout, OperationTimeoutError } = await import('./core/timeout.ts');
@@ -1450,7 +2207,7 @@ async function handleCliOnly(command: string, args: string[]) {
       }
       throw e;
     } finally {
-      try { await engine.disconnect(); } catch { /* best-effort */ }
+      await finishCliTeardown({ engine });
     }
     return;
   }
@@ -1488,6 +2245,39 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
+  // Thin-client `jobs` dispatch: `list` and `get` route over MCP (v0.32
+  // routing branches in commands/jobs.ts) and never touch a local engine —
+  // but falling through to connectEngine() below fabricates an empty
+  // scratch PGLite in the thin-client GBRAIN_HOME and replays the entire
+  // migration chain on every invocation before the remote call even runs.
+  // Dispatch them engine-free here; every other jobs subcommand is
+  // host-queue-bound, so refuse with a pinpoint hint instead of building
+  // the scratch store.
+  if (command === 'jobs') {
+    const cfgJobs = loadConfig();
+    if (isThinClient(cfgJobs)) {
+      const jobsSub = args[0];
+      if (jobsSub === 'list' || jobsSub === 'get') {
+        const { runJobs } = await import('./commands/jobs.ts');
+        await runJobs(null, args);
+        return;
+      }
+      refuseThinClient('jobs', cfgJobs!.remote_mcp!.mcp_url);
+    }
+  }
+
+  // Autopilot status + uninstall are filesystem-only verdicts and MUST stay
+  // engine-free: a running PGLite daemon holds the exclusive DB lock, so an
+  // engine-bound status would fail to connect in exactly the scenarios the
+  // exit-code contract exists to diagnose (live daemon, DB outage). Order
+  // mirrors runAutopilot's own flag precedence (uninstall before status).
+  if (command === 'autopilot' && (args.includes('--uninstall') || args.includes('--status'))) {
+    const { runAutopilotStatus, uninstallDaemon } = await import('./commands/autopilot.ts');
+    if (args.includes('--uninstall')) uninstallDaemon();
+    else runAutopilotStatus(args);
+    return;
+  }
+
   // All remaining CLI-only commands need a DB connection
   const engine = await connectEngine();
   try {
@@ -1502,7 +2292,7 @@ async function handleCliOnly(command: string, args: string[]) {
         // so wrappers (sync, CI scripts, `&& gbrain doctor`) propagate.
         const importResult = await runImport(engine, args);
         if (importResult.errors > 0) {
-          process.exitCode = 1;
+          setCliExitVerdict(1);
         }
         break;
       }
@@ -1530,7 +2320,14 @@ async function handleCliOnly(command: string, args: string[]) {
       }
       case 'embed': {
         const { runEmbed } = await import('./commands/embed.ts');
-        await runEmbed(engine, args);
+        // #3037: mirror the `import` case above — the CLI was discarding the
+        // result, so a run where every chunk failed to embed still exited 0
+        // and cron/CI/health gates read total silence as success. Surface
+        // non-zero on failures > 0. (undefined = backgrounded via --background.)
+        const embedResult = await runEmbed(engine, args);
+        if (embedResult && embedResult.failures > 0) {
+          setCliExitVerdict(1);
+        }
         break;
       }
       case 'serve': {
@@ -1543,6 +2340,13 @@ async function handleCliOnly(command: string, args: string[]) {
         await runCall(engine, args);
         break;
       }
+      case 'sweep': {
+        // [CX2-5] Trusted local sweep entry — succeeds precisely because no
+        // live serve holds the PGLite lock (connectEngine acquired it above).
+        const { runSweep } = await import('./commands/sweep.ts');
+        await runSweep(engine, args);
+        break;
+      }
       case 'config': {
         const { runConfig } = await import('./commands/config.ts');
         await runConfig(engine, args);
@@ -1550,8 +2354,31 @@ async function handleCliOnly(command: string, args: string[]) {
       }
       // doctor is handled before connectEngine() above
       case 'migrate': {
+        // #3390: `gbrain migrate embeddings --to <provider:model>` — the
+        // provider-agnostic embedding migration. Everything else stays the
+        // engine-transfer path (`migrate --to <supabase|pglite>`).
+        if (args[0] === 'embeddings') {
+          const { runMigrateEmbeddings } = await import('./commands/migrate-embeddings.ts');
+          await runMigrateEmbeddings(engine, args.slice(1));
+          break;
+        }
+        if (args.includes('--help') || args.includes('-h')) {
+          console.log('Usage: gbrain migrate --to <supabase|pglite> [--url <url>] [--path <path>] [--force]');
+          console.log('       gbrain migrate embeddings --to <provider:model> [--dim N] [--dry-run] [--yes]');
+          console.log('');
+          console.log('The first form transfers the brain between engines; the second re-embeds');
+          console.log('onto a different embedding provider (run `gbrain migrate embeddings --help`).');
+          break;
+        }
         const { runMigrateEngine } = await import('./commands/migrate-engine.ts');
         await runMigrateEngine(engine, args);
+        break;
+      }
+      case 'retrieval-upgrade': {
+        // The command README.md + doctor.ts promised since v0.36 but never
+        // dispatched. Alias for `migrate embeddings` (#3390).
+        const { runMigrateEmbeddings } = await import('./commands/migrate-embeddings.ts');
+        await runMigrateEmbeddings(engine, args);
         break;
       }
       case 'eval': {
@@ -1633,6 +2460,11 @@ async function handleCliOnly(command: string, args: string[]) {
         await runOrphans(engine, args);
         break;
       }
+      case 'maintain': {
+        const { runMaintain } = await import('./commands/maintain.ts');
+        await runMaintain(engine, args);
+        break;
+      }
       // v0.32.7 CJK wave — post-upgrade markdown re-chunk sweep.
       // v0.36 Phase 3 wave — `gbrain reindex --multimodal` re-embeds content_chunks
       // into the unified Voyage multimodal-3 column.
@@ -1696,6 +2528,15 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'status': {
         const { runStatus } = await import('./commands/status.ts');
         const result = await runStatus(engine, args);
+        // #2084 inner-exit sweep: a mid-switch exit skips the finally teardown.
+        setCliExitVerdict(result.exitCode);
+        break;
+      }
+      // v0.43 (#2180) — `gbrain advisor`: ranked, read-only "what to do next".
+      // CLI surface; the same signals are exposed over MCP via the `advisor` op.
+      case 'advisor': {
+        const { runAdvisorCli } = await import('./commands/advisor.ts');
+        const result = await runAdvisorCli(engine, args);
         process.exit(result.exitCode);
         // eslint-disable-next-line no-unreachable
         break;
@@ -1867,6 +2708,15 @@ async function handleCliOnly(command: string, args: string[]) {
         await runQuarantine(engine, args);
         break;
       }
+      case 'watch': {
+        // v0.43 (#2095): push-based context transport. Blocks in the stdin
+        // iteration (interactive stays alive; piped exits at EOF), then the
+        // finally below runs finishCliTeardown (volunteer events drain with
+        // every other sink) and the import.meta.main seam flush-exits.
+        const { runWatch } = await import('./commands/watch.ts');
+        await runWatch(engine, args);
+        break;
+      }
       case 'storage': {
         const { runStorage } = await import('./commands/storage.ts');
         await runStorage(engine, args);
@@ -1890,6 +2740,15 @@ async function handleCliOnly(command: string, args: string[]) {
         await runReindexCodeCli(engine, args);
         break;
       }
+      case 'reindex-search-vector': {
+        // Explicit recreate of FTS trigger functions + batched backfill,
+        // honoring GBRAIN_FTS_LANGUAGE. Use after changing the language
+        // env var on a brain that already ran the configurable_fts_language
+        // migration.
+        const { runReindexSearchVectorCli } = await import('./commands/reindex-search-vector.ts');
+        await runReindexSearchVectorCli(engine, args);
+        break;
+      }
       case 'reindex-frontmatter': {
         // v0.29.1: recovery / explicit-rebuild path for pages.effective_date.
         // Mirror of reindex-code shape. Wraps the shared library function in
@@ -1899,16 +2758,24 @@ async function handleCliOnly(command: string, args: string[]) {
         //
         // v0.30.1: still works; canonical entrypoint is now `gbrain backfill
         // effective_date`. This command stays as a thin alias for back-compat.
+        //
+        // #1963: pass the already-connected engine. The command used to build
+        // + connect its OWN engine here, which self-deadlocked on the PGLite
+        // data-dir lock (this process already holds it via connectEngine
+        // above) — 30s spin, then exit 1, on every PGLite invocation.
         const { reindexFrontmatterCli } = await import('./commands/reindex-frontmatter.ts');
-        await reindexFrontmatterCli(args);
-        return; // reindexFrontmatterCli handles its own engine lifecycle
+        await reindexFrontmatterCli(engine, args);
+        break;
       }
       case 'backfill': {
         // v0.30.1: first-class generic backfill command. Subcommand dispatch
         // is inside runBackfillCommand (kind | list | --help).
+        // #1963: same double-connect class as reindex-frontmatter — reuse the
+        // connected engine instead of building a second one on the same
+        // PGLite data dir.
         const { runBackfillCommand } = await import('./commands/backfill.ts');
-        await runBackfillCommand(args);
-        return;
+        await runBackfillCommand(engine, args);
+        break;
       }
       case 'code-callers': {
         // v0.20.0 Cathedral II Layer 10 (C4): "who calls <symbol>?"
@@ -1937,33 +2804,40 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   } finally {
     syncWatchdog?.dispose(); // #1633: tear down the hard-deadline watchdog on clean exit
-    // v0.42.20.0 (#1762) — the CLI_ONLY path (which owns `gbrain capture`)
-    // lacked the op-dispatch drain-before-disconnect contract. `put_page` fires
-    // a fire-and-forget facts:absorb job AFTER printing the receipt; on a
-    // multi-chunk page that job is in flight when this finally tears the engine
-    // down, and `engine.disconnect()` nulling PGLite's _db mid-job spins
-    // db.close() into a 100%-CPU busy-loop that pins the single-writer lock.
-    // Drain every background-work sink first (facts shutdown() abort cancels a
-    // hung Haiku), THEN disconnect. The drain-before-disconnect is the causal
-    // fix; the force-exit defense below is secondary (it CANNOT preempt a WASM
-    // busy-loop on a pinned JS thread — that's exactly why the drain matters).
-    // #1471: this is also the fall-through OWNER-disconnect — the owner is torn
-    // down LAST (after the drain), so module-singleton borrowers never outlive it.
+    // #2084 — the CLI_ONLY fall-through teardown (drain every background-work
+    // sink, THEN disconnect, under a computed-deadline backstop) lives in
+    // finishCliTeardown. `gbrain capture`'s fire-and-forget facts:absorb job
+    // gets its drain window before PGLite's db.close() can race it into the
+    // re-pump busy-loop (#1762). #1471: this is also the fall-through
+    // OWNER-disconnect — the owner is torn down LAST (after the drain), so
+    // module-singleton borrowers never outlive it. `serve` skips teardown
+    // entirely: the daemon owns its lifecycle.
     if (command !== 'serve') {
-      const forceExit = shouldForceExitAfterMain();
-      let hardExitTimer: ReturnType<typeof setTimeout> | undefined;
-      if (forceExit) {
-        hardExitTimer = setTimeout(() => {
-          console.warn('[cli] engine.disconnect() did not return within 10000ms — force-exiting');
-          process.exit(process.exitCode ?? 0);
-        }, 10_000);
-        hardExitTimer.unref?.();
-      }
-      await drainAllBackgroundWorkForCliExit();
-      await engine.disconnect();
-      if (hardExitTimer) clearTimeout(hardExitTimer);
+      await finishCliTeardown({ engine });
     }
   }
+}
+
+/**
+ * #3013: decide whether an invocation enters the read-only connect+dispatch
+ * timeout path, and with what wallclock. Returns null for every command
+ * dispatchReadOnlyCommand can't handle. The gate used to be "a timeout is
+ * present" — so a user-supplied --timeout on a write command (`sync`,
+ * `embed`, `import`, ...) hijacked dispatch into the read-only path, which
+ * threw and exited 1 before any work ran. Pure; exported for the
+ * regression test.
+ */
+export function resolveReadOnlyDispatchTimeoutMs(
+  command: string,
+  subArgs: string[],
+  userTimeoutMs: number | null,
+): number | null {
+  if (command !== 'search' && command !== 'sources') return null;
+  const defaultMs =
+    command === 'search' ? 30_000 :
+    (subArgs[0] === 'list' || subArgs[0] === undefined) ? 10_000 :
+    null;
+  return userTimeoutMs ?? defaultMs;
 }
 
 /**
@@ -2001,7 +2875,52 @@ async function dispatchReadOnlyCommand(engine: BrainEngine, command: string, arg
 import { buildGatewayConfig } from './core/ai/build-gateway-config.ts';
 export { buildGatewayConfig };
 
+/**
+ * Which brain this process's engine targets. Set by connectEngine after brain
+ * resolution; read by makeContext so ctx.brainId carries the audit id. Never
+ * derived from op params — an untrusted caller must not be able to name a
+ * brain (same fail-closed shape as the #3524 remote source sentinel).
+ */
+let activeBrainId: string = 'host';
+
+/**
+ * Connect to a mounted brain (brain axis, non-host). Routes through
+ * BrainRegistry so:
+ *   - an unknown/disabled mount id throws UnknownBrainError. Fail-closed:
+ *     the pre-fix CLI silently fell back to the host brain, returning
+ *     confident wrong answers (mirror of #3524's explicit --source decision);
+ *   - postgres mounts get a per-instance pool, never the db.ts singleton;
+ *   - NO migrations run against the mount — schema is the publisher's job
+ *     (same decision as BrainRegistry.initMountBrain). Write access control
+ *     is the mount's own DB credential grants: a read-only role rejects
+ *     writes at the database; gbrain does not re-implement that client-side.
+ * The AI gateway still configures from the HOST config (the caller's API
+ * keys + model tiers) — embedding/expansion spend stays the caller's, and
+ * a mount's DB-plane model config is never merged into the caller's gateway.
+ */
+async function connectMountEngine(brainId: string): Promise<BrainEngine> {
+  const config = loadConfig();
+  if (config) {
+    const { configureGateway } = await import('./core/ai/gateway.ts');
+    configureGateway(buildGatewayConfig(config));
+  }
+  const { loadRegistry } = await import('./core/brain-registry.ts');
+  const handle = await loadRegistry().getBrain(brainId);
+  activeBrainId = brainId;
+  return handle.engine;
+}
+
 async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngine> {
+  // Brain axis: resolve WHICH DATABASE this invocation targets before touching
+  // the host engine. --brain (global flag) / GBRAIN_BRAIN_ID / .gbrain-mount /
+  // mount-path-prefix resolve via the canonical 6-tier chain — the mirror of
+  // the source axis in makeContext. connectEngine is the single choke point
+  // every local CLI command routes through (shared ops, CLI-only commands,
+  // and the search-dashboard path), so routing lands here once.
+  const { resolveBrainId } = await import('./core/brain-resolver.ts');
+  const brainId = resolveBrainId(getCliOptions().brain);
+  if (brainId !== 'host') return connectMountEngine(brainId);
+
   const config = loadConfig();
   if (!config) {
     console.error('No brain configured. Run: gbrain init');
@@ -2133,6 +3052,7 @@ USAGE
 SETUP
   init [--pglite|--supabase|--url]   Create brain (PGLite default, no server)
   migrate --to <supabase|pglite>     Transfer brain between engines
+  migrate embeddings --to <p:model>  Re-embed onto another embedding provider
   upgrade                            Self-update
   check-update [--json]              Check for new versions
   doctor [--json] [--fast]            Health check (resolver, skills, pgvector, RLS, embeddings)
@@ -2142,7 +3062,8 @@ PAGES
   get <slug>                         Read a page
   put <slug> [< file.md]             Write/update a page
   delete <slug>                      Delete a page
-  list [--type T] [--tag T] [-n N]   List pages
+  list [--type T] [--tag T] [--limit N]
+                                     List pages
 
 SEARCH
   search <query>                     Keyword search (tsvector)
@@ -2153,7 +3074,9 @@ IMPORT/EXPORT
   import <dir> [--no-embed]          Import markdown directory
   sync [--repo <path>] [flags]       Git-to-brain incremental sync
   sync --watch [--interval N]        Continuous sync (loops until stopped)
-  sync --install-cron                Install persistent sync daemon
+                                     See also: autopilot --install (continuous daemon).
+  sync --all --missing-path skip     Classify sources whose local_path is absent
+                                     on this machine as skipped, not failed
   export [--dir ./out/]              Export to markdown
   export --restore-only [--repo <p>] Restore missing supabase-only files
         [--type T] [--slug-prefix S] With optional filters
@@ -2191,13 +3114,17 @@ TIMELINE
 
 TOOLS
   extract <links|timeline|all>       Extract links/timeline (idempotent)
-        [--source fs|db]             fs (default) walks .md files; db iterates engine pages
-        [--dir <brain>]              brain dir for fs source
-        [--type T] [--since DATE]    filters (db source)
-        [--dry-run] [--json]
+        [--source fs|db] [--source-id ID] [--dir <brain>]
+        [--type T] [--since DATE] [--include-frontmatter]
+        [--workers N|--concurrency N] [--dry-run] [--json]
+  extract links --by-mention [--ner] --source db
+  extract timeline --from-meetings [--infer-dates] --source db
+  extract --stale [--source-id ID] [--catch-up] [--dry-run] [--json]
+  extract --explain <kind> [--json] Full details: gbrain extract --help
   publish <page.md> [--password]     Shareable HTML (strips private data, optional AES-256)
   check-backlinks <check|fix> [dir]  Find/fix missing back-links across brain
   lint <dir|file> [--fix]            Catch LLM artifacts, placeholder dates, bad frontmatter
+  backfill <kind|list>               v0.30.1: run a registered backfill (effective-date, ...)
   orphans [--json] [--count]         Find pages with no inbound wikilinks
   salience [--days N] [--kind P]     v0.29: pages ranked by emotional + activity salience
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
@@ -2219,7 +3146,14 @@ BRAIN (capture / ideate / explore — v0.37/v0.38)
 SOURCES (multi-repo / multi-brain)
   sources list                       Show registered sources
   sources add <id> --path <p>        Register a source (id = short name, e.g. 'wiki')
-  sources remove <id>                Remove a source + its pages
+  sources remove <id>                Remove a source + its pages (--confirm-destructive)
+  sources archive <id>               Soft-delete: hide from search, recoverable for 72h
+  sources restore <id>               Un-archive a soft-deleted source
+  sources archived                   List soft-deleted sources and their purge expiry
+  sources purge [<id>]               Permanently delete archived sources
+  sources status                     Per-source dashboard (sync lag, embed coverage)
+  sources --help                     Full subcommand list (rename, default, attach,
+                                     current, federate, set-cr-mode, webhook, harden, ...)
   sync --all                         Sync all sources with a local_path
   sync --source <id>                 Sync one specific source
   repos ...                          DEPRECATED alias for 'sources' (v0.19.0)
@@ -2233,6 +3167,9 @@ CODE INDEXING (v0.19.0 / v0.20.0 Cathedral II)
   query <q> --symbol-kind <k>        Filter to symbol type (function|class|method|...) (v0.20.0)
   reconcile-links [--dry-run]        Batch-recompute doc↔impl edges (v0.20.0)
   reindex-code [--source id] [--yes] Explicit code-page reindex (v0.20.0)
+  reindex-search-vector [--dry-run] [--yes] [--json]
+                                Recreate FTS triggers + backfill under
+                                $GBRAIN_FTS_LANGUAGE (default 'english')
   sync --strategy code               Sync code files into the brain
 
 JOBS (Minions)
@@ -2253,15 +3190,22 @@ ADMIN
   features [--json] [--auto-fix]     Scan usage + recommend unused features
   autopilot [--repo] [--interval N]  Self-maintaining brain daemon
   config [show|get|set] <key> [val]  Brain config
+  protocol [conformance|stats]       MEMORY_VERBS v1: schemas, conformance
+                                     certification, local usage stats + TTHW
   storage status [--repo <path>]     Storage tier status and health
         [--json]                     (git-tracked vs supabase-only)
   serve                              MCP server (stdio)
+    --surface verbs|full             Tool surface: the 5 memory verbs only, or
+                                     every op (default full; verbs = quickstart)
   serve --http [--port N]            HTTP MCP server with OAuth 2.1
     --token-ttl N                    Access token TTL in seconds (default: 3600)
-    --enable-dcr                     Enable Dynamic Client Registration
+    --enable-dcr                     Enable Dynamic Client Registration (DCR clients default to authorization_code)
+    --enable-dcr-insecure            Also allow the consent-bypassing client_credentials grant on DCR (implies --enable-dcr)
     --public-url URL                 Public issuer URL (required behind proxy/tunnel)
   connect <mcp-url> --token <t>      Wire Claude Code to a remote gbrain (bearer token)
         [--install] [--json]         Print the paste-ready command, or --install to run it
+  watch [--json]                     Push-based context: pipe conversation turns in,
+                                     volunteered brain pages stream out (#2095)
   call <tool> '<json>'               Raw tool invocation
   version                            Version info
   --tools-json                       Tool discovery (JSON)
@@ -2273,9 +3217,25 @@ Run gbrain <command> --help for command-specific help.
 // Only auto-run when invoked as the entry point (the compiled binary or
 // `bun src/cli.ts`). Guarded so tests can import cliAliases / printOpHelp
 // without triggering argv parsing + main(). v114 (#1941).
+//
+// #2084 — the ONE process-exit seam for one-shot commands. Every teardown site
+// routes through finishCliTeardown (which returns); the exit itself happens
+// here, after main() settles, so the CLI never waits on Bun's event loop to
+// drain (stuck PgBouncer sockets kept it alive — endPoolBounded races PAST a
+// stuck pool.end() by design). flushThenExit fences stdout/stderr and holds a
+// short aliveness grace so piped output is delivered before exit (#1959).
+// Daemons (`serve`) are excluded by shouldForceExitAfterMain and keep the
+// pre-#2084 behavior: main() resolves and the server's own work keeps the
+// process alive. A fatal error still exits 1 for every command, daemons
+// included (matches the prior unconditional process.exit(1) on rejection).
 if (import.meta.main) {
-  main().catch(e => {
-    console.error(e.message || e);
-    process.exit(1);
-  });
+  main().then(
+    () => {
+      if (shouldForceExitAfterMain()) flushThenExit(currentExitCode());
+    },
+    (e) => {
+      console.error(e.message || e);
+      flushThenExit(1);
+    },
+  );
 }

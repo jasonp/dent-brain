@@ -89,7 +89,7 @@ describe('alias_resolved boost stage', () => {
 });
 
 describe('KNOBS_HASH_VERSION', () => {
-  it('is 10 (9→10 relational recall arm invalidates rel-off cache rows, v0.43)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(10);
+  it('is 15 (14→15 folds the resolved FTS configuration name, so rows written before a reindex-search-vector language switch become unreachable)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(15);
   });
 });

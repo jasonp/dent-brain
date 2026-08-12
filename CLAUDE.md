@@ -52,6 +52,10 @@ Both use the same 6-tier resolution. See `docs/architecture/brains-and-sources.m
 ## Architecture
 
 Contract-first: `src/core/operations.ts` defines the shared operations; CLI and MCP server are generated from it. Engine factory (`src/core/engine-factory.ts`) dynamically imports `'pglite'` or `'postgres'`. Skills are fat markdown files, tool-agnostic.
+Contract-first: `src/core/operations.ts` defines 100+ shared operations (including `volunteer_context` — push-based context, see `docs/guides/push-context.md` — and the seven frozen MEMORY_VERBS `recall`/`remember`/`entity`/`synthesize`/`forget`/`context_pack`/`delta` — the last two are v0.45.7 ambient-recall boundary verbs (budget-packed pack + "what changed since"), all seven stamp `protocol_version: 1`, servable alone via `gbrain serve --surface verbs`, see `docs/protocol/MEMORY_VERBS_v1.md` + `docs/guides/ambient-recall.md`). CLI and MCP
+server are both generated from this single source. Engine factory (`src/core/engine-factory.ts`)
+dynamically imports the configured engine (`'pglite'` or `'postgres'`). Skills are fat
+markdown files (tool-agnostic, work with both CLI and plugin contexts).
 
 Explore via `ls src/core/`, `ls src/commands/`, `ls src/mcp/` — names are descriptive; read files for detail. Do not maintain a file inventory in this doc; it goes stale fast.
 
@@ -65,9 +69,27 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
 - **Source isolation.** Every read-side op routes through `sourceScopeOpts(ctx)`; precedence
   is federated array (`ctx.auth.allowedSources`) > scalar (`ctx.sourceId`) > nothing. Don't
   hand-roll source filtering — a missed thread is a cross-source data leak.
-- **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it;
-  PGLite hides the bug. Pass raw objects to `engine.executeRaw`, or use `executeRawJsonb`.
-  Guarded by `scripts/check-jsonb-pattern.sh`.
+- **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it (a jsonb
+  string scalar); PGLite hides the bug. This bites BOTH spellings — the template form
+  (`${JSON.stringify(x)}::jsonb`) AND the positional form (`executeRaw(\`…$N::jsonb\`, [JSON.stringify(x)])`,
+  the #2339 class that aborted every sync). Fix: pass a raw object to `engine.executeRaw` / use
+  `executeRawJsonb` / `sql.json()`; or for the positional path bind through `$N::text::jsonb` (binds as
+  text, the cast parses it). Guarded by `scripts/check-jsonb-pattern.sh` (template grep) +
+  `scripts/check-jsonb-params.mjs` (positional AST scanner); the real backstop is the DATABASE_URL-gated
+  e2e parity tests, since PGLite can't surface the bug. Full rule in `docs/ENGINES.md`.
+- **Engine-live paths avoid runtime dynamic `import()` for helper dependencies.** In
+  `src/core/pglite-engine.ts`, `src/core/postgres-engine.ts`, and
+  `src/core/migrate.ts`, dependencies previously reached through runtime dynamic
+  imports use static top-level imports. The only current dynamic-`import()` exceptions
+  are the four `ai/gateway.ts` lookups in both engines'
+  `initSchema()` and `_upsertChunksOnce()` methods; each remains lazy inside a
+  local `try/catch` because the gateway has a large provider/config closure and,
+  more importantly, eager evaluation would occur before the catch and could
+  turn a recoverable default/config-row fallback into a module-load failure.
+  Every exception carries `engine-dynamic-import-ok` on the import line.
+  `scripts/check-engine-dynamic-import.sh` enforces the rule. For history, use
+  `git log -G'await[[:space:]]+import\\('`, not `git log -S`: a dynamic-to-static
+  rewrite can preserve the searched token while changing its context.
 - **Engine parity.** `src/core/postgres-engine.ts` and `src/core/pglite-engine.ts` move in
   lockstep — a new method/SQL shape lands in BOTH, pinned by `test/e2e/engine-parity.test.ts`.
   Forward-referenced columns/indexes go in the bootstrap probe set (guarded by
@@ -94,6 +116,305 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
 ## Commands & Skills
 
 `gbrain --help` / `gbrain --tools-json` is the source of truth. Read `skills/RESOLVER.md` before brain ops; cross-cutting rules live in `skills/conventions/`, `skills/_brain-filing-rules.md`, `skills/_output-rules.md`.
+CLAUDE.md is the always-loaded orientation + dispatcher. Detailed reference loads
+on demand — read the linked doc before working in that area. (Same two-layer
+pattern gbrain ships for its own skills: thin router in `skills/RESOLVER.md`, fat
+detail on demand.)
+
+| When you're working on... | Read first |
+|---|---|
+| any file in `src/` (what it does + its invariants) | `docs/architecture/KEY_FILES.md` — find the file's entry |
+| search / ranking / hybrid / retrieval | `docs/architecture/RETRIEVAL.md` + the `search/*` entries in `KEY_FILES.md` |
+| search modes / cost knobs | `docs/guides/search-modes.md` |
+| embedding spend gates / cost gate / `spend.posture` / off switches | `docs/operations/spend-controls.md` |
+| push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
+| schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
+| thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
+| memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
+| the CLI surface (commands + flags) | `gbrain --help` / `gbrain --tools-json`, plus the relevant `KEY_FILES.md` entry |
+| running or writing tests | `docs/TESTING.md` |
+| bulk-command progress wiring | `docs/progress-events.md` |
+| eval methodology / metrics | `docs/eval/` |
+| brains vs sources / topology | `docs/architecture/brains-and-sources.md`, `topologies.md` |
+| skill routing | `skills/RESOLVER.md` |
+| agent bootstrap (paste-in install, hooks, `gbrain bootstrap`, sweep, keyless) | `docs/guides/bootstrap.md` + `docs/designs/AGENT_BOOTSTRAP_PLAN.md` + the KEY_FILES bootstrap cluster |
+| shipping a release / CHANGELOG / PR conventions | `docs/RELEASING.md` (ship IRON RULES stay inline below) |
+
+The per-file index (`## Key files`), the thin-client routing seam, and the testing
+discipline used to live inline here. They moved to the docs above so this file
+stays small enough to load every session. Nothing was lost — the pre-move content
+is in git, and the docs carry every load-bearing invariant (compressed to
+current-state).
+
+## Maintaining CLAUDE.md and the reference docs
+
+CLAUDE.md grew to ~592KB / ~147k tokens once the per-file index became append-only
+(one `**vX.Y.Z:**` clause per release per file). That is the exact anti-pattern
+gbrain exists to fix. The rules that keep it from recurring:
+
+- **CLAUDE.md is orientation, not the implementation spec.** It carries the North
+  Star, the two axes, architecture + cross-cutting invariants, the resolver, and
+  the inline IRON RULES. Per-file/per-command/per-test detail lives in the
+  reference docs and loads on demand.
+- **Reference docs (`KEY_FILES.md`, `thin-client.md`, `TESTING.md`) describe
+  CURRENT behavior only.** Release history goes in `CHANGELOG.md` + git. Do NOT
+  append `**vX.Y.Z (#NNN):**` clauses, codex/review tags, or "pre-fix/then/was-now"
+  narration. When a file's behavior changes, UPDATE its entry to the new truth.
+- **CI is the enforcement, not this prose.** `scripts/check-key-files-current-state.sh`
+  (in `bun run verify`) fails on the bolded-release-clause marker in the reference
+  docs AND on a CLAUDE.md size cap. A written rule caused this disease; a guard
+  cures it.
+- **After any CLAUDE.md or reference-doc edit, run `bun run build:llms`** — the
+  llms bundle inlines/links these (config in `scripts/llms-config.ts`); the
+  freshness + budget test (`bun test test/build-llms.test.ts`) fails CI otherwise.
+
+## Search Mode (v0.32.3)
+
+GBrain ships three named search modes that bundle the search-lite knobs from
+PR #897 into a single config key. Pick one at install time; the rest of the
+project resolves through `src/core/search/mode.ts`.
+
+| Knob                          | `conservative` | `balanced` | `tokenmax`     |
+|-------------------------------|----------------|------------|----------------|
+| `cache.enabled`               | true           | true       | true           |
+| `cache.similarity_threshold`  | 0.92           | 0.92       | 0.92           |
+| `cache.ttl_seconds`           | 3600           | 3600       | 3600           |
+| `intentWeighting`             | true           | true       | true           |
+| `tokenBudget`                 | **4000**       | **12000**  | **off**        |
+| `expansion` (LLM multi-query) | false          | false      | **true**       |
+| `relationalRetrieval`         | false          | **true**   | **true**       |
+| `searchLimit` default         | 10             | 25         | 50             |
+
+**Cost anchors (downstream agent input cost — gbrain itself is rounding error).**
+The corner-to-corner spread is 25x once you pair mode with downstream model.
+Chunks ~400 tokens avg. Per-query cost @ 10K queries/month (typical
+single-user volume), full search payload, no cache savings:
+
+| Mode \ Downstream | Haiku 4.5 (\$1/M) | Sonnet 4.6 (\$3/M) | Opus 4.7 (\$5/M) |
+|---|---|---|---|
+| conservative (~4K) | **\$40/mo** | \$120/mo | \$200/mo |
+| balanced (~10K) | \$100/mo | \$300/mo | \$500/mo |
+| tokenmax (~20K) | \$200/mo | \$600/mo | **\$1,000/mo** |
+
+Scales linearly: multiply by 10 for 100K/mo (heavy power user / multi-user
+fleet); divide by 10 for 1K/mo (light usage). Natural pairings span ~4x.
+Mismatches (tokenmax+Haiku, conservative+Opus) waste capacity differently
+— too-big payload overwhelms a cheap model; too-small payload starves an
+expensive one.
+
+tokenmax adds ~\$1.50 per 1K queries in Haiku expansion calls on top of
+the matrix (\$15/mo @ 10K). Cache hits cut all numbers ~50%. **The matrix
+has three verbatim homes: this section, the `gbrain init` picker copy
+(`src/commands/init-mode-picker.ts`), and `INSTALL_FOR_AGENTS.md` Step
+3.5** — update all three when refreshing.
+
+**Per-query math vs real-world spend.** The matrix above is what an
+isolated benchmark would measure. Real agent loops with disciplined
+Anthropic prompt caching see 50-80% discount on top (cache hits skip
+downstream entirely). The realistic-scale anchor in
+`docs/eval/SEARCH_MODE_METHODOLOGY.md` walks the natural pairings at
+single-power-user volume (~860 turns/mo): tokenmax+Opus ~\$700/mo,
+balanced+Sonnet ~\$430/mo, conservative+Haiku ~\$170/mo. Setups WITHOUT
+cache-aware prompt layout (frequent prefix churn) see the per-query
+matrix dominate — mode + model choice matters more there.
+
+**Resolution chain** (matches the v0.31.12 model-tier pattern at
+`src/core/model-config.ts:resolveModel`):
+
+    per-call SearchOpts → per-key config (search.cache.enabled, …) →
+      MODE_BUNDLES[search.mode] → MODE_BUNDLES.balanced (fallback)
+
+Mode resolution lives in **bare `hybridSearch`** (NOT just the cached wrapper)
+per `[CDX-5+6]` in `~/.claude/plans/lets-take-a-look-validated-parrot.md` — so
+`gbrain eval replay` and `gbrain eval longmemeval` test the same mode-affected
+behavior as the production `query` op.
+
+**Cache-key contamination hotfix `[CDX-4]`:** migration v56 added a
+`knobs_hash` column to `query_cache`. The lookup filter is now
+`WHERE source_id = $ AND knobs_hash = $ AND embedding similarity < $` so a
+tokenmax write (expansion=on, limit=50) can't be served to a conservative
+read.
+
+**v0.36.3.0 knobs_hash v=2 → v=3.** The hash now folds the active
+embedding column name + provider into the cache key, so a query routed
+through `embedding_voyage` (1024d Voyage) can't be served a cache row
+written against `embedding` (1536d OpenAI). Existing v=2 rows become
+unreachable on first re-query (one-time miss spike on upgrade);
+`mode.ts:KNOBS_HASH_VERSION` is the single source of truth.
+
+**v0.42.34.0 knobs_hash v=9 → v=10.** Folds the `relationalRetrieval` knob +
+depth into the cache key so a relational-on result set can't be served to a
+relational-off lookup (same contamination class as graph_signals). One-time
+miss spike on upgrade.
+
+**Relational retrieval (v0.42.34.0).** `relationalRetrieval` (on for
+balanced/tokenmax) adds a fourth recall arm: a relational query ("who invested
+in X", "what connects A and B") resolves its seed entity and walks the typed-edge
+graph (`src/core/search/relational-recall.ts` + `relational-intent.ts`,
+`engine.relationalFanout`), injecting edge-derived answers into RRF. Within-source,
+deterministic, mentions-excluded by default, pure no-op for non-relational queries.
+The `query` op's `relational` flag forces it on/off per call.
+
+**Three CLI surfaces:**
+
+    gbrain search modes              # what is running, with per-knob attribution
+    gbrain search modes --reset      # clear search.* overrides (mode bundle wins)
+    gbrain search stats [--days N]   # cache hit rate, intent mix, budget drops
+    gbrain search tune [--apply]     # data-driven recommendations
+
+The install picker fires inside `gbrain init` AFTER `engine.initSchema()`
+(non-TTY auto-selects). The upgrade banner fires once via `runPostUpgrade`
+in `src/commands/upgrade.ts`, gated by `search.mode_upgrade_notice_shown`.
+
+## Eval discipline (v0.32.3)
+
+Every metric printed by any `gbrain eval *` or `gbrain search stats` command
+resolves through `src/core/eval/metric-glossary.ts` so industry terms
+(`P@k`, `nDCG@k`, `MRR`, `Jaccard@k`) carry a plain-English line in human
+output and a `_meta.metric_glossary` block in JSON output (one block per
+response per `[CDX-25]`, NOT sibling `_gloss` fields).
+
+The full methodology — datasets, sample selection, pre-registered
+expectations, threats to validity, paired-bootstrap + Bonferroni p-value
+discipline `[CDX-14]` — lives in `docs/eval/SEARCH_MODE_METHODOLOGY.md`.
+Auto-regenerated `docs/eval/METRIC_GLOSSARY.md` is CI-guarded against
+drift (`scripts/check-eval-glossary-fresh.sh`).
+
+Per-run records land at `<repo>/.gbrain-evals/eval-results.jsonl` per
+`[CDX-23]`. The user's personal `~/.gbrain` brain is NEVER touched —
+audit trail lives in the source repo's git history.
+
+## Skills
+
+Read the skill files in `skills/` before doing brain operations. GBrain ships 50+ skills
+(the current list lives in `skills/manifest.json`) organized by `skills/RESOLVER.md`
+(`AGENTS.md` is also accepted as of v0.19):
+
+**Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,
+briefing, migrate, setup, publish.
+
+**Brain skills (ported from an upstream agent fork):** signal-detector, brain-ops, idea-ingest, media-ingest,
+meeting-ingestion, citation-fixer, repo-architecture, skill-creator, daily-task-manager.
+
+**Operational + identity:** daily-task-prep, cross-modal-review, cron-scheduler, reports,
+testing, soul-audit, webhook-transforms, data-research, minion-orchestrator. As of
+v0.20.4, `minion-orchestrator` is the single unified skill for both lanes of background
+work (shell jobs via `gbrain jobs submit shell`, LLM subagents via `gbrain agent run`) ...
+the prior `gbrain-jobs` skill was merged in, Preconditions are shared, and trigger
+routing is narrowed to what the skill actually covers.
+
+**Skillify loop (v0.19):** skillify (the markdown orchestration), skillpack-check
+(agent-readable health report).
+
+**Brain-resident skillpacks + advisor (v0.42.47.0, #2180):** A brain repo can carry its
+own publishable skillpack (`brain_resident: true` in `skillpack.json` + `schema_pack`);
+`gbrain skillpack init-brain-pack` scaffolds one with a 5-section machine-parseable README.
+Connecting harnesses discover it on `gbrain sources add` (Topology A advisory, bounded nag
+via `nag-state.ts`) and over MCP via the source-scoped `list_brain_skillpack` op +
+`get_skill --source_id` (gated by `mcp.publish_skills`). The bundled `gbrain-advisor` skill
++ `gbrain advisor` op compute a ranked, read-only list of high-leverage actions from brain
+state (8 collectors in `src/core/advisor/`); `--json`+exit codes for CI/cron, local-only
+`--apply <id>` behind confirm, exposed over MCP behind `mcp.publish_advisor` (default off,
+read-only on remote). Thin-client binary install stays deferred to PR2 `build_skillpack`.
+
+**Routing-table compression (v0.32.3.0):** `skills/functional-area-resolver/` —
+two-layer dispatch pattern for shrinking large AGENTS.md / RESOLVER.md files
+(>=12KB) without losing routing accuracy. Replaces one row per skill with one
+entry per functional area, where each area declares its sub-skills in a
+`(dispatcher for: ...)` clause. The static-prompt analog of hierarchical agent
+routing (AnyTool [arXiv:2402.04253](https://arxiv.org/abs/2402.04253), RAG-MCP
+[arXiv:2505.03275](https://arxiv.org/html/2505.03275v1), Anthropic Agent Skills
+progressive disclosure). Empirically validated across Opus 4.7 / Sonnet 4.6 /
+Haiku 4.5: +13 to +17pp over the verbose baseline at 48% the size (25KB → 13KB
+on a real fork). The `(dispatcher for: ...)` clause is the load-bearing signal
+— strip it and lenient accuracy collapses to 41.7% on Sonnet (the
+`resolver-of-resolvers` ablation case). A/B eval surface lives at
+`evals/functional-area-resolver/` (outside `skills/` deliberately so the
+skillpack bundler doesn't ship eval infrastructure to downstream installs):
+gateway-routed TypeScript harness, 20 training + 5 held-out fixtures, strict +
+lenient scoring, three committed cross-model receipts in `baseline-runs/`.
+Receipt header binds (model, prompt_template_hash, fixtures_hash, harness_sha,
+ts) so future contributors can verify reproduction. Companion `rescore.mjs`
+re-scores existing JSONL with lenient tolerance for zero API cost. Reproduce
+with `cd evals/functional-area-resolver && node harness.mjs --model
+{opus|sonnet|haiku}` (~$0.30–1.70 per model). Nine v0.33.x follow-up TODOs
+filed for held-out corpus growth, cross-vendor verification, hierarchical
+area-of-areas, embedding-based pre-router, and the run-1 vs run-2
+prompt-design ablation methodology.
+
+**Operational health (v0.19.1):** smoke-test (8 post-restart health checks with auto-fix
+for Bun, CLI, DB, worker, Zod CJS, gateway, API key, brain repo; user-extensible via
+`~/.gbrain/smoke-tests.d/*.sh`).
+
+**Conventions:** `skills/conventions/` has cross-cutting rules (quality, brain-first,
+model-routing, test-before-bulk, cross-modal). `skills/_brain-filing-rules.md` and
+`skills/_output-rules.md` are shared references.
+
+## Bulk-action progress reporting
+
+All bulk commands (doctor, embed, import, export, sync, extract, migrate,
+repair-jsonb, orphans, check-backlinks, lint, integrity auto, eval, files
+sync, and apply-migrations) stream progress through the shared reporter
+at `src/core/progress.ts`. Agents get heartbeats within 1 second of every
+iteration regardless of how slow the underlying work is.
+
+Rules:
+- Progress always writes to **stderr**. Stdout stays clean for data output
+  (`--json` payloads, final summaries, JSON action events from `extract`).
+- Non-TTY default: plain one-line-per-event human text. JSON requires the
+  explicit `--progress-json` flag.
+- Global flags (`--quiet`, `--progress-json`, `--progress-interval=<ms>`)
+  are parsed by `src/core/cli-options.ts` BEFORE command dispatch.
+- Phase names are machine-stable `snake_case.dot.path` (e.g.
+  `doctor.db_checks`, `sync.imports`). Documented in
+  `docs/progress-events.md`; additive changes only.
+- `scripts/check-progress-to-stdout.sh` is a CI guard that fails the build
+  if any new code writes `\r` progress to stdout. Wired into `bun run test`.
+- Minion handlers pass `job.updateProgress` as the `onProgress` callback
+  to core functions (DB-backed primary progress channel); stderr from
+  `jobs work` stays coarse for daemon liveness only.
+
+When wiring a new bulk command: `import { createProgress } from '../core/progress.ts'`
+and `import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts'`.
+Create a reporter with `createProgress(cliOptsToProgressOptions(getCliOptions()))`,
+`start(phase, total?)` before the loop, `tick()` inside it, `finish()` after.
+For single long-running queries, use `startHeartbeat(reporter, note)` with a
+try/finally to guarantee cleanup. Never call `process.stdout.write('\r...')`
+in bulk paths, the CI guard will fail the build.
+
+## Capturing test output (NEVER pipe through `tail` / `head`)
+
+**Iron rule:** when running `bun test`, `bun run test:e2e`, `bun run typecheck`,
+or any other test/check command, redirect to a file FIRST, then `tail` the file
+separately:
+
+```bash
+# RIGHT — full output preserved, real exit code visible
+bun test > /tmp/ship_units.txt 2>&1
+echo "EXIT=$?"
+tail -50 /tmp/ship_units.txt
+grep -E '(fail\)|✗|error:' /tmp/ship_units.txt | head -30
+```
+
+```bash
+# WRONG — exit code is `tail`'s (always 0), failures truncated, ship gates fail open
+bun test 2>&1 | tail -10
+```
+
+The pipe form silently breaks /ship Step T1 (test failure ownership triage) and
+the test verification gate (Step 16) because:
+- `$?` after a pipe is the LAST command's exit code (`tail` → 0), not bun's
+- bun prints failure details before the summary line, so `tail -N` drops them
+- Step T1 needs the full failure list to classify in-branch vs pre-existing
+
+This bit us during v0.26.2 ship: `bun test 2>&1 | tail -10` reported "3911 pass / 23 fail"
+but no failure details survived, forcing a 23-minute re-run to triage.
+
+Apply the same pattern to any long-running command whose exit code matters:
+`bun run typecheck`, `bun run ci:local`, migration runs, eval suites, etc.
+For background tasks (`run_in_background: true`), the harness captures the exit
+file separately — use it via the bg task's `<id>.exit` file, not the streamed
+output.
 
 ## Sync resumability + lock tuning (v0.42.x, #1794)
 
@@ -102,7 +423,7 @@ Progress banks into the append-only `op_checkpoint_paths` table (one row per dra
 path, written via the direct session pool so it survives `EMAXCONNSESSION`); a killed
 run resumes from the checkpoint and `last_commit` only advances on true completion. The
 per-source lock heartbeats through the direct pool and refuses to steal a live,
-recently-refreshed holder. Five env knobs tune it (all env-only, incident-time escape
+recently-refreshed holder. Six env knobs tune it (all env-only, incident-time escape
 hatches — no config-dashboard surface by design):
 
 | Env var | Default | What it does |
@@ -112,6 +433,58 @@ hatches — no config-dashboard surface by design):
 | `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
 | `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
 | `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
+| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |
+
+## Pace Mode (DB-contention-aware backfill pacing)
+
+A naive `gbrain embed --stale` / large `sync` can saturate a PgBouncer
+transaction-mode pooler and starve the minion supervisor's lock renewals
+(`lock-renewal-failed` → dead jobs). Pacing is the native, composable fix — it
+replaces external SIGSTOP/SIGCONT wrapper scripts. **Opt-in: default mode `off`.**
+
+The composable primitive is `src/core/db-pacer.ts` (`createDbPacer`):
+- **Concurrency cap is the real lever** (caps simultaneous in-flight DB writes =
+  pooler slots held). Embed paths set their worker count to `maxConcurrency`
+  (single pool, no permit); `sync` uses the shared `acquire()` **permit** because
+  each parallel worker owns a separate engine (one budget must span pools).
+- **In-band signal** (`observe(ms)` EWMA from the work's own queries — never
+  blind the way an out-of-band probe pool was). **No probe loop, no
+  `probeLatency` engine method.**
+- **Cooperative `pace()` sleep** on `setTimeout` (keeps the lock heartbeat
+  firing), jittered to avoid a thundering-herd resume. `acquire()`/`pace()` throw
+  `AbortError` on cancel; everything else is fail-open (a pacer bug never kills a
+  backfill, never throws an unhandledRejection).
+
+Named bundles resolve through `src/core/pace-mode.ts` (`resolvePaceMode`), mirror
+of the search-mode pattern but with **env ABOVE config** (incident escape hatch):
+
+    per-call flag → GBRAIN_PACE_* env → config (pace.*) → PACE_BUNDLES[mode] → off
+
+| Knob | off | gentle | balanced | aggressive |
+|---|---|---|---|---|
+| `maxConcurrency` | (off) | 4 | 8 | 16 |
+| `paceAtMs` (EWMA → sleep) | — | 250 | 500 | 1000 |
+| `maxSleepMs` (jittered cap) | — | 2000 | 1500 | 1000 |
+
+**Surfaces.** `gbrain embed --stale --pace[=mode]` (bare `--pace` = balanced),
+`--pace-max-concurrency=N`. `--background` carries explicit pace OVERRIDES (not
+the resolved bundle) into the `embed` job payload; the handler re-resolves
+env>config>bundle at execution so `GBRAIN_PACE_*` still wins (CX5). Config-level
+`pace.mode` paces EVERY `runEmbedCore` caller (cycle embed, embed-catch-up,
+sync-auto-embed) and the prod `embed-backfill` job automatically. `sync` reads
+env/config. PGLite / mode `off` → no-op pacer.
+
+**Correctness fixes pacing bundles** (longer paced runs widen these): CLI
+`embed --stale` single-flights via the SAME per-source lock key as the
+`embed-backfill` handler (`src/core/embed-backfill-lock.ts`; all-source runs lock
+every source in sorted order) so a hand-run backfill and a queued job can't race
+the NULL→non-NULL upsert (`TODOS:2299`); a **bounded** end-of-run keyset re-entry
+(max 3 + forward-progress, paced runs only) catches rows inserted behind the
+cursor (`TODOS:2301`); and the embed wall-clock budget timer is re-armed around
+`pace()` sleeps so paced time doesn't burn the work budget.
+
+`EmbedResult.pacing` carries the end-of-run telemetry (cap, samples, EWMA, slept
+ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Build
 
@@ -128,6 +501,32 @@ hatches — no config-dashboard surface by design):
 | `bun run test:serial` | `*.serial.test.ts` at `--max-concurrency=1`. | Debugging quarantined files. |
 | `bun run test:e2e` | Real Postgres. Requires Docker + `DATABASE_URL`. | Pre-ship / nightly. |
 | `bun run check:all` | All 7 historical pre-checks (superset of `verify`). | Local sweep. |
+Every release advances the version in **six files at once**. Keep these in
+sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
+package.json drift), but the canonical list lives here so future runs and
+the auto-update agent know where to look.
+
+**Version format is mandatory: `MAJOR.MINOR.PATCH.MICRO` (four numeric
+segments, dot-separated, no leading `v`).** Every new release MUST use the
+4-segment form. The `.MICRO` slot is the dot-suffix follow-up channel: when
+a release ships its commit subject ahead of its VERSION bump (e.g. PR #795
+landing as `v0.31.4` without bumping the file), the corrective ship lands
+as `0.31.4.1` rather than churning the patch number to `0.31.5`. Suffixes
+like `-fixwave` are still allowed as needed (`0.31.1.1-fixwave`), but the
+four numeric segments are required first. Historical 3-segment versions
+(`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
+(`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
+
+**Required (every release must update all six):**
+
+| File | What lives there | Format |
+|---|---|---|
+| `VERSION` | The single source of truth. Read first by `/ship`, the binary, and CI version-gate. | Bare 4-segment string `MAJOR.MINOR.PATCH.MICRO` (e.g. `0.31.4.1`), no leading `v`. |
+| `package.json` | Bun/npm package version. `gbrain --version` reads it via the compiled binary's bundled package metadata. CI version-gate cross-checks this against `VERSION` and fails if they drift. | `"version": "0.31.4.1"` |
+| `CHANGELOG.md` | Top entry header `## [0.31.4.1] - YYYY-MM-DD` plus the "To take advantage of v0.31.4.1" block. | Standard Keep-a-Changelog header. |
+| `TODOS.md` | Any TODO entries that mention "follow-up from vX.Y.Z.W" use the version of the release that filed them. Update only when filing NEW follow-up TODOs. | Inline `vX.Y.Z.W` references in TODO bodies. |
+| `CLAUDE.md` | The Key Files section's per-file annotations carry `vX.Y.Z.W (#NNN)` tags noting which release introduced a behavior. Update whenever a wave's annotations get folded in. | Inline `vX.Y.Z.W (#NNN, contributed by @user)` references. |
+| `openclaw.plugin.json` | OpenClaw plugin manifest (v0.45.6.0, #4033). Hand-maintained; `test/openclaw-plugin-manifest.test.ts` fails the suite if it drifts from `package.json`. Merges from master auto-resolve it to master's version — re-bump it with the trio. | `"version": "0.45.7.0"` |
 
 File taxonomy: `*.test.ts` (parallel), `*.slow.test.ts` (cold-path), `*.serial.test.ts` (cross-file-state quarantine), `test/e2e/*.test.ts` (real Postgres). See `docs/reference/testing.md` for isolation lint (R1–R4), canonical PGLite block, `withEnv` pattern, and the full inventory.
 
