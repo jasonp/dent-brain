@@ -26,6 +26,12 @@ eval/
 
 # Dev scripts not needed in prod
 scripts/
+# ...except the one bun runs during `bun install`. package.json declares
+# "postinstall": "bun run scripts/postinstall.ts" (added by the v0.50.0.0
+# upstream sync), so excluding it makes the Docker build fail with
+# `Module not found "scripts/postinstall.ts"` before the server ever starts.
+# Negation must stay AFTER the `scripts/` rule — later patterns win.
+!scripts/postinstall.ts
 docker-compose.test.yml
 .gitleaks.toml
 
