@@ -209,41 +209,37 @@ WHERE model='<old-model>'` followed by `embed --stale --catch-up`.
 assert either a non-zero exit or that a follow-up `--stale` fully converges
 `content_chunks.model` to the configured model.
 
-**Re-measured 2026-08-11 (v0.49.4.0) — the damage is repaired, the trap is not.**
-Production now reads:
+**RESOLVED 2026-08-13.** The trap is closed; the fourth fix direction above is done.
 
-| `pages.embedding_signature` | Pages | Live |
-|---|---|---|
-| `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
-| `<NULL>` (never stamped) | 46 | 46 |
-| `zeroentropyai:zembed-1:1280` | 1 | 1 |
+Two separate things had to be true, and both now are:
 
-All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **nothing is
-stranded in the old space today** — the manual remediation above worked. But 27 of
-those NULL-signature pages still carry **524 chunks**, and the grandfather rule means
-`--stale` cannot see them. The next model swap strands all 524 the same silent way.
+1. **The capability landed.** The v0.50.0.0 upstream sync brought `includeNullSignature`
+   (#3391), which widens the sweep to `(signature IS NULL OR <> current)`. Our
+   `hasStaleSignaturePages` gate was widened to match — threading the flag into the sweep
+   alone would have made the gate answer "nothing stale" while work existed.
 
-This is now the strongest argument for the fourth fix direction above (let a
-`content_chunks.model` mismatch override the NULL-signature grandfather). Upstream's
-`includeNullSignature` option on `invalidateStaleSignatureEmbeddings` (#3390, fixes
-#3391) is the same idea and is one of the reasons to do the sync — see the upstream-sync
-item at the top of this file. **Do it before the next embedding-model change, not after.**
+2. **The existing damage was repaired.** Capability alone fixes nothing for pages already
+   stranded. Measured before: **27 live pages carrying 524 chunks** with a NULL signature,
+   structurally invisible to `embed --stale`. Every one of those chunks already held a
+   correct `openai:text-embedding-3-large` vector, so the defect was page-level bookkeeping,
+   not data — re-embedding would have paid the API to regenerate identical vectors.
+   Backfilled the signature instead, with a deliberately conservative predicate: stamp only
+   pages where EVERY chunk is on the current model AND already embedded. `UPDATE 27`, exactly
+   the audited set.
 
-### Embed path needs a higher `statement_timeout` for large pages
+**After:** `stranded_pages = 0, stranded_chunks = 0`. 28,755 chunks, 28,755 embedded, 1
+distinct model, none modified.
 
-**Priority:** P2
-**Filed:** 2026-07-31, same cutover.
+Two benign leftovers, deliberately not touched:
+- **19 pages with NULL signature and zero chunks.** Nothing to re-embed, so the signature is
+  meaningless for them; stamping would assert something about content that does not exist.
+- **1 page on `zeroentropyai:zembed-1:1280`.** Non-NULL and differing, so `embed --stale`
+  picks it up by design. That is the mechanism working.
 
-**Evidence:** all 139 failures above were `canceling statement due to
-statement timeout`, clustered on large PDF-derived pages
-(`archives/dropbox/**` LinkedIn-profile and conference-guide PDFs). Small
-pages were unaffected. Throughput on that region dropped from ~140 to
-~20 pages/min.
-
-This is the trigger for the P1 above and will recur on every future bulk
-re-embed or model swap. Options: raise `statement_timeout` for the embed
-connection specifically, or reduce per-statement work (smaller chunk write
-batches) so large pages fit inside the existing budget.
+**The generalizable lesson:** "the corpus is fully migrated" was TRUE by the chunk-model check
+(`select distinct model from content_chunks` → 1 row) and simultaneously FALSE by the sweep's
+own predicate. When a migration's completeness check and its repair tool key on different
+columns, one can report done while the other cannot see the work. Check both.
 
 ## Google Workspace knowledge-graph router (filed 2026-06-26 — MVP shipped v0.47.0.0)
 
