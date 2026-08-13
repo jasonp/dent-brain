@@ -73,6 +73,56 @@ that can be talked around by prose is worth less than one that cannot.
 Copy **v127** as the pattern for any future CONCURRENTLY migration: read `pg_index` from
 TypeScript via `engine.executeRaw`, then issue bare DDL outside any `DO` block.
 
+## Post-upgrade DB cleanup — mostly RETIRED, one item deferred (filed 2026-08-13)
+
+**Priority:** P4
+**Context:** filed off the 2026-08-11 audit as "~275 MB reclaimable". Re-examined after the
+Pro upgrade; most of it turned out not to be reclaimable, and the rest is not worth the risk.
+
+### Dropping "unused" indexes — RETIRED, the finding was wrong
+
+The audit flagged 5 indexes at `idx_scan = 0` over a 15-day window (~74 MB) as dead weight.
+Re-checked against the merged v0.50.0.0 tree: **all five back real code paths.**
+
+| Index | Backing query |
+|---|---|
+| `idx_pages_search` (65 MB) | `postgres-engine.ts` — `p.search_vector @@ websearch_to_tsquery(...)` |
+| `idx_pages_trgm` | `title % $partial` — the `%` operator REQUIRES `gin_trgm_ops` |
+| `pages_source_path_idx` | `resolveSlugsByPaths` — `source_path = ANY($1::text[])` |
+| `idx_mcp_log_agent_time` | admin dashboard, `WHERE token_name = X AND created_at > ...` |
+| `idx_mcp_log_time_agent` | same table; weaker column order, but same consumer |
+
+**`idx_scan = 0` means "not exercised in the observed window", NOT "not needed."** These are
+cold paths (page-level FTS, fuzzy title resolution, sync-time path lookup, the admin
+dashboard), not dead ones. Dropping them buys 74 MB of an 8 GB budget by making real queries
+sequential-scan the first time they run. Do not re-file this without checking the code.
+
+### HNSW reindex — DEFERRED, and attempting it cost us
+
+`idx_chunks_embedding` is 441 MB against ~140 MB of raw vectors (~3x, bloat from the
+v0.49.1.1 in-place re-embed). `REINDEX INDEX CONCURRENTLY` was attempted 2026-08-13 and
+FAILED:
+
+```
+NOTICE: hnsw graph no longer fits into maintenance_work_mem after 5732 tuples
+ERROR:  canceling statement due to statement timeout
+```
+
+`maintenance_work_mem` is **32 MB**; the graph needs ~200 MB+. It spilled to a disk-based
+build at 5,732 of 28,755 tuples, then `statement_timeout` (120 s) killed it. The failed
+CONCURRENTLY build left an INVALID `idx_chunks_embedding_ccnew` holding **169 MB** — the DB
+went 1,278 → 1,447 MB. Dropped it; back to 1,278 MB, 0 invalid indexes.
+
+**Do not retry on Micro.** Raising `maintenance_work_mem` to ~256 MB on a ~1 GB instance that
+already has 224 MB in `shared_buffers` risks OOM-ing the database serving production, to
+reclaim ~240 MB of an 8 GB budget. The reason to do this was Free's 500 MB ceiling; that
+reason is gone.
+
+**If it is ever worth doing:** temporarily size compute up (Small, 2 GB), then in ONE session
+`SET maintenance_work_mem = '512MB'; SET statement_timeout = 0;` before the REINDEX, and check
+for a `_ccnew` remnant afterward either way. Note the payoff is storage only — the HNSW served
+~35 vector searches in 13 days, so the query-performance argument is negligible.
+
 ## Upstream sync — DONE in v0.50.0.0 (filed 2026-08-11, completed 2026-08-12)
 
 Merged `garrytan/gbrain` v0.42.40.0 → **v0.45.7.0**, 574 commits, 1,690 files, 27 conflicts.
