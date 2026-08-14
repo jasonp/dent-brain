@@ -501,10 +501,14 @@ ms, max waiters) for `--json`; a one-line summary prints to stderr.
 | `bun run test:serial` | `*.serial.test.ts` at `--max-concurrency=1`. | Debugging quarantined files. |
 | `bun run test:e2e` | Real Postgres. Requires Docker + `DATABASE_URL`. | Pre-ship / nightly. |
 | `bun run check:all` | All 7 historical pre-checks (superset of `verify`). | Local sweep. |
-Every release advances the version in **six files at once**. Keep these in
+Every release advances the version in **seven files at once**. Keep these in
 sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
+
+`gstack-version-bump write` only touches `VERSION` and `package.json`; the other
+five are manual. Run `bun run verify` after any bump — `check:bootstrap-tag` and
+`check:bootstrap-templates` fail on stamped surfaces that lag the version.
 
 **Version format is mandatory: `MAJOR.MINOR.PATCH.MICRO` (four numeric
 segments, dot-separated, no leading `v`).** Every new release MUST use the
@@ -517,7 +521,7 @@ four numeric segments are required first. Historical 3-segment versions
 (`0.31.3`, `0.22.1`) remain valid in `git log` and migration filenames
 (`skills/migrations/v0.21.0.md`); do NOT rewrite them. Going forward only.
 
-**Required (every release must update all six):**
+**Required (every release must update all seven):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -527,6 +531,7 @@ four numeric segments are required first. Historical 3-segment versions
 | `TODOS.md` | Any TODO entries that mention "follow-up from vX.Y.Z.W" use the version of the release that filed them. Update only when filing NEW follow-up TODOs. | Inline `vX.Y.Z.W` references in TODO bodies. |
 | `CLAUDE.md` | The Key Files section's per-file annotations carry `vX.Y.Z.W (#NNN)` tags noting which release introduced a behavior. Update whenever a wave's annotations get folded in. | Inline `vX.Y.Z.W (#NNN, contributed by @user)` references. |
 | `openclaw.plugin.json` | OpenClaw plugin manifest (v0.45.6.0, #4033). Hand-maintained; `test/openclaw-plugin-manifest.test.ts` fails the suite if it drifts from `package.json`. Merges from master auto-resolve it to master's version — re-bump it with the trio. | `"version": "0.45.7.0"` |
+| `BOOTSTRAP_FOR_AGENTS.md` | Line 1 runbook stamp. `gbrain doctor` compares it against the installed version to tell an agent its bootstrap runbook is stale; `scripts/check-bootstrap-tag.sh` guards it. | `<!-- gbrain-runbook-stamp: 0.50.0.2 -->` |
 
 File taxonomy: `*.test.ts` (parallel), `*.slow.test.ts` (cold-path), `*.serial.test.ts` (cross-file-state quarantine), `test/e2e/*.test.ts` (real Postgres). See `docs/reference/testing.md` for isolation lint (R1–R4), canonical PGLite block, `withEnv` pattern, and the full inventory.
 
@@ -577,7 +582,15 @@ is ~40 minutes per ship to re-derive an answer CI already has, and it made batch
 bigger PRs look necessary when it isn't. `docs/reference/testing.md` has said it all along:
 *"CI is the ground truth for 'did everything pass.'"*
 
-Two caveats worth knowing:
+Three caveats worth knowing:
+
+- **CI does not build the Dockerfile.** No job in `.github/workflows/test.yml` runs `docker build`,
+  so a change that breaks the production image passes every check and fails at deploy. This is not
+  hypothetical: v0.50.0.0 added a `postinstall` hook that the fork's Dockerfile could not resolve,
+  and a fully green board shipped an image that would not build. Treat green CI as evidence about
+  the code, not about the container. After touching `Dockerfile`, `.dockerignore`, `package.json`
+  lifecycle hooks, or `scripts/`, build it yourself (`docker info` first — the OrbStack daemon is
+  usually off). Tracked as a P2 in TODOS.md.
 
 - **Local and CI shard differently** — CI buckets by FNV-1a hash across 10 shards, local uses
   round-robin across 4. Cross-file contamination can therefore appear in one and not the other
@@ -606,7 +619,7 @@ After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran 
 
 ## Version locations
 
-Version format is MAJOR.MINOR.PATCH.MICRO (e.g. `0.43.0.1`). The version moves in five files together: `VERSION`, `package.json`, `CHANGELOG.md`, `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived (must be regenerated before /ship pushes the version commit): `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`), and the Cowork plugin marketplace bundle — `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and the rendered skill copies under `plugin/marketplace/.claude/skills/` (all via `bun run build:plugin`). **If you skip `build:plugin`, Claude Desktop's plugin UI shows the previous version forever** — the MCP server reports the new version via the initialize handshake, but the plugin metadata stays stale. Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
+Version format is MAJOR.MINOR.PATCH.MICRO (e.g. `0.43.0.1`). The version moves in seven files together: `VERSION`, `package.json`, `CHANGELOG.md`, `openclaw.plugin.json`, `BOOTSTRAP_FOR_AGENTS.md` (line-1 runbook stamp), `TODOS.md` (when filing new follow-ups), `CLAUDE.md` (when folding annotations). Auto-derived (must be regenerated before /ship pushes the version commit): `bun.lock` (via `bun install`), `llms-full.txt` / `llms.txt` (via `bun run build:llms`), `templates/bootstrap/template-repo/` (via `bun run scripts/generate-template-repo.ts --out templates/bootstrap/template-repo`), and the Cowork plugin marketplace bundle — `.claude-plugin/marketplace.json`, `plugin/marketplace/.claude-plugin/plugin.json`, `plugin/marketplace/manifest.lock.json`, `plugin/marketplace/README.md`, `plugin/marketplace/install-local.sh`, and the rendered skill copies under `plugin/marketplace/.claude/skills/` (all via `bun run build:plugin`). **If you skip `build:plugin`, Claude Desktop's plugin UI shows the previous version forever** — the MCP server reports the new version via the initialize handshake, but the plugin metadata stays stale. Do NOT bump historical files (`skills/migrations/v*.md`, migration test files, code comments). See `docs/reference/release-ops.md` for full table and the /ship + CI version-gate semantics.
 
 ## CHANGELOG voice
 
