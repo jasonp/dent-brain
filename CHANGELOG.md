@@ -2,6 +2,64 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.50.0.2] - 2026-08-13
+
+## **Forty CI checks, and not one of them builds the image we deploy.**
+
+Two releases landed on top of v0.50.0.0 without ever advancing the version file. This entry closes that gap and records why the first of them was needed.
+
+The v0.50.0.0 upstream sync added a `postinstall` hook to package.json. bun runs that during `bun install`, and this fork's Dockerfile copies only package.json and bun.lock into its deps layer, so the script it was told to run did not exist. The image failed at `[deps 4/4]` with `Module not found "scripts/postinstall.ts"`. Every unit test, every serial test, the E2E suite and all 40 verify checks passed on that commit. The build broke at deploy, which is where we found it.
+
+The fix is two files and 22 lines: the Dockerfile copies the script, and `.dockerignore` un-excludes it. That second edit is the one worth remembering, because `scripts/` was ignored wholesale and the COPY alone would have found nothing.
+
+### The numbers that matter
+
+Counted against `.github/workflows/test.yml` on the commit that failed.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| CI checks that build the Dockerfile | 0 | 0 | still zero, now filed as P2 |
+| Files needed to fix the build | — | 2 | Dockerfile, .dockerignore |
+| Releases live with a stale VERSION | 2 | 0 | closed here |
+| Version files in sync | 4 of 6 | 6 of 6 | openclaw.plugin.json, VERSION, package.json |
+
+Zero is the number to sit with. A green board on a commit whose container will not start is not a passing build, it is an untested surface. The failure mode here was benign because a failed build leaves the previous container serving, but the same blind spot covers changes that compile fine and crash on boot.
+
+### What this means for you
+
+Nothing to install and no behavior change. Production has been serving this code since it merged; only the version metadata moved. If you maintain a fork with its own Dockerfile, assume every upstream sync can break it in a way CI will not tell you about, and gate a `docker build --target deps` job on changes to Dockerfile, package.json, .dockerignore, or scripts/.
+
+## To take advantage of v0.50.0.2
+
+No migration and no schema change. Confirm your install matches:
+
+```bash
+gbrain --version                    # expect 0.50.0.2
+bun run check:prod-version          # server version vs ./VERSION
+```
+
+If you build the container yourself, rebuild once so the deps layer picks up `scripts/postinstall.ts`:
+
+```bash
+docker build --target deps .        # fails loudly if the postinstall script is missing
+```
+
+### Itemized changes
+
+**Docker build (v0.50.0.1, PR #52)**
+- `Dockerfile`: copy `scripts/postinstall.ts` into the deps layer so `bun install --frozen-lockfile` can run the lifecycle hook the upstream sync introduced.
+- `.dockerignore`: un-exclude `scripts/postinstall.ts`; the directory was ignored wholesale, so the COPY resolved to nothing.
+
+**Documentation (v0.50.0.2, PR #53)**
+- `TODOS.md`: recorded the ZeroEntropy stranded-chunk trap as resolved. The sweep capability arrived with the v0.50.0.0 sync (`includeNullSignature`); the remaining 27 pages carrying 524 chunks were repaired operationally by backfilling the signature rather than re-embedding, since every chunk already held a correct vector.
+- `TODOS.md`: retired the unused-index finding. All five indexes flagged at `idx_scan = 0` back real code paths; the counter meant "not exercised in the observed window", not "not needed".
+- `TODOS.md`: deferred the HNSW reindex with the failure recorded. `maintenance_work_mem` is 32 MB against a ~200 MB need, and the attempt left a 169 MB invalid index that had to be dropped.
+- `TODOS.md`: filed three gaps, including the missing Docker build job above, and sharpened the Gmail quota evidence to a ~14 hour retry-after window.
+
+**Version metadata (v0.50.0.2)**
+- `VERSION`, `package.json`, `openclaw.plugin.json`: advanced 0.50.0.0 to 0.50.0.2.
+- Regenerated `bun.lock`, `llms.txt`, `llms-full.txt`, and the Cowork plugin marketplace bundle.
+
 ## [0.50.0.0] - 2026-08-12
 
 ## **Two migrations wanted the same slot number. Only one of them would ever have run.**
