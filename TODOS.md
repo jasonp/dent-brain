@@ -73,6 +73,135 @@ that can be talked around by prose is worth less than one that cannot.
 Copy **v127** as the pattern for any future CONCURRENTLY migration: read `pg_index` from
 TypeScript via `engine.executeRaw`, then issue bare DDL outside any `DO` block.
 
+## CI never builds the Docker image (filed 2026-08-13)
+
+**Priority:** P2
+**Filed:** 2026-08-13, from the v0.50.0.0 deploy failure.
+
+`.github/workflows/test.yml` runs unit, serial, E2E and 40 verify checks. **None of them
+build `Dockerfile`.** So a change that breaks the production image passes CI green and fails
+at deploy, which is where we found it.
+
+**What it cost:** the v0.50.0.0 upstream sync added `"postinstall": "bun run
+scripts/postinstall.ts"` to package.json. bun runs that during `bun install`, and our
+fork-specific Dockerfile's deps stage copies only package.json + bun.lock:
+
+```
+[deps 4/4] RUN bun install --frozen-lockfile
+error: Module not found "scripts/postinstall.ts"
+Build Failed
+```
+
+Fixed in v0.50.0.1 (PR #52) with two edits — the Dockerfile copies the script, and
+`.dockerignore` un-excludes it (it ignores `scripts/` wholesale, so the COPY alone would have
+found nothing).
+
+**Why this recurs:** it is the shape "upstream changes a lifecycle hook / build assumption,
+the fork's Dockerfile does not know." Every upstream sync can produce one, and CI is
+structurally blind to all of them. This one was benign (a failed build leaves the previous
+container serving), but the same blind spot covers changes that build fine and crash on boot.
+
+**Fix:** add a job that runs `docker build --target deps` (fast, catches the dep/postinstall
+class) or a full `docker build` (slower, catches boot-time wiring). Gate it on Dockerfile /
+package.json / .dockerignore / scripts/ changes so it does not tax every PR.
+
+**Note for whoever does this:** it cannot be verified on Jason's machine by default — Docker
+CLI is present (OrbStack) but the daemon is usually not running. `docker info` first.
+
+## Extension re-install disarms the daemon and does not re-arm (filed 2026-08-13)
+
+**Priority:** P3
+**Filed:** 2026-08-13, from running `/dent-update`.
+
+Re-installing an ALREADY-CONFIGURED daemon over itself tears down the launchd registration
+and drops to the first-install path, printing "Daemon is INERT — nothing will reach the brain
+yet" and telling the operator to run `setup`. But `user/filter.ts` already exists — setup is
+not needed, only `arm`.
+
+Observed on both extensions during the 0.46 → 0.50 update: each ended `● active` → disarmed,
+and would have sat silently doing nothing had the arm step been missed. `/dent-update`'s own
+skill file warns about exactly this ("Inertness check — important after a major-version
+jump"), which is a sign the installer should handle it rather than relying on the operator
+reading a warning.
+
+**Fix:** when re-installing over an install that already has a valid user filter AND was
+previously armed, re-arm automatically. `cmdArm` makes no network calls, so this is safe even
+during a Gmail rate-limit window. If auto-arming is considered too magical, at minimum the
+final message should say `arm`, not `setup`, when a filter is present.
+
+## Health/stats COUNT(*) queries — RE-MEASURE before optimizing (filed 2026-08-13)
+
+**Priority:** P3
+**Filed:** 2026-08-13, carried over from the 2026-08-11 DB audit.
+
+The audit attributed ~2.0 GB of disk reads over 13 days to six `COUNT(*)` shapes over
+`content_chunks` (embedded pct, unembedded total, model rollup, page count, image-embedding
+count), called 40 times between them, worst averaging 68 MB per call. Proposed fix: serve
+them from `pg_class.reltuples` estimates or cache for a few minutes.
+
+**Do not act on that number yet.** The same audit later established that `pages` had never
+been ANALYZEd, and that missing column statistics — not the query text — was what made the
+planner choose table scans. One query went 3,706 ms → 217 ms from `VACUUM ANALYZE` alone,
+with no code change. Some or all of this 2.0 GB may have had the same cause and may already
+be gone.
+
+**First step is a measurement, not a patch:** re-read `pg_stat_statements` for these shapes
+now that statistics are healthy, and only optimize what is still expensive. Note the counters
+have been accumulating since 2026-07-29 (Postgres has not restarted through any of our
+deploys — those restart the app container only), so the window includes the pre-fix period;
+either reset the stats first or compare against the audit's per-call figures rather than
+totals.
+
+## Post-upgrade DB cleanup — mostly RETIRED, one item deferred (filed 2026-08-13)
+
+**Priority:** P4
+**Context:** filed off the 2026-08-11 audit as "~275 MB reclaimable". Re-examined after the
+Pro upgrade; most of it turned out not to be reclaimable, and the rest is not worth the risk.
+
+### Dropping "unused" indexes — RETIRED, the finding was wrong
+
+The audit flagged 5 indexes at `idx_scan = 0` over a 15-day window (~74 MB) as dead weight.
+Re-checked against the merged v0.50.0.0 tree: **all five back real code paths.**
+
+| Index | Backing query |
+|---|---|
+| `idx_pages_search` (65 MB) | `postgres-engine.ts` — `p.search_vector @@ websearch_to_tsquery(...)` |
+| `idx_pages_trgm` | `title % $partial` — the `%` operator REQUIRES `gin_trgm_ops` |
+| `pages_source_path_idx` | `resolveSlugsByPaths` — `source_path = ANY($1::text[])` |
+| `idx_mcp_log_agent_time` | admin dashboard, `WHERE token_name = X AND created_at > ...` |
+| `idx_mcp_log_time_agent` | same table; weaker column order, but same consumer |
+
+**`idx_scan = 0` means "not exercised in the observed window", NOT "not needed."** These are
+cold paths (page-level FTS, fuzzy title resolution, sync-time path lookup, the admin
+dashboard), not dead ones. Dropping them buys 74 MB of an 8 GB budget by making real queries
+sequential-scan the first time they run. Do not re-file this without checking the code.
+
+### HNSW reindex — DEFERRED, and attempting it cost us
+
+`idx_chunks_embedding` is 441 MB against ~140 MB of raw vectors (~3x, bloat from the
+v0.49.1.1 in-place re-embed). `REINDEX INDEX CONCURRENTLY` was attempted 2026-08-13 and
+FAILED:
+
+```
+NOTICE: hnsw graph no longer fits into maintenance_work_mem after 5732 tuples
+ERROR:  canceling statement due to statement timeout
+```
+
+`maintenance_work_mem` is **32 MB**; the graph needs ~200 MB+. It spilled to a disk-based
+build at 5,732 of 28,755 tuples, then `statement_timeout` (120 s) killed it. The failed
+CONCURRENTLY build left an INVALID `idx_chunks_embedding_ccnew` holding **169 MB** — the DB
+went 1,278 → 1,447 MB. Dropped it; back to 1,278 MB, 0 invalid indexes.
+
+**Do not retry on Micro.** Raising `maintenance_work_mem` to ~256 MB on a ~1 GB instance that
+already has 224 MB in `shared_buffers` risks OOM-ing the database serving production, to
+reclaim ~240 MB of an 8 GB budget. The reason to do this was Free's 500 MB ceiling; that
+reason is gone.
+
+**If it is ever worth doing:** temporarily size compute up (Small, 2 GB), then in ONE session
+`SET maintenance_work_mem = '512MB'; SET statement_timeout = 0;` before the REINDEX, and check
+for a `_ccnew` remnant afterward either way. Note the payoff is storage only — the HNSW served
+~35 vector searches in 13 days, so the query-performance argument is negligible.
+
 ## Upstream sync — DONE in v0.50.0.0 (filed 2026-08-11, completed 2026-08-12)
 
 Merged `garrytan/gbrain` v0.42.40.0 → **v0.45.7.0**, 574 commits, 1,690 files, 27 conflicts.
@@ -209,41 +338,37 @@ WHERE model='<old-model>'` followed by `embed --stale --catch-up`.
 assert either a non-zero exit or that a follow-up `--stale` fully converges
 `content_chunks.model` to the configured model.
 
-**Re-measured 2026-08-11 (v0.49.4.0) — the damage is repaired, the trap is not.**
-Production now reads:
+**RESOLVED 2026-08-13.** The trap is closed; the fourth fix direction above is done.
 
-| `pages.embedding_signature` | Pages | Live |
-|---|---|---|
-| `openai:text-embedding-3-large:1280` | 10,693 | 10,559 |
-| `<NULL>` (never stamped) | 46 | 46 |
-| `zeroentropyai:zembed-1:1280` | 1 | 1 |
+Two separate things had to be true, and both now are:
 
-All 28,755 chunks report `model = 'openai:text-embedding-3-large'`, so **nothing is
-stranded in the old space today** — the manual remediation above worked. But 27 of
-those NULL-signature pages still carry **524 chunks**, and the grandfather rule means
-`--stale` cannot see them. The next model swap strands all 524 the same silent way.
+1. **The capability landed.** The v0.50.0.0 upstream sync brought `includeNullSignature`
+   (#3391), which widens the sweep to `(signature IS NULL OR <> current)`. Our
+   `hasStaleSignaturePages` gate was widened to match — threading the flag into the sweep
+   alone would have made the gate answer "nothing stale" while work existed.
 
-This is now the strongest argument for the fourth fix direction above (let a
-`content_chunks.model` mismatch override the NULL-signature grandfather). Upstream's
-`includeNullSignature` option on `invalidateStaleSignatureEmbeddings` (#3390, fixes
-#3391) is the same idea and is one of the reasons to do the sync — see the upstream-sync
-item at the top of this file. **Do it before the next embedding-model change, not after.**
+2. **The existing damage was repaired.** Capability alone fixes nothing for pages already
+   stranded. Measured before: **27 live pages carrying 524 chunks** with a NULL signature,
+   structurally invisible to `embed --stale`. Every one of those chunks already held a
+   correct `openai:text-embedding-3-large` vector, so the defect was page-level bookkeeping,
+   not data — re-embedding would have paid the API to regenerate identical vectors.
+   Backfilled the signature instead, with a deliberately conservative predicate: stamp only
+   pages where EVERY chunk is on the current model AND already embedded. `UPDATE 27`, exactly
+   the audited set.
 
-### Embed path needs a higher `statement_timeout` for large pages
+**After:** `stranded_pages = 0, stranded_chunks = 0`. 28,755 chunks, 28,755 embedded, 1
+distinct model, none modified.
 
-**Priority:** P2
-**Filed:** 2026-07-31, same cutover.
+Two benign leftovers, deliberately not touched:
+- **19 pages with NULL signature and zero chunks.** Nothing to re-embed, so the signature is
+  meaningless for them; stamping would assert something about content that does not exist.
+- **1 page on `zeroentropyai:zembed-1:1280`.** Non-NULL and differing, so `embed --stale`
+  picks it up by design. That is the mechanism working.
 
-**Evidence:** all 139 failures above were `canceling statement due to
-statement timeout`, clustered on large PDF-derived pages
-(`archives/dropbox/**` LinkedIn-profile and conference-guide PDFs). Small
-pages were unaffected. Throughput on that region dropped from ~140 to
-~20 pages/min.
-
-This is the trigger for the P1 above and will recur on every future bulk
-re-embed or model swap. Options: raise `statement_timeout` for the embed
-connection specifically, or reduce per-statement work (smaller chunk write
-batches) so large pages fit inside the existing budget.
+**The generalizable lesson:** "the corpus is fully migrated" was TRUE by the chunk-model check
+(`select distinct model from content_chunks` → 1 row) and simultaneously FALSE by the sweep's
+own predicate. When a migration's completeness check and its repair tool key on different
+columns, one can report done while the other cannot see the work. Check both.
 
 ## Google Workspace knowledge-graph router (filed 2026-06-26 — MVP shipped v0.47.0.0)
 
@@ -318,6 +443,21 @@ Decided 2026-06-26: start metadata-only; do not put LLM summaries on the cards y
   **Sizing evidence (2026-08-11, from `~/.dent-brain/email-sync/sync.log`):** 40 of 224 fires rate-limited (~18%), in streaks of 3–5. At 4 fires/day this account cannot be exhausting a per-user quota on its own, which points at the pooled per-project limit.
 
   **This is now the primary fix, not a nice-to-have.** Measured the same day: a 429 returns a rolling ~16-minute window (two independent samples, both exactly `15m56s`), yet the daemon waits 6h between fires — ~22x that window — and still gets 429'd for three consecutive fires. So the stalls are *sustained* quota exhaustion, not the self-inflicted extension the original bug report described. The v0.49.3 cool-down work is quota hygiene and cannot move this; only (a) or (b) can. Check the GCP quota page for per-user vs per-project before choosing — if it is per-project, (b) isolates teammates and (a) only raises a shared ceiling.
+
+  **Stronger evidence 2026-08-13 (v0.50.0.0 daemon, first real run of the banked cool-down):**
+  the installer's verify probe AND the daemon's first fire both got 429s, and Gmail returned a
+  retry-after **~14 hours out** (`2026-08-13T14:51:43Z`), not the ~16 minutes measured on
+  08-11. A 14-hour window on an account that fires 4x/day is not a per-user rate limit — that
+  is sustained pooled-quota exhaustion, and it is now the operative constraint on email-sync
+  actually ingesting anything. The cool-down machinery is working exactly as designed (zero
+  Gmail calls until the window passes, banked to `gmail-state.json` at mode 0600) — which
+  means the daemon is now correctly doing *nothing* for 14 hours at a stretch.
+
+  **A cheap diagnostic that would settle (a) vs (b), and is not built yet:** Google returns a
+  `reason` on a 429 — `userRateLimitExceeded` (per-user) vs `rateLimitExceeded` (per-project).
+  `classifyProbeFailure` receives that body but never logs it, so 224 fires of evidence
+  recorded only our own message. **Log the reason code**; one line, and it turns this whole
+  question from inference into fact.
 
 ## Source convergence follow-ups (filed 2026-06-07, v0.43.0.1)
 
