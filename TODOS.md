@@ -73,6 +73,85 @@ that can be talked around by prose is worth less than one that cannot.
 Copy **v127** as the pattern for any future CONCURRENTLY migration: read `pg_index` from
 TypeScript via `engine.executeRaw`, then issue bare DDL outside any `DO` block.
 
+## CI never builds the Docker image (filed 2026-08-13)
+
+**Priority:** P2
+**Filed:** 2026-08-13, from the v0.50.0.0 deploy failure.
+
+`.github/workflows/test.yml` runs unit, serial, E2E and 40 verify checks. **None of them
+build `Dockerfile`.** So a change that breaks the production image passes CI green and fails
+at deploy, which is where we found it.
+
+**What it cost:** the v0.50.0.0 upstream sync added `"postinstall": "bun run
+scripts/postinstall.ts"` to package.json. bun runs that during `bun install`, and our
+fork-specific Dockerfile's deps stage copies only package.json + bun.lock:
+
+```
+[deps 4/4] RUN bun install --frozen-lockfile
+error: Module not found "scripts/postinstall.ts"
+Build Failed
+```
+
+Fixed in v0.50.0.1 (PR #52) with two edits — the Dockerfile copies the script, and
+`.dockerignore` un-excludes it (it ignores `scripts/` wholesale, so the COPY alone would have
+found nothing).
+
+**Why this recurs:** it is the shape "upstream changes a lifecycle hook / build assumption,
+the fork's Dockerfile does not know." Every upstream sync can produce one, and CI is
+structurally blind to all of them. This one was benign (a failed build leaves the previous
+container serving), but the same blind spot covers changes that build fine and crash on boot.
+
+**Fix:** add a job that runs `docker build --target deps` (fast, catches the dep/postinstall
+class) or a full `docker build` (slower, catches boot-time wiring). Gate it on Dockerfile /
+package.json / .dockerignore / scripts/ changes so it does not tax every PR.
+
+**Note for whoever does this:** it cannot be verified on Jason's machine by default — Docker
+CLI is present (OrbStack) but the daemon is usually not running. `docker info` first.
+
+## Extension re-install disarms the daemon and does not re-arm (filed 2026-08-13)
+
+**Priority:** P3
+**Filed:** 2026-08-13, from running `/dent-update`.
+
+Re-installing an ALREADY-CONFIGURED daemon over itself tears down the launchd registration
+and drops to the first-install path, printing "Daemon is INERT — nothing will reach the brain
+yet" and telling the operator to run `setup`. But `user/filter.ts` already exists — setup is
+not needed, only `arm`.
+
+Observed on both extensions during the 0.46 → 0.50 update: each ended `● active` → disarmed,
+and would have sat silently doing nothing had the arm step been missed. `/dent-update`'s own
+skill file warns about exactly this ("Inertness check — important after a major-version
+jump"), which is a sign the installer should handle it rather than relying on the operator
+reading a warning.
+
+**Fix:** when re-installing over an install that already has a valid user filter AND was
+previously armed, re-arm automatically. `cmdArm` makes no network calls, so this is safe even
+during a Gmail rate-limit window. If auto-arming is considered too magical, at minimum the
+final message should say `arm`, not `setup`, when a filter is present.
+
+## Health/stats COUNT(*) queries — RE-MEASURE before optimizing (filed 2026-08-13)
+
+**Priority:** P3
+**Filed:** 2026-08-13, carried over from the 2026-08-11 DB audit.
+
+The audit attributed ~2.0 GB of disk reads over 13 days to six `COUNT(*)` shapes over
+`content_chunks` (embedded pct, unembedded total, model rollup, page count, image-embedding
+count), called 40 times between them, worst averaging 68 MB per call. Proposed fix: serve
+them from `pg_class.reltuples` estimates or cache for a few minutes.
+
+**Do not act on that number yet.** The same audit later established that `pages` had never
+been ANALYZEd, and that missing column statistics — not the query text — was what made the
+planner choose table scans. One query went 3,706 ms → 217 ms from `VACUUM ANALYZE` alone,
+with no code change. Some or all of this 2.0 GB may have had the same cause and may already
+be gone.
+
+**First step is a measurement, not a patch:** re-read `pg_stat_statements` for these shapes
+now that statistics are healthy, and only optimize what is still expensive. Note the counters
+have been accumulating since 2026-07-29 (Postgres has not restarted through any of our
+deploys — those restart the app container only), so the window includes the pre-fix period;
+either reset the stats first or compare against the audit's per-call figures rather than
+totals.
+
 ## Post-upgrade DB cleanup — mostly RETIRED, one item deferred (filed 2026-08-13)
 
 **Priority:** P4
@@ -364,6 +443,21 @@ Decided 2026-06-26: start metadata-only; do not put LLM summaries on the cards y
   **Sizing evidence (2026-08-11, from `~/.dent-brain/email-sync/sync.log`):** 40 of 224 fires rate-limited (~18%), in streaks of 3–5. At 4 fires/day this account cannot be exhausting a per-user quota on its own, which points at the pooled per-project limit.
 
   **This is now the primary fix, not a nice-to-have.** Measured the same day: a 429 returns a rolling ~16-minute window (two independent samples, both exactly `15m56s`), yet the daemon waits 6h between fires — ~22x that window — and still gets 429'd for three consecutive fires. So the stalls are *sustained* quota exhaustion, not the self-inflicted extension the original bug report described. The v0.49.3 cool-down work is quota hygiene and cannot move this; only (a) or (b) can. Check the GCP quota page for per-user vs per-project before choosing — if it is per-project, (b) isolates teammates and (a) only raises a shared ceiling.
+
+  **Stronger evidence 2026-08-13 (v0.50.0.0 daemon, first real run of the banked cool-down):**
+  the installer's verify probe AND the daemon's first fire both got 429s, and Gmail returned a
+  retry-after **~14 hours out** (`2026-08-13T14:51:43Z`), not the ~16 minutes measured on
+  08-11. A 14-hour window on an account that fires 4x/day is not a per-user rate limit — that
+  is sustained pooled-quota exhaustion, and it is now the operative constraint on email-sync
+  actually ingesting anything. The cool-down machinery is working exactly as designed (zero
+  Gmail calls until the window passes, banked to `gmail-state.json` at mode 0600) — which
+  means the daemon is now correctly doing *nothing* for 14 hours at a stretch.
+
+  **A cheap diagnostic that would settle (a) vs (b), and is not built yet:** Google returns a
+  `reason` on a 429 — `userRateLimitExceeded` (per-user) vs `rateLimitExceeded` (per-project).
+  `classifyProbeFailure` receives that body but never logs it, so 224 fires of evidence
+  recorded only our own message. **Log the reason code**; one line, and it turns this whole
+  question from inference into fact.
 
 ## Source convergence follow-ups (filed 2026-06-07, v0.43.0.1)
 
