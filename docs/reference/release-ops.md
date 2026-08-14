@@ -3,12 +3,17 @@
 Version locations, ship/migration policy, CHANGELOG voice, GH Actions SHA pinning, community PR wave process, schema state tracking. CLAUDE.md keeps only the daily-essential rules; deep detail lives here.
 
 ## Version locations (single source of truth: `VERSION` file)
-Every release advances the version in **five files at once**. Keep these in
+Every release advances the version in **seven files at once**. Keep these in
 sync. `/ship` enforces this via Step 12's idempotency check (VERSION vs
 package.json drift), but the canonical list lives here so future runs and
 the auto-update agent know where to look.
 
-**Required (every release must update all five):**
+`gstack-version-bump write` only touches `VERSION` and `package.json`. The
+other five are on you. `bun run verify` is the real backstop: `check:bootstrap-tag`
+and `check:bootstrap-templates` fail the build when the stamped surfaces lag
+the bump, which is how the two of them were found missing from this table.
+
+**Required (every release must update all seven):**
 
 | File | What lives there | Format |
 |---|---|---|
@@ -17,8 +22,18 @@ the auto-update agent know where to look.
 | `CHANGELOG.md` | Top entry header `## [0.22.1] - YYYY-MM-DD` plus the "To take advantage of v0.22.1" block. | Standard Keep-a-Changelog header. |
 | `TODOS.md` | Any TODO entries that mention "follow-up from vX.Y.Z" use the version of the release that filed them. Update only when filing NEW follow-up TODOs. | Inline `vX.Y.Z` references in TODO bodies. |
 | `CLAUDE.md` | The Key Files section's per-file annotations carry `vX.Y.Z (#NNN)` tags noting which release introduced a behavior. Update whenever a wave's annotations get folded in. | Inline `vX.Y.Z (#NNN, contributed by @user)` references. |
+| `openclaw.plugin.json` | OpenClaw plugin manifest. Hand-maintained; `test/openclaw-plugin-manifest.test.ts` fails the suite if it drifts from `package.json`. Merges from master auto-resolve it to master's version, so re-bump it with the rest. | `"version": "0.50.0.2"` |
+| `BOOTSTRAP_FOR_AGENTS.md` | Line 1 carries the runbook stamp that `gbrain doctor` compares against the installed version to tell an agent its bootstrap runbook is stale. Guarded by `scripts/check-bootstrap-tag.sh`. | `<!-- gbrain-runbook-stamp: 0.50.0.2 -->` on line 1. |
 
 **Auto-derived (no manual edit; refreshed by their own commands):**
+
+- `templates/bootstrap/template-repo/` — the vendored bootstrap template tree,
+  whose `README.md` carries `<!-- gbrain-template-stamp: X.Y.Z.W -->`.
+  Regenerate with
+  `bun run scripts/generate-template-repo.ts --out templates/bootstrap/template-repo`.
+  `scripts/check-bootstrap-templates.sh` diffs generator output against the
+  vendored tree and fails on any drift, because the release workflow publishes
+  only what that diff proves the repo reviewed.
 
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
   bumping `package.json`, run `bun install` to refresh the lockfile.
