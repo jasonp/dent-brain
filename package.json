@@ -99,6 +99,7 @@
     "gate:skills": "bash scripts/skills-commit-gate.sh",
     "build:plugin": "bun run scripts/build-plugin.ts",
     "check:prod-version": "bun run scripts/check-prod-version.ts",
+    "check:upstream-drift": "bun run scripts/check-upstream-drift.ts",
     "check:plugin-version": "bun run scripts/check-plugin-version.ts",
     "setup": "bun run scripts/setup.ts",
     "test:dent": "bun test test/dent/ --timeout=60000",

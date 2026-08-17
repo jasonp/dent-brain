@@ -241,9 +241,19 @@ is documented in [`CLAUDE.md`](CLAUDE.md).
 
 To pull upstream changes:
 
+One-time setup (fresh clone only):
+
+```bash
+git remote add upstream https://github.com/garrytan/gbrain.git
+```
+
 ```bash
 bun run sync:upstream
 ```
+
+A weekly `upstream-sync-check` GitHub Action (`.github/workflows/upstream-sync-check.yml`)
+opens/updates a tracking issue when the fork falls behind `garrytan/gbrain` —
+notify-only, it never merges anything.
 
 Resolves conflicts, runs verify, surfaces any stale tests. Land via PR
 to `main` and ship as a `v0.x.0` release.
