@@ -104,10 +104,15 @@ export interface ModeBundle {
    */
   reranker_enabled: boolean;
   /**
-   * Provider:model for the reranker. Default `'cohere:rerank-v3.5'`.
-   * `cohere:rerank-v4.0-pro` works via the same recipe, as does a
-   * self-hosted zerank-2 through `llama-server-reranker` — every reranker
-   * rides the one wire shape declared by `touchpoints.reranker`.
+   * Provider:model for the reranker. Bundle default `'zeroentropyai:zerank-2'`
+   * — LEGACY until the September removal (v0.46.3 split-default: existing
+   * ZE-keyed brains keep a working reranker until the hosted API dies on
+   * 2026-09-04; voyage-keyed new installs get an explicit
+   * `search.reranker.model voyage:rerank-2.5` override written at init
+   * (keyed non-voyage installs get explicit `search.reranker.enabled false`),
+   * and the September release flips this bundle value to voyage). Voyage
+   * rerankers (`rerank-2.5`, `rerank-2.5-lite`) are live recipes today via
+   * `touchpoints.reranker`.
    */
   reranker_model: string;
   /** Candidates to send upstream (default 30). The full result list always
@@ -150,6 +155,15 @@ export interface ModeBundle {
    * Override: per-call SearchOpts → `search.title_boost` config → bundle.
    */
   title_boost: number | undefined;
+
+  /**
+   * v0.46.15 — cosine floor for evidence's `high_vector_match` (see
+   * evidence.ts DEFAULT_HIGH_COSINE_FLOOR). Config `search.evidence_cosine_floor`.
+   * Deliberately EXCLUDED from knobsHash: it shapes the evidence LABEL, not
+   * the result set — a floor change serves TTL-bounded stale labels on cached
+   * rows, which is acceptable for an operator tuning knob.
+   */
+  evidence_cosine_floor: number | undefined;
 
   // v0.36 cross-modal wave knobs (D2 + D3 + D6 + D8 + D13 + LLM-intent).
   // All three mode bundles default these to the same values — cross-modal
@@ -263,6 +277,13 @@ export interface ModeBundle {
    */
   autocut_jump: number;
   /**
+   * v0.46.15 (#1863) — weak-top floor: when the TOP rerank score is below
+   * this, autocut no-ops (gap normalization by a weak top manufactures
+   * spurious cliffs). Scale-dependent on the reranker — the September
+   * reranker default flip must re-tune it. Config: `search.autocut_min_top`.
+   */
+  autocut_min_top: number;
+  /**
    * v0.43 — relational recall arm. When on, a relational query ("who invested
    * in widget-co", "what connects fund-a and fund-b") resolves its seed
    * entity and walks the typed-edge graph, injecting edge-derived candidates
@@ -295,7 +316,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
     // spend doesn't fit the tier's value prop.
     reranker_enabled: false,
-    reranker_model: 'cohere:rerank-v3.5',
+    reranker_model: 'zeroentropyai:zerank-2',
     reranker_top_n_in: 30,
     reranker_top_n_out: null,
     reranker_timeout_ms: 5000,
@@ -304,6 +325,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     floor_ratio: undefined,
     // T2 — title-phrase boost ON by default (correctness fix, cheap + gated).
     title_boost: 1.25,
+    evidence_cosine_floor: 0.8,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -327,6 +349,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relationalRetrieval: false,
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
+    autocut_min_top: 0.35,
   }),
   balanced: Object.freeze({
     cache_enabled: true,
@@ -347,7 +370,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // return input order unchanged. Opt out with
     // `gbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
-    reranker_model: 'cohere:rerank-v3.5',
+    reranker_model: 'zeroentropyai:zerank-2',
     // v0.42.3.0 D4: topNIn = searchLimit (25) so the cross-encoder scores
     // every result the limit slice will return — no unscored tail for autocut
     // to wrongly drop (Codex #2). Was 30; tracking searchLimit is the
@@ -360,6 +383,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     floor_ratio: undefined,
     // T2 — title-phrase boost ON by default (correctness fix, cheap + gated).
     title_boost: 1.25,
+    evidence_cosine_floor: 0.8,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -387,6 +411,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relationalRetrieval: true,
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
+    autocut_min_top: 0.35,
   }),
   tokenmax: Object.freeze({
     cache_enabled: true,
@@ -402,7 +427,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // their fee. ~$0.0003/query at this shape; rounding error vs the
     // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
     reranker_enabled: true,
-    reranker_model: 'cohere:rerank-v3.5',
+    reranker_model: 'zeroentropyai:zerank-2',
     // v0.42.3.0 D4: topNIn = searchLimit (50) so every returned result is
     // cross-encoder scored — closes the Codex #2 recall gap where autocut
     // would drop the deliberately-preserved un-reranked tail (results 31-50).
@@ -415,6 +440,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     floor_ratio: undefined,
     // T2 — title-phrase boost ON by default (correctness fix, cheap + gated).
     title_boost: 1.25,
+    evidence_cosine_floor: 0.8,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -438,6 +464,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relationalRetrieval: true,
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
+    autocut_min_top: 0.35,
   }),
 });
 
@@ -473,6 +500,8 @@ export interface SearchKeyOverrides {
   floor_ratio?: number;
   // T2 — title-phrase boost override.
   title_boost?: number;
+  // v0.46.15 — evidence cosine-floor override (label-only; not in knobsHash).
+  evidence_cosine_floor?: number;
   // v0.36 cross-modal overrides
   cross_modal_both_text_weight?: number;
   cross_modal_both_image_weight?: number;
@@ -492,6 +521,7 @@ export interface SearchKeyOverrides {
   relationalRetrieval?: boolean;
   relational_retrieval_depth?: number;
   autocut_jump?: number;
+  autocut_min_top?: number;
 }
 
 /**
@@ -519,6 +549,8 @@ export interface SearchPerCallOpts {
   floor_ratio?: number;
   // T2 — title-phrase boost per-call override.
   title_boost?: number;
+  // v0.46.15 — evidence cosine-floor per-call override.
+  evidence_cosine_floor?: number;
   // v0.36 cross-modal per-call overrides
   cross_modal_both_text_weight?: number;
   cross_modal_both_image_weight?: number;
@@ -538,6 +570,7 @@ export interface SearchPerCallOpts {
   // numeric per-call knob threaded through the bundle.
   autocut?: boolean;
   autocut_jump?: number;
+  autocut_min_top?: number;
   // v0.43 — relational recall per-call overrides.
   relationalRetrieval?: boolean;
   relational_retrieval_depth?: number;
@@ -617,6 +650,7 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     // v0.35.6.0 — floor-ratio resolved via the same pick chain.
     floor_ratio: pick('floor_ratio'),
     title_boost: pick('title_boost'),
+    evidence_cosine_floor: pick('evidence_cosine_floor'),
     // v0.36 cross-modal knobs
     cross_modal_both_text_weight: pick('cross_modal_both_text_weight'),
     cross_modal_both_image_weight: pick('cross_modal_both_image_weight'),
@@ -633,6 +667,7 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     // v0.42.3.0 — autocut resolved via the same pick chain.
     autocut: pick('autocut'),
     autocut_jump: pick('autocut_jump'),
+    autocut_min_top: pick('autocut_min_top'),
     // v0.43 — relational recall resolved via the same pick chain.
     relationalRetrieval: pick('relationalRetrieval'),
     relational_retrieval_depth: pick('relational_retrieval_depth'),
@@ -781,7 +816,28 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // to cache.ttl_seconds, with no warning and no way for an operator to tell.
 // Same one-time global cold-miss pattern as the bumps above; refills within
 // cache.ttl_seconds (3600s default).
-export const KNOBS_HASH_VERSION = 15;
+//
+// bump 15→16 (#3515): `detail` folds into the key via ctx.detail (det=).
+// detail is result-affecting by design — it gates dedup, chunk-source
+// filtering, and the compiled_truth boost — but was absent from the key, so
+// a `--detail low` write (compiled-truth-only result set) was served to a
+// default `medium` lookup for the whole TTL. Same contamination class as
+// [CDX-4], floor_ratio (v=3), and relationalRetrieval (v=10). v=14 was
+// claimed by #3514 (compiled_truth boost scope, #3430) and v=15 by the
+// `fts=` fold (#3677), so this lands as v=16 per the D8 sequencing
+// convention (see the v=4/v=5 note above). Same one-time global cold-miss
+// pattern as the bumps above.
+//
+// bump 16→17 (WP2/T3): degradation-stamp epoch. HybridSearchMeta gains
+// `degraded[]` + `retrieved_count` and every cache write now stamps them
+// (degraded rows additionally get a short TTL). A pre-stamp row served as a
+// hit would claim a clean run it can't prove; bumping makes pre-upgrade rows
+// unreachable (one-time cold-miss, refills within cache.ttl_seconds), and
+// any row that still lacks the stamp surfaces as
+// degraded:[{stage:'cache_prestamp'}] at hit time (belt-and-braces).
+// (Merge note: both this wave and master's #3515 wave claimed v=16 in
+// flight; the merge sequences them as 16 then 17.)
+export const KNOBS_HASH_VERSION = 18;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -820,6 +876,17 @@ export interface KnobsHashContext {
    * 'none' for legacy callers that don't thread excludes.
    */
   hardExcludes?: string[];
+  /**
+   * v=16 (#3515): the EFFECTIVE detail level for this call — per-call
+   * SearchOpts.detail, or the auto-detected level when the caller didn't
+   * specify (hybridSearchCached threads `opts.detail ?? autoDetectDetail(query)`,
+   * matching what bare hybridSearch resolves). detail gates dedup,
+   * chunk-source filtering, and the compiled_truth boost, so a detail=low
+   * write must never be served to a detail=medium lookup. Lives in ctx (not
+   * ResolvedSearchKnobs) because it's per-call, not a mode knob — same path
+   * as col=/prov=. Undefined falls back to 'medium' (the documented default).
+   */
+  detail?: 'low' | 'medium' | 'high';
 }
 
 export function knobsHash(
@@ -899,6 +966,10 @@ export function knobsHash(
     // etc.) so a partial-knobs caller (tests passing a minimal literal) can't
     // crash the hash. Typed callers always carry the field.
     `acj=${(knobs.autocut_jump ?? 0.2).toFixed(2)}`,
+    // v=18 addition (v0.46.15 #1863, append-only): weak-top floor. A floored
+    // write (full cluster kept on a weak top) must not be served to an
+    // unfloored lookup and vice versa — the kept set differs.
+    `acm=${(knobs.autocut_min_top ?? 0.35).toFixed(2)}`,
     // v=10 additions (v0.43, append-only): relational recall arm. A
     // relational-on write (edge-seeded result set) must NOT be served to a
     // relational-off lookup — same contamination class as graph_signals. The
@@ -923,6 +994,11 @@ export function knobsHash(
     // memoizes and validates against /^[a-z][a-z0-9_]*$/, so this stays a
     // cheap, bounded string.
     `fts=${getFtsLanguage()}`,
+    // v=16 addition (#3515, append-only): effective detail level. detail
+    // gates dedup, chunk-source filtering, and the compiled_truth boost, so
+    // a low write (compiled-truth-only set) must never be served to a
+    // medium/high lookup. Undefined falls back to 'medium' (the default).
+    `det=${ctx?.detail ?? 'medium'}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));
@@ -1028,6 +1104,14 @@ export function loadOverridesFromConfig(
     if (Number.isFinite(n) && n >= 1.0 && n <= 5.0) out.title_boost = n;
   }
 
+  // v0.46.15 — evidence cosine floor (label-only knob; deliberately not in
+  // knobsHash). [0, 1] sanity-bounded.
+  const ecf = get('search.evidence_cosine_floor');
+  if (ecf !== undefined) {
+    const n = parseFloat(ecf);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out.evidence_cosine_floor = n;
+  }
+
   // v0.36 cross-modal overrides (D3 registry)
   const cmbt = get('search.cross_modal.both_mode_text_weight');
   if (cmbt !== undefined) {
@@ -1089,6 +1173,12 @@ export function loadOverridesFromConfig(
     const n = parseFloat(acj);
     if (Number.isFinite(n) && n > 0 && n <= 1) out.autocut_jump = n;
   }
+  // v0.46.15 (#1863) — weak-top floor. [0, 1]; 0 disables the floor.
+  const acm = get('search.autocut_min_top');
+  if (acm !== undefined) {
+    const n = parseFloat(acm);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) out.autocut_min_top = n;
+  }
 
   // v0.43 — relational recall arm.
   const rel = get('search.relational_retrieval');
@@ -1122,6 +1212,7 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   // v0.35.6.0 — floor-ratio gate
   'search.floor_ratio',
   'search.title_boost',
+  'search.evidence_cosine_floor',
   // v0.36 cross-modal keys (D3)
   'search.cross_modal.both_mode_text_weight',
   'search.cross_modal.both_mode_image_weight',
@@ -1143,6 +1234,7 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.relational_retrieval',
   'search.relational_retrieval_depth',
   'search.autocut_jump',
+  'search.autocut_min_top',
 ]);
 
 /**

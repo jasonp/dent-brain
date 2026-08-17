@@ -4,7 +4,9 @@
  * These tests exercise the exported pure helpers (groupReadyByProvider,
  * findEnvKeyTypos) with hermetic env injections. The resolveAIOptions
  * orchestration itself is exercised end-to-end via T12's
- * test/e2e/init-fresh-pglite.test.ts (PTY-based, real CLI).
+ * test/e2e/init-fresh-pglite.test.ts (piped-stdin, real CLI — non-TTY
+ * branches) and test/init-picker-pty.serial.test.ts (real PTY — the
+ * interactive picker branches).
  *
  * Per CLAUDE.md test isolation rules: env mutations would normally need
  * `withEnv`, but these helpers accept env as an argument — purer DI, no
@@ -13,6 +15,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { groupReadyByProvider, findEnvKeyTypos, seedAIOptionsFromConfig } from '../src/commands/init.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 describe('groupReadyByProvider — embedding touchpoint', () => {
   test('OPENAI_API_KEY alone → openai is ready', async () => {
@@ -25,12 +28,26 @@ describe('groupReadyByProvider — embedding touchpoint', () => {
     expect(got.map(p => p.recipeId)).toContain('voyage');
   });
 
-  test('ZEROENTROPY_API_KEY alone → NOT auto-picked (sunset provider)', async () => {
-    // Behavior change: zeroentropyai declares sunset_date 2026-09-04, and
-    // auto-pick skips any provider with an announced shutdown. Provisioning a
-    // brand-new brain against an expiring endpoint would embed a corpus that
-    // stops being readable on a known date — failing loud is better. Existing
-    // brains and explicit `--embedding-model zeroentropyai:zembed-1` still work.
+  test('v0.46.3: file-plane voyage_api_key folds into readiness (buildGatewayConfig env)', async () => {
+    // init's resolveEmbeddingByEnv builds its effective env via
+    // buildGatewayConfig(fileCfg).env so keys placed in ~/.gbrain/config.json
+    // (the documented alternative to shell env) select a provider too. This
+    // pins the mechanism end-to-end: file key → gateway env fold → ready.
+    // buildEnv reads the REAL process.env (env wins over file), so scrub the
+    // ambient key for the duration — dev machines may have a live one set.
+    await withEnv({ VOYAGE_API_KEY: undefined }, async () => {
+      const { buildGatewayConfig } = await import('../src/core/ai/build-gateway-config.ts');
+      const folded = buildGatewayConfig({ voyage_api_key: 'pa-file-plane' } as never).env;
+      expect(folded.VOYAGE_API_KEY).toBe('pa-file-plane');
+      const got = await groupReadyByProvider('embedding', folded as NodeJS.ProcessEnv);
+      expect(got.map(p => p.recipeId)).toContain('voyage');
+    });
+  });
+
+  test('ZEROENTROPY_API_KEY alone → zeroentropyai is NOT auto-pickable (sunset exclusion)', async () => {
+    // v0.46.3: recipes with `sunset` metadata are excluded from auto-pick —
+    // a fresh install must not be steered onto a provider that dies on
+    // 2026-09-04. Explicit --embedding-model still works (with a warning).
     const got = await groupReadyByProvider('embedding', { ZEROENTROPY_API_KEY: 'ze-test' });
     expect(got.map(p => p.recipeId)).not.toContain('zeroentropyai');
   });

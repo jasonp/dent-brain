@@ -27,6 +27,10 @@ function getConfigPath() { return configPath(); }
 
 export interface GBrainConfig {
   engine: 'postgres' | 'pglite';
+  /** File-plane hook-lane keys (read by engine-free hook/push children).
+   * `gbrain config set` routes these two dotted keys here, not to the DB. */
+  push?: { allow_unverified_remote?: boolean };
+  hooks?: { stop_push_debounce_min?: number | string };
   database_url?: string;
   database_path?: string;
   openai_api_key?: string;
@@ -42,9 +46,12 @@ export interface GBrainConfig {
    */
   zeroentropy_api_key?: string;
   /**
-   * Cohere API key — reranker credential after ZeroEntropy's 2026-09-04
-   * sunset made `cohere:rerank-v3.5` the default reranker. Wired through the
-   * same three planes as `zeroentropy_api_key` above (file plane → loadConfig
+   * Cohere API key — reranker credential; `cohere:rerank-v3.5` is a valid
+   * explicit `search.reranker.model` choice but not the default (the
+   * default stays `zeroentropyai:zerank-2` as a legacy fallback until
+   * ZeroEntropy's 2026-09-04 sunset, then the mode bundles move new
+   * installs to Voyage — see ./ai/defaults.ts). Wired through the same
+   * three planes as `zeroentropy_api_key` above (file plane → loadConfig
    * env merge → buildGatewayConfig env dict → recipe reads COHERE_API_KEY);
    * skipping any one of them reproduces the v0.37 bug where the key was
    * settable but never reached the pipeline.
@@ -95,13 +102,13 @@ export interface GBrainConfig {
   azure_openai_endpoint?: string;
   azure_openai_deployment?: string;
   azure_openai_use_entra?: string;
-  /** AI gateway config (v0.14+). Default: "openai:text-embedding-3-large" / 1536 /
-   *  "anthropic:claude-haiku-4-5-20251001" — see `src/core/ai/defaults.ts`, which is
-   *  the source of truth. This DELIBERATELY diverges from upstream, which still
-   *  defaults to "zeroentropyai:zembed-1" / 1280: ZeroEntropy sunsets 2026-09-04, so
-   *  taking that default during the v0.50.0.0 upstream sync would have pointed every
-   *  fresh install at a provider due to disappear. Do not "fix" this back toward
-   *  upstream without re-checking that date. */
+  /** AI gateway config (v0.14+) — see `src/core/ai/defaults.ts`, the source of
+   *  truth. As of the v0.46.3 split-default sync: `DEFAULT_EMBEDDING_MODEL` /
+   *  `DEFAULT_EMBEDDING_DIMENSIONS` ("zeroentropyai:zembed-1" / 1280) are the
+   *  LEGACY configless-runtime fallback for pre-existing ZE-era brains only —
+   *  never a fresh-install default. Every new-install surface reads
+   *  `NEW_INSTALL_DEFAULT_EMBEDDING_MODEL` ("voyage:voyage-4" / 1024) instead,
+   *  which already accounts for ZeroEntropy's 2026-09-04 sunset. */
   embedding_model?: string;
   embedding_dimensions?: number;
   /**
@@ -131,10 +138,14 @@ export interface GBrainConfig {
   provider_chat_options?: Record<string, Record<string, unknown>>;
   /**
    * MEMORY_VERBS v1 (Cathedral 1): default MCP tool surface for `gbrain serve`.
-   * 'verbs' = exactly the 5 protocol verbs (the quickstart surface);
-   * 'full' (default) = every operation. The `--surface` flag overrides per-run.
+   * 'verbs' = exactly the 7 protocol verbs (the quickstart surface);
+   * 'starter' (WP4) = the ~20-op daily-driver set (STARTER_OPS in
+   * src/mcp/surface.ts); 'full' (default) = every operation. The `--surface`
+   * flag overrides per-run. On the OAuth HTTP transport this resolves the
+   * server CEILING (D2): per-client row surfaces can narrow below it but
+   * never widen past it.
    */
-  mcp_surface?: 'verbs' | 'full';
+  mcp_surface?: 'verbs' | 'starter' | 'full';
   /**
    * MEMORY_VERBS v1 [D6C]: ISO timestamp stamped by `gbrain init` so
    * `gbrain protocol stats` can derive real TTHW (install → first verb call).
@@ -272,6 +283,15 @@ export interface GBrainConfig {
    * reflex knobs.
    */
   retrieval_reflex_window_turns?: number;
+  /**
+   * v0.46.15 (identity wave) — kill switch for the reflex's lexical recall
+   * arms (lowercase weak-candidate alias arm + surname arm). Default ON
+   * (absent = enabled); `false` reproduces pre-wave resolution exactly.
+   * File-plane / env (GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS) only — same
+   * plane as the other reflex knobs; a false-fire regression in production
+   * reverts on the next turn with a config edit, no redeploy.
+   */
+  retrieval_reflex_lexical_arms?: boolean;
   embedding_image_ocr?: boolean;
   embedding_image_ocr_model?: string;
 
@@ -438,6 +458,30 @@ export interface GBrainConfig {
      * tier so a hosted gbrain never serves its own bundled dev skills).
      */
     skills_dir?: string;
+    /**
+     * WP3 — unknown tool-call argument posture for MCP dispatch.
+     *   'warn' (default / absent): unknown params are accepted; each call
+     *     collects `_meta.warnings` + a model-visible notice block, and the
+     *     request logs as 'success_with_warnings'.
+     *   'reject': unknown params return `invalid_params` (with a
+     *     did-you-mean suggestion), and tool schemas are emitted with
+     *     `additionalProperties: false`.
+     * Dual-plane: DB plane (`gbrain config set mcp.strict_params ...`) wins
+     * over this file slot. See src/mcp/validate-params.ts.
+     */
+    strict_params?: 'warn' | 'reject';
+    /**
+     * WP4 (D2 / plan OQ1) — default surface for OAuth clients whose
+     * `oauth_clients.surface` row value is NULL. oauth_clients carries no
+     * DCR-origin marker, so this applies to ALL null-surface clients (not
+     * just dynamically-registered ones); operators pre-seed important
+     * clients with `gbrain auth rescope-client <id> --surface full`.
+     * Unset (default) = null-surface clients get the server ceiling —
+     * pre-WP4 behavior, existing clients untouched. Dual-plane: the DB
+     * plane (`gbrain config set mcp.default_surface_dcr starter`) wins
+     * over this file slot. Always bounded by the server ceiling (D2).
+     */
+    default_surface_dcr?: 'verbs' | 'starter' | 'full';
   };
 }
 
@@ -650,6 +694,15 @@ export function loadConfig(): GBrainConfig | null {
     ...(process.env.GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS &&
       Number.isFinite(Number(process.env.GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS))
       ? { retrieval_reflex_window_turns: Number(process.env.GBRAIN_RETRIEVAL_REFLEX_WINDOW_TURNS) }
+      : {}),
+    ...(process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS
+      ? {
+          // Case-insensitive + common negatives — incident escape hatch;
+          // mirrors reflex.ts:lexicalArmsEnabled (adversarial F11).
+          retrieval_reflex_lexical_arms: !/^(false|0|off|no)$/i.test(
+            process.env.GBRAIN_RETRIEVAL_REFLEX_LEXICAL_ARMS.trim(),
+          ),
+        }
       : {}),
     ...(process.env.GBRAIN_REMOTE_CLIENT_SECRET && fileConfig?.remote_mcp
       ? { remote_mcp: { ...fileConfig.remote_mcp, oauth_client_secret: process.env.GBRAIN_REMOTE_CLIENT_SECRET } }
@@ -1008,6 +1061,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'agent.use_gateway_loop',
   // #2778: per-turn output-token cap for the subagent loop (default 8192).
   'agent.max_output_tokens',
+  // File-plane bootstrap hook-lane keys (routed to ~/.gbrain/config.json by
+  // `config set` — engine-free hook/push children read loadConfigFileOnly).
+  'push.allow_unverified_remote',
+  'hooks.stop_push_debounce_min',
   // DB-plane (v0.32.3 search modes + related)
   'search.mode',
   'search.cache.enabled',
@@ -1036,6 +1093,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'cycle.extract_atoms.budget_usd',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
+  // #4152: preferred triage-model key (explicit pre-read in loadSynthConfig;
+  // wins over models.dream.synthesize_verdict + dream.synthesize.verdict_model).
+  'models.dream.triage',
   'models.drift',
   'models.auto_think',
   'models.think',
@@ -1067,6 +1127,19 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.synthesize.output_root',
   'dream.synthesize.subagent_timeout_ms',
   'dream.synthesize.subagent_wait_timeout_ms',
+  // #4152 two-stage cascade: subagent turn budget (default 16) + opt-in
+  // per-source daily submission cap (default 0 = disabled; 200 recommended
+  // for busy deployments).
+  'dream.synthesize.max_turns',
+  'dream.synthesize.max_submissions_per_source_per_day',
+  // #4152 triage knobs. The triage model's preferred key is
+  // `models.dream.triage` (models.* prefix, registered via the models.dream.*
+  // family); these tune the gate + sampling + pass budget.
+  'dream.triage.threshold',
+  'dream.triage.max_chars',
+  'dream.triage.max_tokens',
+  'dream.triage.max_ms',
+  'dream.triage.concurrency',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
   // #2782-family: patterns-phase subagent timeouts (mirror of the
@@ -1095,6 +1168,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // the advisor exposes operational diagnostics (version/jobs/key presence),
   // not prose skills. Default OFF; read-only over MCP.
   'mcp.publish_advisor',
+  // WP3 — unknown tool-call argument posture ('warn' default | 'reject').
+  // Read dual-plane by src/mcp/validate-params.ts (DB > file > 'warn').
+  'mcp.strict_params',
   // Skill-nag suppression (#2180): brain-resident pack install nag off-switch.
   'skillpack.nag_disabled',
   // Self-upgrade (v0.42; file plane, read on the hot path)
@@ -1125,6 +1201,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // reconcile-links, and sweep. The documented off-switch is `gbrain config
   // set auto_link false` — same unregistered-key class as auto_chronicle.
   'auto_link',
+  // v0.46.3: the provider_sunset doctor check's own suppression escape hatch
+  // (doctor.ts) and docs/guides/embedding-migration.md both document
+  // `gbrain config set doctor.suppress_provider_sunset true`, but the key was
+  // never registered — the documented command exited 1 with "Unknown config
+  // key". Same class as auto_chronicle above. Deliberately an exact key, not
+  // a blanket 'doctor.' prefix (unbounded namespaces defeat the typo gate).
+  'doctor.suppress_provider_sunset',
   // #2606: chronicle judge output-token cap (default 4000). Event-dense
   // pages overflowed the old hardcoded 1500 and were misrecorded as
   // no_events; the cap is now configurable and truncation is surfaced.
@@ -1139,6 +1222,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'orphans.exclude_slugs',
   'sync.cost_gate_min_usd',
   'sync.federated_v2',
+  // #2179: clamp window for DCR-requested per-client token TTLs. Read by
+  // `gbrain serve --http` at startup; unset min defaults to 300s, unset max
+  // defaults fail-closed to max(--token-ttl, min).
+  'oauth.dcr_ttl_min_seconds',
+  'oauth.dcr_ttl_max_seconds',
   'embed.backfill_cooldown_min',
   'embed.backfill_max_usd_per_source_24h',
   'embed.backfill_max_usd',
@@ -1148,6 +1236,10 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // stops claiming "Nothing in gbrain reads this" for a key the resolver
   // reads on every unqualified call.
   'sources.default',
+  // Alias/undeclared explicit-type warnings at sync/import (default on).
+  // Read by performSync + runImport summary aggregation; 'false'/'0'/'off'
+  // silences both surfaces (schema lint rules stay active).
+  'schema.type_warnings',
 ];
 
 /**
@@ -1168,6 +1260,12 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   'autopilot.',         // autopilot.nightly_quality_probe.*, autopilot.auto_drain.* (#1685)
   'chronicle.',         // chronicle.tz + future Life Chronicle knobs (#2390)
   'self_upgrade.',      // v0.42 self-upgrade (mode, quiet_hours, state)
+  // Queue admission control (per-name sub-keys):
+  //   minions.coalesce_params.<name>, minions.ttl_waiting_hours.<name>,
+  //   minions.quota_max_waiting.<name>, plus the one-time
+  //   minions.ttl_notice_shown flag. Booleans via the canonical truthiness
+  //   parser; numeric 0 disables.
+  'minions.',
 ];
 
 /**

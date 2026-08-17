@@ -6,6 +6,12 @@
  *    is configured; OK when key present; OK when not on ZE (skip).
  *  - embedding_width_consistency: warns when configured dim diverges
  *    from the actual vector(N) column width.
+ *
+ * v0.46.3 split-default: the sunset-aware "warn/fail as the deadline
+ * approaches" duty moved to the separate `checkProviderSunset` check
+ * (test/provider-sunset-doctor.serial.test.ts) so a valid key earns an
+ * `ok` here again — this check is purely "is the configured provider's
+ * key present," not "is the provider dying."
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
@@ -52,7 +58,7 @@ describe('checkZeEmbeddingHealth', () => {
     expect(check.message).toContain('not ZeroEntropy');
   });
 
-  test('on ZE + no key: warns with setup hint', async () => {
+  test('on ZE + no key: warns migration-first (no signup funnel)', async () => {
     configureGateway({
       embedding_model: 'zeroentropyai:zembed-1',
       embedding_dimensions: 1280,
@@ -66,17 +72,18 @@ describe('checkZeEmbeddingHealth', () => {
       expect(check.status).toBe('warn');
       expect(check.message).toContain('ZEROENTROPY_API_KEY');
       // Post-sunset the fix is to migrate off ZE, NOT to go get a ZE key —
-      // so the message points at the replacement stack, not dashboard.zeroentropy.dev.
+      // so the message points at the replacement stack (the canonical
+      // migrate-embeddings command), not dashboard.zeroentropy.dev.
       expect(check.message).toContain('2026-09-04');
-      expect(check.message).toContain('openai:text-embedding-3-large');
+      expect(check.message).toContain('migrate embeddings');
+      expect(check.message).not.toContain('dashboard.zeroentropy.dev');
     });
   });
 
-  test('on ZE + env key: still warns (sunset), key does not earn an ok', async () => {
-    // Behavior change: a valid ZE key used to be enough for `ok`. It is not
-    // anymore — ZeroEntropy shuts down 2026-09-04, so being on ZE at all is
-    // the finding. A green check here would let a brain sail into the
-    // deadline believing it was healthy.
+  test('on ZE + env key: earns an ok (sunset warning lives in checkProviderSunset)', async () => {
+    // v0.46.3 split-default: a valid key is enough for `ok` here again — the
+    // "is this provider dying" warn/fail escalation is a separate concern
+    // owned by checkProviderSunset (test/provider-sunset-doctor.serial.test.ts).
     configureGateway({
       embedding_model: 'zeroentropyai:zembed-1',
       embedding_dimensions: 1280,
@@ -84,15 +91,14 @@ describe('checkZeEmbeddingHealth', () => {
     });
     await withEnv({ ZEROENTROPY_API_KEY: 'sk-fake-test' }, async () => {
       const check = await checkZeEmbeddingHealth(engine);
-      expect(check.status).toBe('warn');
-      expect(check.message).toContain('2026-09-04');
+      expect(check.status).toBe('ok');
     });
   });
 
   // v0.37 fix wave note: ZE key now lives in file plane only (not DB plane).
   // The "config key" path here exercises the file-plane fallback that
   // checkZeEmbeddingHealth checks via loadConfigFileOnly().
-  test('on ZE + env key (file-plane equivalent): still warns (sunset)', async () => {
+  test('on ZE + env key (file-plane equivalent): earns an ok', async () => {
     configureGateway({
       embedding_model: 'zeroentropyai:zembed-1',
       embedding_dimensions: 1280,
@@ -100,8 +106,7 @@ describe('checkZeEmbeddingHealth', () => {
     });
     await withEnv({ ZEROENTROPY_API_KEY: 'sk-fake-from-env' }, async () => {
       const check = await checkZeEmbeddingHealth(engine);
-      expect(check.status).toBe('warn');
-      expect(check.message).toContain('2026-09-04');
+      expect(check.status).toBe('ok');
     });
   });
 });

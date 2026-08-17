@@ -46,15 +46,16 @@ describe('gateway configuration', () => {
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 
-  test('defaults are OpenAI text-embedding-3-large at 1536d', () => {
-    // v0.36.0.0 flipped openai 1536d -> zeroentropyai:zembed-1 1280d; both
-    // flipped back for ZeroEntropy's 2026-09-04 sunset. These govern FRESH
-    // installs only — a brain migrating off zembed-1 keeps its own 1280 and
-    // never reads these constants, so the default returns to OpenAI's native
-    // width rather than being held at 1280 for a path that doesn't use it.
+  test('defaults are zeroentropyai:zembed-1 at 1280d (legacy configless fallback)', () => {
+    // v0.36.0.0 flipped openai 1536d -> zeroentropyai:zembed-1 1280d. v0.46.3
+    // split-default: this bare (no cfg.embedding_model) DEFAULT_EMBEDDING_*
+    // path stays on zembed-1/1280 as the LEGACY fallback for pre-existing
+    // ZE-era configless brains — new installs never hit this path; they read
+    // NEW_INSTALL_DEFAULT_EMBEDDING_MODEL (voyage:voyage-4) via the init
+    // picker instead. See src/core/ai/defaults.ts.
     configureGateway({ env: {} });
-    expect(getEmbeddingModel()).toBe('openai:text-embedding-3-large');
-    expect(getEmbeddingDimensions()).toBe(1536);
+    expect(getEmbeddingModel()).toBe('zeroentropyai:zembed-1');
+    expect(getEmbeddingDimensions()).toBe(1280);
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 });

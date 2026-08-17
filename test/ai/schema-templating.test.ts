@@ -3,15 +3,17 @@ import { getPGLiteSchema, PGLITE_SCHEMA_SQL } from '../../src/core/pglite-schema
 import { getPostgresSchema } from '../../src/core/postgres-engine.ts';
 
 describe('getPGLiteSchema', () => {
-  test('default produces gateway-default schema (1536d + openai:text-embedding-3-large)', () => {
+  test('default produces gateway-default schema (1280d + zeroentropyai:zembed-1)', () => {
     // v0.37 fix wave Lane A.1 + CDX2-1: defaults track the canonical gateway
     // constants in `ai/defaults.ts` rather than hardcoded literals. That
-    // coupling is the point of this test — the defaults flipped back to
-    // OpenAI/1536 for ZeroEntropy's 2026-09-04 sunset and the schema
-    // followed automatically, with no edit needed here beyond the literals.
+    // coupling is the point of this test. v0.46.3 split-default: DEFAULT_
+    // EMBEDDING_MODEL/DIMENSIONS are the LEGACY configless-runtime fallback
+    // (zeroentropyai:zembed-1 / 1280) for pre-existing ZE-era brains — new
+    // installs read NEW_INSTALL_DEFAULT_EMBEDDING_MODEL (voyage:voyage-4)
+    // instead, resolved elsewhere (init picker), not via this no-args path.
     const sql = getPGLiteSchema();
-    expect(sql).toMatch(/vector\(1536\)/);
-    expect(sql).toMatch(/'openai:text-embedding-3-large'/);
+    expect(sql).toMatch(/vector\(1280\)/);
+    expect(sql).toMatch(/'zeroentropyai:zembed-1'/);
     expect(sql).not.toMatch(/__EMBEDDING_DIMS__/);
     expect(sql).not.toMatch(/__EMBEDDING_MODEL__/);
   });

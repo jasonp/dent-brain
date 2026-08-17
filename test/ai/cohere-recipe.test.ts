@@ -54,14 +54,21 @@ describe('cohere recipe shape', () => {
     expect(cohere.auth_env!.required).toEqual(['COHERE_API_KEY']);
   });
 
-  test('mode bundles reference a reranker model this recipe can serve', () => {
-    // Guards the split-brain where defaults.ts/mode.ts point at a
-    // provider:model the recipe does not actually allowlist.
-    const tp = cohere.touchpoints.reranker!;
+  test('mode bundles reference a reranker model SOME registered recipe can serve', () => {
+    // Guards the split-brain where mode.ts points at a provider:model no
+    // recipe actually allowlists. v0.46.3 split-default: the mode-bundle
+    // default is zeroentropyai:zerank-2 (LEGACY fallback), not cohere —
+    // cohere:rerank-v3.5 is still a valid explicit `search.reranker.model`
+    // choice (see the base_url/allowlist tests above), just not what the
+    // bundles reference today. Resolve dynamically instead of hardcoding
+    // a provider so this test survives the next reranker-default flip.
     for (const bundle of Object.values(MODE_BUNDLES)) {
       const [provider, modelId] = bundle.reranker_model.split(':');
-      expect(provider).toBe('cohere');
-      expect(tp.models).toContain(modelId);
+      const recipe = getRecipe(provider);
+      expect(recipe, `no recipe registered for provider "${provider}"`).toBeDefined();
+      const tp = recipe!.touchpoints.reranker;
+      expect(tp, `recipe "${provider}" has no reranker touchpoint`).toBeDefined();
+      expect(tp!.models, `"${modelId}" not in ${provider}'s reranker allowlist`).toContain(modelId);
     }
   });
 });

@@ -19,29 +19,33 @@ describe('v0.37 Lane A — defaults sweep', () => {
     // CDX2-1: these were file-private const; Lane A consumers (schema
     // helpers, registry) need them exported. Importing here is the test.
     const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } = await import('../src/core/ai/gateway.ts');
-    expect(DEFAULT_EMBEDDING_MODEL).toBe('openai:text-embedding-3-large');
-    expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(1536);
+    // v0.46.3 split-default: DEFAULT_EMBEDDING_MODEL/DIMENSIONS are now the
+    // LEGACY configless-runtime fallback (zeroentropyai:zembed-1 / 1280) for
+    // pre-existing ZE-era brains, not the new-install default. New installs
+    // read NEW_INSTALL_DEFAULT_EMBEDDING_MODEL instead (see ./ai/defaults.ts).
+    expect(DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
   test('A.0: ai/defaults.ts is the canonical source (leaf module, no SDK pulls)', async () => {
     const defaults = await import('../src/core/ai/defaults.ts');
-    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('openai:text-embedding-3-large');
-    expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(1536);
+    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
   // T-11 / T-12: registry + schema defaults track gateway constants.
-  test('A.1: getPGLiteSchema() default-args produce a vector(1536) column', async () => {
+  test('A.1: getPGLiteSchema() default-args produce a vector(1280) column', async () => {
     const { getPGLiteSchema } = await import('../src/core/pglite-schema.ts');
     const sql = getPGLiteSchema(); // no args — uses defaults
-    expect(sql).toContain('vector(1536)');
-    expect(sql).not.toContain('vector(1280)');
+    expect(sql).toContain('vector(1280)');
+    expect(sql).not.toContain('vector(1536)');
   });
 
-  test('A.2: getPostgresSchema() default-args produce a vector(1536) column', async () => {
+  test('A.2: getPostgresSchema() default-args produce a vector(1280) column', async () => {
     const { getPostgresSchema } = await import('../src/core/postgres-engine.ts');
     const sql = getPostgresSchema();
-    expect(sql).toContain('vector(1536)');
-    expect(sql).not.toContain('vector(1280)');
+    expect(sql).toContain('vector(1280)');
+    expect(sql).not.toContain('vector(1536)');
   });
 
   test('A.2: getPostgresSchema() with explicit args still routes the override', async () => {
@@ -52,19 +56,19 @@ describe('v0.37 Lane A — defaults sweep', () => {
     expect(sql).toContain('voyage:voyage-4-large');
   });
 
-  test('A.5: embedding-column registry builtin defaults to OpenAI/1536 on empty config + gateway', async () => {
+  test('A.5: embedding-column registry builtin defaults to ZE/1280 on empty config + gateway', async () => {
     // The registry's resolution chain is cfg > gateway > DEFAULT. With
     // no cfg AND no gateway, it should fall through to the canonical
-    // default (ZE/1280). Hard-unconfigure first to exercise that path —
-    // resetGateway() would restore the preload's 1536 baseline (#3554).
+    // legacy default (ZE/1280). Hard-unconfigure first to exercise that
+    // path — resetGateway() would restore the preload's 1536 baseline (#3554).
     const { __unconfigureGatewayForTests, resetGateway } = await import('../src/core/ai/gateway.ts');
     const { getEmbeddingColumnRegistry } = await import('../src/core/search/embedding-column.ts');
     __unconfigureGatewayForTests();
     try {
       const reg = getEmbeddingColumnRegistry({ engine: 'pglite' } as any);
       expect(reg['embedding']).toBeDefined();
-      expect(reg['embedding'].provider).toBe('openai:text-embedding-3-large');
-      expect(reg['embedding'].dimensions).toBe(1536);
+      expect(reg['embedding'].provider).toBe('zeroentropyai:zembed-1');
+      expect(reg['embedding'].dimensions).toBe(1280);
     } finally {
       // Restore the preload's legacy baseline so the rest of the file's
       // tests (and subsequent files in this shard) see a configured gateway.

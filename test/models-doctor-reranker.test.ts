@@ -47,14 +47,15 @@ describe('resolveLiveRerankerModel — divergence fix', () => {
     expect(resolved).toBe('llama-server-reranker:qwen3-reranker-4b');
   });
 
-  test('returns the mode-bundle default when no override is set (balanced enables rerank-v3.5)', async () => {
+  test('returns the mode-bundle default when no override is set (balanced enables zerank-2)', async () => {
     // balanced mode bundle has reranker_enabled: true + reranker_model:
-    // 'cohere:rerank-v3.5' baked in. Pre-fix this case returned
-    // undefined; post-fix doctor sees what search actually uses.
+    // 'zeroentropyai:zerank-2' baked in (v0.46.3 split-default legacy
+    // fallback). Pre-fix this case returned undefined; post-fix doctor
+    // sees what search actually uses.
     configureGateway({ env: {} });
     const engine = makeEngineStub({});
     const resolved = await resolveLiveRerankerModel(engine);
-    expect(resolved).toBe('cohere:rerank-v3.5');
+    expect(resolved).toBe('zeroentropyai:zerank-2');
   });
 
   test('returns undefined when reranker is explicitly disabled via config', async () => {
@@ -93,7 +94,7 @@ describe('resolveLiveRerankerModel — divergence fix', () => {
     const resolved = await resolveLiveRerankerModel(engine);
     // balanced mode bundle is the safety fallback when search.mode is unset
     // (and here, every config read failed) — and balanced enables
-    // cohere:rerank-v3.5 by default.
-    expect(resolved).toBe('cohere:rerank-v3.5');
+    // zeroentropyai:zerank-2 by default (legacy fallback).
+    expect(resolved).toBe('zeroentropyai:zerank-2');
   });
 });

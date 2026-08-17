@@ -19,8 +19,10 @@ describe('Mode bundle defaults (D6)', () => {
     expect(MODE_BUNDLES.balanced.reranker_enabled).toBe(true);
   });
 
-  test('balanced reranker model is cohere:rerank-v3.5', () => {
-    expect(MODE_BUNDLES.balanced.reranker_model).toBe('cohere:rerank-v3.5');
+  test('balanced reranker model is zeroentropyai:zerank-2 (legacy fallback)', () => {
+    // v0.46.3 split-default: LEGACY zerank-2 until the September removal;
+    // new installs get an explicit voyage:rerank-2.5 override at init.
+    expect(MODE_BUNDLES.balanced.reranker_model).toBe('zeroentropyai:zerank-2');
   });
 
   test('conservative reranker stays off (cheap tier)', () => {
