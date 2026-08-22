@@ -97,7 +97,13 @@ The adapter does not use `claude`'s own agentic tool-calling — it injects a
 fenced instruction block into the system prompt teaching the model a
 `<use_tools>[{id,name,input}, ...]</use_tools>` JSON emission format
 (`buildToolUseInstructions`), then parses that block back out of the plain
-text response into ai-sdk tool-call parts (`extractToolCalls`). This
+text response into ai-sdk tool-call parts (`extractToolCalls`). Tool-call
+ids are minted locally (`toolu_claude_cli_<counter>_<random>`), never
+trusted from the model: each `--print` turn is a fresh subprocess with no
+memory of prior ids, so model-chosen ids repeat across turns and would
+collide with the per-job tool-id uniqueness constraint; nothing ever echoes
+the original id back to the subprocess, so the substitution is transparent
+to the tool-result pairing. This
 protocol-over-text approach is what lets `supports_subagent_loop: true`
 work through the `--print`, no-built-in-tools subprocess shape described
 above.
@@ -141,7 +147,9 @@ investigating directly (run the same model via `gbrain models doctor
 | Symptom | Where it comes from | Try |
 |---|---|---|
 | `claude-cli spawn failed: ...` / stdin write failure | `spawn()`'s `error` event or a failed `stdin.write` — commonly means the `claude` binary was not found on `PATH` | Install Claude Code, or set `GBRAIN_CLAUDE_CLI_BIN` to the binary's path |
-| `claude-cli exited <code>: ...` | Non-zero exit from the `claude` subprocess itself; the message is whatever the CLI wrote to stderr/stdout | Run `claude` interactively with the same model to see the underlying CLI error directly (e.g. not logged in, model unavailable) |
+| `claude-cli API error <status>: <message>` | The CLI reported an API failure in its result envelope (`is_error: true` with `api_error_status`, e.g. 429 on a spend/rate limit) — surfaced whether the subprocess exited non-zero or zero. The error is a `ClaudeCliProcessError` carrying `apiErrorStatus` + `exitCode` for programmatic handling | Read the message — it's the CLI's own human-readable explanation (e.g. a spend-limit notice with the fix URL) |
+| `claude-cli reported error: <message>` | Same envelope-reported failure (`is_error: true`) but without an `api_error_status` field | As above — the message is the CLI's own explanation |
+| `claude-cli exited <code>` + `--- raw ---` blob | Non-zero exit from the `claude` subprocess where stdout carried no parseable result envelope; the CLI's stderr/stdout follows the `--- raw ---` marker (kept behind the marker so error classifiers never phrase-match model-derived text) | Run `claude` interactively with the same model to see the underlying CLI error directly (e.g. not logged in, model unavailable) |
 | `claude-cli output not JSON: ...` | `JSON.parse(stdout)` threw (stdout wasn't valid JSON at all) | Confirm the installed `claude` CLI version still supports `--print --output-format json`; this adapter's JSON handling was verified against CLI 2.1.145 |
 | `claude-cli JSON event array had no "result" event` | stdout parsed as a JSON array (the `"verbose": true` event-stream shape in `~/.claude/settings.json`) but none of the events had `type: "result"` | Check `~/.claude/settings.json` for `"verbose": true`; the adapter tolerates the array shape but still needs a `result` event in it |
 | `gbrain models doctor` reports `chat` as `status: unknown` for a `claude-cli:` model | The probe now allows 30s for the subprocess (see "Doctor probe timeout" above); a persistent `unknown` means the call genuinely failed or outran even that window — `classifyError` falls through to `unknown` for the adapter's abort message | Investigate directly: run the same model via `gbrain models doctor --json` or call `claude` by hand (e.g. not logged in, model unavailable) |

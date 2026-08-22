@@ -27,6 +27,10 @@ import { createHash } from 'crypto';
 import { CR_MODES, type CRMode } from '../types.ts';
 import { getFtsLanguage } from '../fts-language.ts';
 import { getRecipe } from '../ai/recipes/index.ts';
+// #3657 seam: the sunsetting legacy reranker default has ONE code home
+// (ai/defaults.ts — a leaf module, no SDK loads). The three bundles below
+// resolve through it so the September default swap is a one-line change.
+import { LEGACY_DEFAULT_RERANKER_MODEL } from '../ai/defaults.ts';
 
 /**
  * Look up the `reranker.default_timeout_ms` declared by the resolved
@@ -104,7 +108,8 @@ export interface ModeBundle {
    */
   reranker_enabled: boolean;
   /**
-   * Provider:model for the reranker. Bundle default `'zeroentropyai:zerank-2'`
+   * Provider:model for the reranker. Bundle default is
+   * `LEGACY_DEFAULT_RERANKER_MODEL` (ai/defaults.ts — currently zerank-2)
    * — LEGACY until the September removal (v0.46.3 split-default: existing
    * ZE-keyed brains keep a working reranker until the hosted API dies on
    * 2026-09-04; voyage-keyed new installs get an explicit
@@ -284,6 +289,17 @@ export interface ModeBundle {
    */
   autocut_min_top: number;
   /**
+   * Autocut floor: never trim the returned set below this many results when
+   * candidates exist. Default 1 (the never-empty failsafe — the previous
+   * hardcoded behavior, so nothing changes unless an operator opts in).
+   * Raising it protects "deep but present" answers on score curves without a
+   * dramatic cliff (a reranker whose scores decay smoothly makes the largest
+   * gap a noisy cut signal) — useful when the consumer is an LLM that reads
+   * the whole returned list, where "deep but visible" beats "trimmed away".
+   * Override: `search.autocut_min_keep` config → mode bundle.
+   */
+  autocut_min_keep: number;
+  /**
    * v0.43 — relational recall arm. When on, a relational query ("who invested
    * in widget-co", "what connects fund-a and fund-b") resolves its seed
    * entity and walks the typed-edge graph, injecting edge-derived candidates
@@ -316,7 +332,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
     // spend doesn't fit the tier's value prop.
     reranker_enabled: false,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     reranker_top_n_in: 30,
     reranker_top_n_out: null,
     reranker_timeout_ms: 5000,
@@ -350,6 +366,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
     autocut_min_top: 0.35,
+    autocut_min_keep: 1,
   }),
   balanced: Object.freeze({
     cache_enabled: true,
@@ -370,7 +387,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // return input order unchanged. Opt out with
     // `gbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (25) so the cross-encoder scores
     // every result the limit slice will return — no unscored tail for autocut
     // to wrongly drop (Codex #2). Was 30; tracking searchLimit is the
@@ -412,6 +429,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
     autocut_min_top: 0.35,
+    autocut_min_keep: 1,
   }),
   tokenmax: Object.freeze({
     cache_enabled: true,
@@ -427,7 +445,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // their fee. ~$0.0003/query at this shape; rounding error vs the
     // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
     reranker_enabled: true,
-    reranker_model: 'zeroentropyai:zerank-2',
+    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (50) so every returned result is
     // cross-encoder scored — closes the Codex #2 recall gap where autocut
     // would drop the deliberately-preserved un-reranked tail (results 31-50).
@@ -465,6 +483,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     relational_retrieval_depth: 2,
     autocut_jump: 0.2,
     autocut_min_top: 0.35,
+    autocut_min_keep: 1,
   }),
 });
 
@@ -522,6 +541,7 @@ export interface SearchKeyOverrides {
   relational_retrieval_depth?: number;
   autocut_jump?: number;
   autocut_min_top?: number;
+  autocut_min_keep?: number;
 }
 
 /**
@@ -571,6 +591,7 @@ export interface SearchPerCallOpts {
   autocut?: boolean;
   autocut_jump?: number;
   autocut_min_top?: number;
+  autocut_min_keep?: number;
   // v0.43 — relational recall per-call overrides.
   relationalRetrieval?: boolean;
   relational_retrieval_depth?: number;
@@ -668,6 +689,7 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     autocut: pick('autocut'),
     autocut_jump: pick('autocut_jump'),
     autocut_min_top: pick('autocut_min_top'),
+    autocut_min_keep: pick('autocut_min_keep'),
     // v0.43 — relational recall resolved via the same pick chain.
     relationalRetrieval: pick('relationalRetrieval'),
     relational_retrieval_depth: pick('relational_retrieval_depth'),
@@ -837,7 +859,46 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // degraded:[{stage:'cache_prestamp'}] at hit time (belt-and-braces).
 // (Merge note: both this wave and master's #3515 wave claimed v=16 in
 // flight; the merge sequences them as 16 then 17.)
-export const KNOBS_HASH_VERSION = 18;
+//
+// bump 18→19 (#3621): `ack=` (autocut minKeep floor) joins the key. The
+// floor changes how many rows survive the cut, so a minKeep=1 write
+// (trimmed to the cliff) must NOT be served to a minKeep=6 lookup (which
+// expects the floor) — same contamination class as ac=/acj=. The PR
+// authored this as v=16; master had already reached 18, so it sequences
+// here per the D8 convention. Same one-time global cold-miss pattern.
+//
+// bump 19→20 (#3002): pre-fusion pool floor. hybridSearch's innerLimit
+// gains a floor (PRE_FUSION_POOL_FLOOR=50, and at least offset+limit), so
+// every recall arm fetches a wider candidate pool at small limits — same
+// knobs, different result set. A cache row written under the old limit*2
+// pool math must NOT be served post-upgrade.
+//
+// bump 20→21 (#895): recency DEFAULT_FALLBACK coefficient lowered 0.5→0.3
+// (recency-decay.ts) so unmapped notes can't out-boost entity pages under
+// --recency. A compile-time constant, not a per-call knob, but it reorders
+// every recency-weighted result set, so pre-fix cache rows must become
+// unreachable. Both bumps ship in the same release; no new key parts —
+// the version bump alone invalidates. Same one-time global cold-miss
+// pattern as the bumps above; refills within cache.ttl_seconds (3600s).
+//
+// bump 21→22 (mw2 wave): result-affecting stamp/injection changes for
+// identical knobs — #1663 exact-lookup injection, #3995 relational page-1
+// evidence slot, #3783 keyword_hit stamps, #4220 status. Pre-upgrade rows
+// (≤1h TTL) would be served missing the injected identity page + honesty
+// stamps, and CRAG then mis-grades them weak_semantic. Version-only
+// invalidation; one-time cold-miss spike on upgrade.
+//
+// bump 22→23 folds excludePrivate (#4352): the private-visibility posture
+// joins the key via ctx.excludePrivate (xp=). #4352 originally shipped a
+// wholesale cache skip for excludePrivate=true — but that posture is the
+// DEFAULT for every remote MCP caller, so the skip disabled the semantic
+// cache for exactly the highest-volume beneficiaries. Folding it instead
+// means cache rows written with private rows included can never serve a
+// private-excluding lookup and vice versa, and remote callers get their
+// ~50% cache savings back. Same contamination class as detail (v=16) and
+// hardExcludes (v=12); same one-time global cold-miss pattern as the bumps
+// above, refills within cache.ttl_seconds (3600s default).
+export const KNOBS_HASH_VERSION = 23;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -887,6 +948,16 @@ export interface KnobsHashContext {
    * as col=/prov=. Undefined falls back to 'medium' (the documented default).
    */
   detail?: 'low' | 'medium' | 'high';
+  /**
+   * v=23 (#4352 follow-up): the private-visibility posture for this call.
+   * `excludePrivate=true` (the default for every remote MCP caller) filters
+   * `visibility: private` pages out of every recall arm, so the result set
+   * differs from a trusted private-included run. Lives in ctx (not
+   * ResolvedSearchKnobs) because it's per-call trust posture, not a mode
+   * knob — same path as detail/hardExcludes. Undefined hashes like `false`
+   * (private included), matching enforcement's strict `=== true` semantics.
+   */
+  excludePrivate?: boolean;
 }
 
 export function knobsHash(
@@ -999,6 +1070,21 @@ export function knobsHash(
     // a low write (compiled-truth-only set) must never be served to a
     // medium/high lookup. Undefined falls back to 'medium' (the default).
     `det=${ctx?.detail ?? 'medium'}`,
+    // v=19 addition (#3621, append-only): autocut minKeep floor. Changing the
+    // floor changes how many rows survive the cut, so a write under one floor
+    // must not serve a lookup under another — same contamination class as
+    // ac=/acj=. Token is `ack=`, not the PR's original `acm=`: master's
+    // weak-top floor (v=18) already owns `acm=`. `?? 1` mirrors the defensive
+    // read of acj= above for partial-knobs callers.
+    `ack=${Math.max(1, Math.floor(knobs.autocut_min_keep ?? 1))}`,
+    // v=23 addition (#4352 follow-up, append-only): private-visibility
+    // posture. A private-included (trusted) write must never serve a
+    // private-excluding (remote-default) lookup and vice versa. Replaces
+    // #4352's wholesale skipCache bypass, which disabled the semantic cache
+    // for every remote MCP caller (excludePrivate=true is their default).
+    // Strict `=== true` mirrors the enforcement predicate so undefined and
+    // false (both private-included) hash identically.
+    `xp=${ctx?.excludePrivate === true ? 1 : 0}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));
@@ -1180,6 +1266,15 @@ export function loadOverridesFromConfig(
     if (Number.isFinite(n) && n >= 0 && n <= 1) out.autocut_min_top = n;
   }
 
+  // `search.autocut_min_keep` floors the cut (integer ≥ 1; 1 = the previous
+  // hardcoded failsafe). Out-of-range/non-numeric falls through to the bundle
+  // — mirrors autocutFromConfig's validation in autocut.ts.
+  const ack = get('search.autocut_min_keep');
+  if (ack !== undefined) {
+    const n = parseInt(ack, 10);
+    if (Number.isFinite(n) && n >= 1) out.autocut_min_keep = n;
+  }
+
   // v0.43 — relational recall arm.
   const rel = get('search.relational_retrieval');
   if (rel !== undefined) {
@@ -1235,6 +1330,7 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.relational_retrieval_depth',
   'search.autocut_jump',
   'search.autocut_min_top',
+  'search.autocut_min_keep',
 ]);
 
 /**
