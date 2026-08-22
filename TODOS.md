@@ -1,5 +1,314 @@
 # TODOS
 
+## Daemon env-file lane follow-ups (#2608 / #4443 takeover, filed 2026-08-21)
+
+- [ ] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**
+  **What:** `INSTALL_FOR_AGENTS.md` and `docs/INSTALL.md` say `gbrain config set`
+  "writes the DB plane, which the provider pipeline never reads" — but
+  `src/commands/config.ts` (FILE_PLANE_API_KEYS, ~line 259) routes API keys to
+  the file plane (routed, not refused), which `mergedProviderEnv` folds.
+  **Why:** the docs teach a prohibition whose stated rationale is no longer
+  true; either document the routing or remove the scare. **Where to start:**
+  `src/commands/config.ts` FILE_PLANE_API_KEYS; both install docs; regen
+  `bun run build:llms`. **Effort:** S.
+
+- [ ] **P3 — Refresh file-plane keys in the autopilot tick.** **What:** call
+  `refreshGatewayEnvFromFilePlane()` (`src/core/ai/gateway.ts:~497`, today only
+  called from `src/commands/jobs.ts`) from the autopilot tick so a key added to
+  `~/.gbrain/config.json` after boot is picked up without a daemon reload.
+  **Why:** shrinks the restart-required window the #2608 boot warning documents.
+  **Where to start:** autopilot tick body next to the existing health probe.
+  **Effort:** S.
+
+- [ ] **P3 — Doctor check for a stale (pre-env-lane) daemon wrapper.** **What:**
+  a doctor check that reads `<gbrainDir>/autopilot-run.sh` and warns when it
+  lacks the env-file sourcing line (installed before v0.46.2x, binary upgraded,
+  wrapper never regenerated). **Why:** self-upgrade swaps the binary but never
+  the wrapper; the boot warning covers the no-key case, doctor should cover the
+  wrapper-drift case. **Where to start:** `src/commands/doctor.ts` filesystem
+  checks; `writeWrapperScript` in `src/commands/autopilot.ts`. **Effort:** S.
+
+- [ ] **P3 — launchd/systemd log paths ignore `GBRAIN_HOME`.** **What:**
+  `generateLaunchdPlist` and `generateSystemdUnit` hardcode
+  `~/.gbrain/autopilot.{log,err}` (`src/commands/autopilot.ts` plist/unit
+  templates) while the wrapper, lock, and env file all resolve through
+  `gbrainPath()`. **Why:** on a `GBRAIN_HOME` install the daemon's diagnostics
+  land in a different directory than every doc and status command names —
+  pre-existing, but the #2608 boot warning is the first feature whose
+  remediation depends on users finding autopilot.log. **Where to start:** the
+  two generators + `showStatus` log-tail readers. **Effort:** M (migration for
+  existing installs).
+
+- [ ] **P3 — In-process env-file fold for foreground/doctor parity.** **What:**
+  parse simple `KEY=value` lines of `<gbrainDir>/env` before `configureGateway`
+  (`src/cli.ts:~3298`) so foreground runs and doctor see the same keys the
+  daemon wrapper sources. **Why:** today an env-file-only key makes doctor
+  report keyless while the daemon is keyed — the inverse of #2608's trap.
+  Rejected as the PRIMARY fix because process-level vars
+  (`NODE_EXTRA_CA_CERTS`) must exist before boot, which only wrapper sourcing
+  delivers; a parity fold is additive. **Where to start:** `src/cli.ts`
+  connectEngine preamble; reuse the template's grammar (export-optional
+  KEY=value). **Effort:** M.
+
+## Serve-delegated sync follow-ups (v0.46.24.0)
+
+- [ ] **P3 — `sync --all` under delegation.** **What:** delegate a multi-source
+  sync per-source through a live serve. **Why:** v0.46.24.0 refuses `--all`
+  under a live serve — the client has no engine to enumerate sources, and the
+  PGLite fan-out is serial anyway. **Context:** the serve could enumerate its
+  own sources and run per-source delegated jobs sequentially (the runner is
+  single-flight by design), or the client could gain a `sync_sources` IPC kind.
+  Per-source `gbrain sync --source X` delegates today, so this is convenience,
+  not capability. Start: `src/commands/sync-delegate.ts` (the `--all` refusal),
+  `src/core/serve-sync-runner.ts`. Effort: M (CC: S). Priority: P3.
+- [ ] **P3 — `serve --http` sync IPC.** **What:** register the resolve-IPC
+  listener (and the sync kinds) on the HTTP serve path. **Why:** delegation is
+  stdio-serve-only — an HTTP serve still forces stop-the-serve syncs.
+  **Context:** `src/commands/serve-http.ts` is at its module-size cap; the
+  wiring needs its own module. The IPC block in `src/mcp/server.ts:186` is the
+  shape to extract/share. Effort: M (CC: S). Priority: P3.
+- [ ] **P3 — delegated post-sync steps.** **What:** the direct-CLI post-steps
+  (`manageGitignoreAtGitRoot`, the extraction-lag nudge) don't run for
+  delegated syncs. **Why:** both need an engine or repo-adjacent context the
+  client doesn't have; both already have "defer to next clean sync" postures,
+  so nothing breaks — but a brain synced ONLY through delegation never gets
+  the .gitignore management. **Context:** run them serve-side after a done
+  job, or client-side without an engine where possible. Start:
+  `src/core/serve-sync-runner.ts` (post-done hook). Effort: S. Priority: P3.
+- [ ] **P3 — N-process delegation hammer in tests/heavy/.** **What:** a
+  `tests/heavy/serve_sync_delegation.sh` modeled on `sync_lock_regression.sh`:
+  one serve + M concurrent `gbrain sync` clients, assert one delegated job at
+  a time (`busy` for the rest), no leaked lock rows, bounded MCP latency
+  during the run. **Why:** the e2e covers the arc; the hammer covers
+  contention shapes. Effort: M. Priority: P3.
+
+
+## Key-aware model routing wave follow-ups (filed 2026-08-17; plan: ~/.claude/plans/system-instruction-you-are-working-enchanted-lark.md)
+
+- [ ] **P2 — More providers in `PROVIDER_TIER_DEFAULTS` (+ discovery).** **What:**
+  extend the key-aware tier-default table (src/core/model-config.ts) beyond
+  anthropic/openai — google, deepseek, groq, openrouter each need a curated
+  per-tier model choice, and ideally a latest-model discovery adapter like
+  OpenAI's (`src/core/ai/openai-latest.ts` — provider models endpoint →
+  grammar-ranked, priced-only, cached; Anthropic also has GET /v1/models).
+  **Why:** a GOOGLE_GENERATIVE_AI_API_KEY-only install still resolves tier
+  defaults to Anthropic (unservable) and degrades to the honest keyless path
+  instead of using the key it has; and every static entry rots the way the
+  openai gpt-5.2 pin did. **Context:** the mechanism is done — one table
+  entry per provider; the work is choosing tier grammar per provider and
+  asserting recipe capability fit (tool support for subagent). Start:
+  `PROVIDER_TIER_DEFAULTS` + `test/model-config.serial.test.ts` matrix +
+  the openai-latest ranking pattern. **Effort:** S-M per provider.
+  **Depends on:** nothing.
+- [ ] **P3 — Key-aware `DEFAULT_SYNOPSIS_MODEL` (page-summary).** **What:**
+  `src/core/page-summary.ts` pins the synopsis default to Anthropic Haiku.
+  **Why deferred:** the model id feeds `computeCorpusGeneration` hashing
+  (contextual-retrieval-service.ts) — making it key-dependent churns the
+  corpus generation hash per-environment. Needs a hash-stable design (e.g.
+  exclude the model from the hash, or version the generation) before touching.
+  **Effort:** M.
+- [ ] **P3 — Structured agent-side extraction protocol.** **What:** upgrade
+  the keyless `extract_facts` envelope (skipped: extraction_unavailable +
+  prose `agent_action`) into a structured handoff (taxonomy fields, per-fact
+  write-back contract, conformance test). **Why:** the prose instruction
+  works but agent compliance is unmeasured; a typed contract makes keyless
+  extraction quality testable. Start: `src/core/ops/facts.ts` envelope +
+  `skills/brain-ops/SKILL.md`. **Effort:** M.
+- [ ] **P2 — Durable-job parking/requeue without consuming attempts.**
+  **What:** facts-absorb jobs that fail `chat_unavailable` retry 5× at a 60s
+  exponential base, then park as visible failures; a true "parked —
+  reactivate when a key appears" state would survive arbitrarily long
+  operator delay without manual `jobs retry`. **Why:** config drift is fixed
+  on human timescales; retry windows are minutes. Start:
+  `src/core/minions/queue.ts` (new status or delayed-until-capability
+  semantics). **Effort:** M-L.
+- [ ] **P2 — Chat-side extraction budget/rate cap.** **What:** the spend
+  system (docs/operations/spend-controls.md) is embedding-focused; the facts
+  backstop has no per-source budget or rate cap on chat calls. **Why:** a key
+  activates uncapped extraction on eligible writes; today's controls are the
+  kill switch + model pins only (disclosed in CHANGELOG). Start: a leaser like
+  the contextual-reindex Haiku rate-leaser, keyed per source. **Effort:** M.
+- [ ] **P2 — Route `gbrain config set *_api_key` to the file plane.** **What:**
+  `config set <provider>_api_key` writes the DB plane, which
+  `loadConfigWithEngine()` deliberately never merges for key fields
+  (documented at src/core/config.ts) — so those writes never reach the
+  gateway, and the per-job worker re-fold (src/commands/jobs.ts
+  refreshGatewayForJob) only sees file-plane edits. **Why:** closes a
+  long-standing operator trap AND makes worker key-refresh complete. Start:
+  `src/commands/config.ts` set handler (redirect key fields to the 0600
+  config.json write path). **Effort:** S-M.
+- [ ] **P2 — Doctor `facts_extraction_health` can't see the WORKER's env.**
+  **What:** the zero-rows branch gates on `isAvailable('chat', model)` in the
+  doctor process; a launchd worker with a different env (no keys) skips every
+  extraction calmly while a keyed operator shell's doctor reports healthy.
+  Sharper edge (adversarial review): the calm skip COMPLETES the job, and the
+  queue's content-hash idempotency then returns the completed row for
+  identical resubmissions — so those turns' facts are never extracted even
+  after the key is repaired, unless the page changes.
+  **Fix direction:** keyless-skip in the worker records a low-volume marker
+  (job result field or daily absorb row) doctor can read — doctor already
+  reads job results. Start: src/commands/jobs.ts facts-absorb handler +
+  src/commands/doctor.ts facts_extraction_health. **Effort:** S-M.
+- [ ] **P3 — Cap/dedupe absorb-log rows on keyed extraction failure.**
+  **What:** a keyed-but-failing extraction writes one ingest_log row PER
+  RETRY ATTEMPT (5 per job); a 10k-page sync during a revoked-key day yields
+  ~50k rows + 10k parked jobs. **Fix direction:** one absorb row per job
+  (stamp attempt count into it), or a per-source daily cap. Visibility was
+  the goal; unbounded growth wasn't. Start: src/core/facts/backstop.ts
+  `surfaceExtractionFailure` call sites. **Effort:** S.
+- [ ] **P2 — Classify provider HTTP status into extraction retry policy.**
+  **What:** `FactsExtractionError` deliberately drops the provider error body
+  (redaction), but it also drops the STATUS — the worker retries 401s (
+  permanent), 429s (needs longer backoff), and 5xx (transient) identically,
+  5 attempts each. **Fix direction:** carry a sanitized `status?: number` on
+  the typed error (a number can't leak a key), map 401/403 →
+  UnrecoverableError (park immediately with the fix hint), 429 → longer
+  backoff. Start: src/core/facts/extract.ts provider_error arm +
+  src/commands/jobs.ts facts-absorb handler. **Effort:** S-M.
+- [ ] **P2 — Live-key e2e for latest-model discovery.** **What:** discovery
+  is off in ALL test lanes (provider-keys preload); the authenticated
+  /v1/models path, endpoint override, fingerprint switch, and real response
+  shape have zero e2e coverage — only the manual scratch-HOME smoke. **Fix
+  direction:** a skip-gated e2e (runs only when OPENAI_API_KEY + an explicit
+  opt-in env is set, like the live embed parity tests) asserting a real
+  refresh lands priced tiers. Start: test/e2e/ + scripts/run-e2e.sh
+  scrub-allowlist for GBRAIN_MODEL_DISCOVERY. **Effort:** S.
+- [ ] **P3 — mtime-memoize `loadConfig()`.** **What:** key-aware resolution
+  put sync read+parse of config.json on per-resolution hot paths
+  (`resolveTierDefault` step 7, `classifyUnavailable`). Bulk syncs multiply
+  it. **Fix direction:** the exact mtime-keyed memo pattern in
+  src/core/ai/openai-latest.ts `readCacheFile`. Same cost profile as the
+  old `hasAnthropicKey` precedent, so P3 not P2. Start: src/core/config.ts
+  `loadConfig`. **Effort:** S.
+## Dream freshness split follow-ups (v0.46.20.0)
+
+- [ ] **P2 — automatic background lane for `SOURCE_BACKGROUND_PHASES`.**
+  **What:** a per-source scheduled lane for the LLM-backed/unbounded source
+  phases (extract_atoms, consolidate, propose_takes, enrich_thin,
+  schema-suggest, conversation_facts_backfill) that the v0.46.20.0 freshness
+  split removed from automatic scheduling on multi-source brains. **Why:**
+  today those phases run only on explicit `gbrain dream --source X --phase …`
+  invocation; backlogs (atoms, consolidation) grow silently between manual
+  runs. **Design constraints (verified against code during the #4250
+  review):** MUST be per-source jobs — background phases scope to ONE source
+  per cycle (`cycle.ts` extract_atoms uses `cycleSourceId ?? 'default'`), and
+  per-source jobs hold the correct `gbrain-cycle:<source>` locks (a
+  global-maintenance-job version provably covers at most one source and its
+  bare `gbrain-cycle` lock does not conflict with per-source freshness
+  cycles). Needs its own cadence + stamp key (e.g.
+  `last_source_background_at`), lower dispatch priority than the freshness
+  lane, and the queue-boundary normalization in the `autopilot-cycle` handler
+  relaxed for the new job name (or a dedicated handler). **Blocked by:** the
+  abort-signal threading TODO below (P2 — BasePhaseOpts + dream generators);
+  extract_atoms/consolidate accept neither deadline nor abort today, so a
+  background job can't exit cleanly at its deadline. **Additional constraints
+  from the #4250 ship-stage adversarial reviews:** (a) the lane applies to
+  EVERY brain with registered sources, including single-source ones (the
+  legacy full-cycle fallback fires only when the sources table is empty, so
+  a one-source brain also loses automatic background work today); (b) the
+  taxonomy is scheduling-intent, not runtime scoping — consolidate,
+  enrich_thin, and conversation_facts_backfill iterate the whole brain
+  internally, so the lane must run those ONCE per tick, never once per
+  source (concurrent per-source invocations share no lock and consolidate's
+  take-row assignment can race); (c) the maintenance job runs synthesize →
+  patterns WITHOUT the source-scoped extract phase in between, so patterns
+  reads a graph that hasn't materialized the just-synthesized links until a
+  later freshness cycle runs extract — the lane should sequence extract (or
+  an equivalent materialization) between them; (d) mixed-once synthesis
+  writes attribute to the repoPath-resolved source rather than fanning out
+  attribution per source. Effort: L (CC: M). Priority: P2.
+- [ ] **P2 — maintenance-lane structure: ordering, keeper wall, slot
+  contention.** **What:** three ship-stage adversarial findings about the
+  single global-maintenance job, to resolve alongside (or inside) the
+  background lane above. (a) MAINTENANCE_PHASES runs synthesize →
+  resolve_symbol_edges → patterns with NO extract phase between synthesize
+  and patterns, so patterns reads a graph that hasn't materialized the
+  just-synthesized links until a later freshness cycle runs extract; (b)
+  synthesize runs FIRST in the job, so a large synthesis backlog + the job
+  keeper's timeout starves the brain-wide hygiene phases behind it (embed,
+  orphans, purge) and `last_global_at` never stamps — the next window
+  re-dispatches into the same wall (consider global-before-mixed ordering or
+  splitting mixed into its own job; note runCycle executes in canonical
+  order, so this needs more than reordering the list); (c) freshness jobs
+  share `queue: 'default'` with the hours-long maintenance job — with low
+  worker concurrency, per-source freshness queues behind maintenance
+  synthesis, re-coupling what this release decoupled (a fanout-vs-concurrency
+  doctor check exists but does not cover this pairing). Effort: M-L (CC).
+  Priority: P2.
+- [ ] **P2 — protected-phase submission bypass via unprotected job names.**
+  **What:** `synthesize`/`patterns`/`consolidate` are PROTECTED_JOB_NAMES so
+  scoped remote callers can't burn LLM budget, but `autopilot-global-
+  maintenance` (and no-source `autopilot-cycle`) accept arbitrary
+  `job.data.phases` — a write-scoped remote submitter can reach synthesize
+  through the global job's payload. v0.46.20.0 narrowed the surface
+  (per-source payloads normalize to freshness; maintenance payloads intersect
+  with MAINTENANCE_PHASES) but synthesize is legitimately IN
+  MAINTENANCE_PHASES. **Fix shape:** protect these job names, or require
+  `allowProtectedSubmit` when a payload names a protected-equivalent phase.
+  Pre-existing exposure, narrowed but not closed by this release. Effort: S-M
+  (CC). Priority: P2.
+- [ ] **P3 — freshness-stamp gate: require ≥1 freshness-phase success.**
+  **What:** `runCycle` stamps `last_source_cycle_at`/`last_full_cycle_at`
+  when ANY phase ran and status ∈ {ok, clean, partial} — e.g. `--phase
+  orphans --source X` (global phase, source-narrowed) stamps source
+  freshness. Also note the semantic drift: `last_full_cycle_at` now stamps
+  after a 6-phase deterministic cycle, so any reader treating it as "the
+  full cycle ran" reads more than it means (KEY_FILES documents it as a
+  legacy-reader alias). **Why:** pre-existing looseness (predates #4250,
+  which tightened zero-phase runs and stopped all-failed cycles from
+  stamping); sharpening further re-opens the #2549 freshness-poisoning
+  debate (a too-strict gate starves the dispatch loop) — design carefully.
+  Start: `src/core/cycle.ts` stamp gate. Effort: S (CC). Priority: P3.
+- [ ] **P3 — peel the cycle.ts KEY_FILES mega-entry.** **What:** the
+  `src/core/cycle.ts` entry in `docs/architecture/KEY_FILES.md` is a ~11KB
+  single line carrying six unrelated concern clusters; every cycle-area PR
+  now pays a manual three-way merge on it (#4250 did). `phase-scope.ts` got
+  its own entry in v0.46.20.0; peel the rest (lock/refresher cluster,
+  extract-atoms batching, by-mention resume → op-checkpoint entry, doctor
+  hints) into per-module entries. Effort: M (CC). Priority: P3.
+## Dream-wave follow-ups (#4216 oneshot + #4194/#4217/#4088/#4087/#4155/#4201)
+
+- [ ] **P2 — gateway-loop truncation note for `length` WITH tool calls.**
+  **What:** the legacy Anthropic path injects a truncation note into the
+  tool-result turn when a `max_tokens` stop arrives mid-tool-round
+  (subagent.ts ~:835) so the model re-issues the dropped call; the gateway
+  toolLoop has no equivalent — #4088 fixed only the zero-tool-call honesty
+  arm. Add the same note-injection to `gateway.ts:toolLoop`. **Why:** a
+  capped tool turn on the gateway path silently drops the trailing calls.
+  **Effort:** S. **Priority:** P2.
+- [ ] **P2 — synthesis-quality eval lane (oneshot vs agentic).** **What:** a
+  `gbrain eval` suite scoring synthesis output (faithfulness/link quality/
+  self-containedness) on a synthetic fixture corpus, following the
+  takes-quality 3-judge template + the eval-chronicle deterministic-gold
+  pattern; wire `details.synthesis.fallback_reasons` into the receipt.
+  Adjacent: #4198 (synthesize-concepts evaluator — v0.46.28.0 made the stub
+  an honest not-implemented exit-1 scaffold; the parity-baseline evaluator
+  itself is still unbuilt). **Why:** the
+  oneshot default currently leans on the soak + fallback telemetry; CI
+  should catch a quality regression, not output review. **Effort:** L.
+  **Priority:** P2.
+- [ ] **P3 — `dream.patterns.max_turns` config.** patterns.ts hardcodes
+  `max_turns: 30`; make it a registered key mirroring
+  `dream.synthesize.max_turns`. **Effort:** S.
+- [ ] **P3 — doctor/advisor collector for oneshot fallback rate.** Surface
+  `details.synthesis.fallback_jobs / oneshot_jobs` over the last N cycles;
+  advise the agentic revert dial when the rate stays high. **Effort:** S.
+- [ ] **P3 — evaluate oneshot for the patterns phase.** One job per cycle so
+  the latency win is small, but the pattern-page output contract is just as
+  structured. **Effort:** M.
+- [ ] **P3 — shared collectPutPageSlugs (ENG-3, deferred at C9).** synthesize
+  and patterns keep private ledger collectors; they differ materially
+  (chunk-slug rewrite + jobRawSource threading vs the simple patterns copy),
+  so unification was deferred rather than forced late in the wave. Unify
+  when patterns gains chunking or the collectors next change together.
+  **Effort:** M.
+- [ ] **P3 — relax the handler-entry capability gate for oneshot jobs
+  (ENG-1).** The oneshot attempt needs no tools, so a tool-incapable model
+  could legitimately run it; today the gate refuses at entry
+  (behavior-preserving v1). Move the check to the fallback boundary for
+  `mode: 'oneshot'` jobs. **Effort:** S.
+
+
 ## `configureGateway` leaks across test files and kills the shard process (filed 2026-08-12, FIXED in v0.49.4.0)
 
 **Priority:** P2 (the instance is fixed; the missing static guard is what's left)

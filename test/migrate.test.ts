@@ -250,7 +250,7 @@ describe('migrate v36 — subagent_provider_neutral_persistence_v0_27', () => {
   });
 
   test('embedded schema (src/core/schema-embedded.ts) reflects v36 columns', async () => {
-    const { SCHEMA_SQL } = await import('../src/core/schema-embedded.ts');
+    const { SCHEMA_SQL } = await import('../src/core/schema-embedded.generated.ts');
     expect(SCHEMA_SQL).toContain('schema_version');
     expect(SCHEMA_SQL).toContain('provider_id');
     expect(SCHEMA_SQL).toContain('idx_subagent_messages_provider');
@@ -552,6 +552,57 @@ describe('migration v35 — auto_rls_event_trigger structural guards', () => {
     const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
     expect(sql).toMatch(/rolbypassrls/);
     expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
+  });
+
+  // ── #3603: managed Postgres (RDS/Aurora) has NO reachable superuser role
+  // (rds_superuser is not enough for CREATE EVENT TRIGGER), so the original
+  // unconditional DROP+CREATE could never apply — config.version stalled at 34
+  // and every later migration silently never ran while the server kept
+  // serving. Pins: create-if-absent for BOTH objects (so a master-user
+  // pre-create converges — CREATE OR REPLACE / DROP would fail on
+  // master-owned objects), plus an actionable privilege message.
+  test('does NOT issue a bare DROP EVENT TRIGGER (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql.toUpperCase()).not.toContain('DROP EVENT TRIGGER');
+  });
+
+  test('event trigger is create-if-absent via a pg_event_trigger probe (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(
+      /IF NOT EXISTS\s*\(\s*SELECT 1 FROM pg_event_trigger WHERE evtname = 'auto_rls_on_create_table'\s*\)/,
+    );
+    expect(sql).toMatch(/CREATE EVENT TRIGGER auto_rls_on_create_table/);
+  });
+
+  test('trigger function is create-if-absent so a master-pre-created function converges (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).not.toMatch(/CREATE\s+OR\s+REPLACE\s+FUNCTION\s+auto_enable_rls/i);
+    expect(sql).toMatch(/pg_proc/);
+    expect(sql).toMatch(/proname = 'auto_enable_rls'/);
+  });
+
+  test('CREATE EVENT TRIGGER failure raises an actionable insufficient_privilege message (#3603)', () => {
+    const v35 = MIGRATIONS.find(m => m.version === 35);
+    const sql = ((v35?.sqlFor as any)?.postgres ?? '') as string;
+    expect(sql).toMatch(/EXCEPTION\s+WHEN\s+insufficient_privilege/i);
+    expect(sql).toMatch(/master user/);
+    // Still no blanket swallow — only the privilege error is translated.
+    expect(sql.toUpperCase()).not.toContain('EXCEPTION WHEN OTHERS');
+  });
+
+  test('BYPASSRLS gate messages carry the achievable ALTER ROLE grant hint (#3603)', () => {
+    // "Re-run as postgres" is unachievable on managed Postgres (the master
+    // user is not BYPASSRLS either); the achievable fix is granting it.
+    const sqlOf = (v: number): string => {
+      const m = MIGRATIONS.find(x => x.version === v);
+      return ((m?.sqlFor as any)?.postgres ?? m?.sql ?? '') as string;
+    };
+    for (const v of [24, 29, 31, 32, 35]) {
+      expect(sqlOf(v)).toMatch(/ALTER ROLE % BYPASSRLS/);
+    }
   });
 });
 
@@ -2306,8 +2357,8 @@ describe('v117 — context_volunteer_events_table', () => {
     expect(m!.idempotent).toBe(true);
   });
 
-  test('LATEST_VERSION is at or above 117', () => {
-    expect(LATEST_VERSION).toBeGreaterThanOrEqual(117);
+  test('LATEST_VERSION is at or above 136', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(136);
   });
 
   test('table exists after initSchema with the documented columns', async () => {
@@ -2351,4 +2402,44 @@ describe('v117 — context_volunteer_events_table', () => {
     );
     expect(left.map(r => r.slug)).toEqual(['people/alice-example']);
   });
+});
+
+// #4252 — v142 heal (upstream authored this as v134; renumbered during the
+// v0.46.19.0-v0.46.28.0 sync, see SLOT HISTORY on v127 in migrate.ts): brains
+// whose `migrate embeddings` run predates the runSchemaTransition
+// capture/replay fix lost the `embedding IS NULL` partial index to the DROP
+// COLUMN cascade. v103 is recorded as applied on those brains, so its IF NOT
+// EXISTS never re-runs; v142 re-issues the def. No-op on healthy brains.
+//
+// FORK ADAPTATION: upstream's version also re-issues `idx_chunks_embedding_null`
+// (the v66 name) — correct upstream, where that name was never retired. This
+// fork's own v127 (pages_embedding_signature_idx_and_dup_drop) deliberately
+// DROPPED idx_chunks_embedding_null as a duplicate of content_chunks_stale_idx,
+// so v142 restores only the surviving name; recreating both would silently
+// undo v127's fix on every fresh install / full migration replay.
+describe('v142 — restore_content_chunks_stale_idx', () => {
+  test('recreates content_chunks_stale_idx lost to a pre-fix embedding transition, without reviving the retired idx_chunks_embedding_null duplicate', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema();
+      // Simulate the pre-fix damage: the surviving partial index gone.
+      await engine.executeRaw(`DROP INDEX IF EXISTS content_chunks_stale_idx`);
+      // Rewind so v142 re-runs.
+      await engine.setConfig('version', '141');
+      await runMigrations(engine);
+
+      const rows = await engine.executeRaw<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE tablename = 'content_chunks'
+            AND indexname IN ('idx_chunks_embedding_null', 'content_chunks_stale_idx')
+          ORDER BY indexname`,
+      );
+      // Only the surviving name comes back — v127 retired the duplicate for good.
+      expect(rows.map(r => r.indexname)).toEqual(['content_chunks_stale_idx']);
+      expect(rows[0].indexdef).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
 });

@@ -41,10 +41,12 @@ import { randomUUID, createHash } from 'node:crypto';
 import { BaseCyclePhase, CYCLE_DEADLINE_RESERVE_MS, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { defaultTimeoutMsFor } from '../minions/handler-timeouts.ts';
 import { chat as gatewayChat, getChatModel, probeChatModel } from '../ai/gateway.ts';
+import { createGlobalLlmHaltTracker, haltedClassOf, type GlobalLlmErrorClass } from '../ai/errors.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { GBrainError } from '../types.ts';
+import { isConfigTruthy } from '../config.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
@@ -159,6 +161,12 @@ export interface ProposeTakesOpts extends BasePhaseOpts {
   skipPagesWithFence?: boolean;
   /** Override the phase wall-clock deadline (tests). Default: 30 min. */
   deadlineMs?: number;
+  /**
+   * #4102 — `gbrain dream --phase propose_takes --once` bypasses the
+   * `cycle.propose_takes.enabled` off switch for THIS call only (mirrors the
+   * conversation_facts_backfill `once` semantics; never reads/writes config).
+   */
+  once?: boolean;
 }
 
 export interface ProposeTakesResult {
@@ -171,6 +179,26 @@ export interface ProposeTakesResult {
   budget_exhausted: boolean;
   /** True when the phase deadline fired before the page loop completed (partial result). */
   deadline_hit?: boolean;
+  /**
+   * Set when the page loop broke on a whole-run LLM failure (#3044):
+   * auth/billing on the first hit, rate_limit after RATE_LIMIT_HALT_STREAK
+   * consecutive hits. The phase reports 'warn' ('fail' when NO extractor
+   * call succeeded) and the rollup records a halt so the condition can't
+   * hide behind a green summary.
+   */
+  aborted_global_error?: GlobalLlmErrorClass;
+  /**
+   * #3763: set when the page loop halted because EVERY extractor call failed
+   * (zero successes) for EXTRACTOR_FAILURE_HALT_STREAK consecutive pages —
+   * a dead extractor lane (bad model id, broken recipe, systematic truncation)
+   * that would otherwise re-bill every remaining page. Folds into `halted`
+   * and reports the phase as 'fail'.
+   */
+  aborted_failure_streak?: boolean;
+  /** Extractor calls that returned (idempotency cache hits don't count). */
+  llm_calls_succeeded: number;
+  /** Extractor calls that threw (global or per-page alike). */
+  llm_calls_failed: number;
   warnings: string[];
 }
 
@@ -274,6 +302,27 @@ export function extractExistingTakesForDedup(pageBody: string): Array<{
 const EXTRACTOR_CALL_TIMEOUT_MS = 90_000;
 
 /**
+ * #3763 — output caps for the extractor call. A stopReason 'length' response
+ * at the base cap retries ONCE at the escalated cap (facts/extract.ts #2113
+ * parity); a still-truncated retry throws an error NAMING the truncation
+ * instead of the old generic 'transient — retry' (which re-billed the page
+ * every cycle forever while hiding the real cause).
+ */
+export const PROPOSE_TAKES_MAX_TOKENS = 2048;
+export const PROPOSE_TAKES_RETRY_MAX_TOKENS = 4096;
+
+/**
+ * #3763 — halt streak for a dead extractor lane. When EVERY extractor call in
+ * the run has failed (zero successes) and the failure count reaches this
+ * streak, the page loop halts instead of burning an LLM call (and its input
+ * tokens) on every remaining page. Any single success disarms the halt for
+ * the rest of the run — a mixed run is per-page noise, not a dead lane.
+ * Deliberately NO failure tombstone (#3910 policy): failed pages retry next
+ * cycle once the underlying cause clears.
+ */
+export const EXTRACTOR_FAILURE_HALT_STREAK = 5;
+
+/**
  * Production extractor — calls gateway.chat with the EXTRACT_TAKES_PROMPT
  * and parses the JSON array output. Returns [] on parse failure (logged as
  * warning, not thrown — one bad page must not abort the phase).
@@ -293,12 +342,35 @@ export async function defaultExtractor(
   // Bound each call so one stalled provider socket can't pin the phase for the
   // full gateway default (GBRAIN_AI_CHAT_TIMEOUT_MS, 300s) x pageLimit. The
   // caller already catches per-page errors, logs a warning, and continues.
-  const result = await gatewayChat({
+  const call = (maxTokens: number) => gatewayChat({
     messages: [{ role: 'user', content: prompt }],
     ...(input.modelHint ? { model: input.modelHint } : {}),
-    maxTokens: 2048,
+    maxTokens,
     abortSignal: AbortSignal.timeout(EXTRACTOR_CALL_TIMEOUT_MS),
   });
+  let result = await call(PROPOSE_TAKES_MAX_TOKENS);
+
+  // #3763: a truncated response (stopReason 'length' — e.g. reasoning tokens
+  // eating the cap, or a dense page extracting many claims) produced
+  // unparseable JSON that the ambiguity guard below rethrew as a GENERIC
+  // 'transient — retry', so the page was re-billed at the same too-small cap
+  // every cycle forever. Retry ONCE at the escalated cap (#2113 parity);
+  // still-truncated throws a message that NAMES the truncation so the phase
+  // warning tells the operator what actually happened.
+  if (result.stopReason === 'length') {
+    process.stderr.write(
+      `[propose_takes] WARN: extractor output truncated at maxTokens=${PROPOSE_TAKES_MAX_TOKENS} ` +
+      `(${input.pagePath}); retrying once at ${PROPOSE_TAKES_RETRY_MAX_TOKENS}\n`,
+    );
+    result = await call(PROPOSE_TAKES_RETRY_MAX_TOKENS);
+    if (result.stopReason === 'length') {
+      throw new Error(
+        `propose_takes extractor: output truncated (stopReason=length) even at ` +
+        `maxTokens=${PROPOSE_TAKES_RETRY_MAX_TOKENS} on ${input.pagePath} — ` +
+        `page prose extracts more than the cap can carry; no tombstone written, page retries next cycle`,
+      );
+    }
+  }
 
   // ChatResult.text is already the concatenated text content.
   const takes = parseExtractorOutput(result.text);
@@ -483,6 +555,37 @@ class ProposeTakesPhase extends BaseCyclePhase {
     _ctx: OperationContext,
     opts: ProposeTakesOpts,
   ): Promise<{ summary: string; details: Record<string, unknown>; status?: PhaseStatus }> {
+    // #4102 — off switch. The phase is ON by default (it ships in the default
+    // phase list), but `gbrain config set cycle.propose_takes.enabled false`
+    // must actually stop the LLM spend. Only an EXPLICIT falsy value skips
+    // (unset = default on, fail-open on read errors so a config-plane blip
+    // never silently disables the phase); `--once` bypasses for one run.
+    if (!opts.once) {
+      let enabledRaw: string | null = null;
+      try {
+        enabledRaw = await engine.getConfig?.('cycle.propose_takes.enabled') ?? null;
+      } catch {
+        enabledRaw = null;
+      }
+      if (enabledRaw != null && !isConfigTruthy(enabledRaw)) {
+        return {
+          summary: 'propose_takes skipped: cycle.propose_takes.enabled=false',
+          details: {
+            reason: 'disabled',
+            enable_hint: 'gbrain config set cycle.propose_takes.enabled true',
+            pages_scanned: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            proposals_inserted: 0,
+            tombstones_written: 0,
+            budget_exhausted: false,
+            warnings: [],
+          },
+          status: 'skipped',
+        };
+      }
+    }
+
     const extractor = opts.extractor ?? defaultExtractor;
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
     const pageLimit = opts.pageLimit ?? 100;
@@ -568,6 +671,8 @@ class ProposeTakesPhase extends BaseCyclePhase {
       proposals_inserted: 0,
       tombstones_written: 0,
       budget_exhausted: false,
+      llm_calls_succeeded: 0,
+      llm_calls_failed: 0,
       warnings: [],
       deadline_hit: false,
     };
@@ -591,6 +696,11 @@ class ProposeTakesPhase extends BaseCyclePhase {
     if (opts.reporter) {
       opts.reporter.start('propose_takes.pages' as never, pages.length);
     }
+
+    // #3044 — shared halt policy: auth/billing halt on the first hit, a
+    // rate_limit streak halts after RATE_LIMIT_HALT_STREAK consecutive
+    // failures. A successful call resets the streak.
+    const llmHalt = createGlobalLlmHaltTracker();
 
     for (const page of pages) {
       // Phase deadline check. Break (not throw) so the phase returns a
@@ -645,7 +755,12 @@ class ProposeTakesPhase extends BaseCyclePhase {
         break;
       }
 
-      // Call the extractor. Errors on a single page log a warning but do not abort.
+      // Call the extractor. Per-page errors log a warning and continue —
+      // UNLESS they classify as a whole-run condition (#3044): auth/billing
+      // halts on the first hit (a revoked key or exhausted spend limit fails
+      // identically on every remaining page); a bare rate_limit halts only
+      // after RATE_LIMIT_HALT_STREAK consecutive hits (a burst 429 can clear
+      // between pages).
       let proposals: ProposedTake[];
       try {
         proposals = await extractor({
@@ -655,10 +770,39 @@ class ProposeTakesPhase extends BaseCyclePhase {
           modelHint: opts.model,
         });
       } catch (err) {
+        result.llm_calls_failed += 1;
         const msg = err instanceof Error ? err.message : String(err);
-        result.warnings.push(`extractor failed on ${page.slug}: ${msg}`);
+        const detail = `extractor failed on ${page.slug}: ${msg}`;
+        const decision = llmHalt.observe(err);
+        if (decision !== 'continue') {
+          result.aborted_global_error = haltedClassOf(decision)!;
+          result.warnings.push(
+            `aborting phase at page ${result.pages_scanned}/${pages.length}: ` +
+            `${llmHalt.note()} (${detail})`,
+          );
+          break;
+        }
+        result.warnings.push(detail);
+        // #3763: N consecutive failures with ZERO successes = dead lane.
+        // Halt instead of spending an LLM call on every remaining page. A
+        // single success anywhere in the run keeps llm_calls_succeeded > 0
+        // and permanently disarms this halt (mixed runs are per-page noise).
+        if (
+          result.llm_calls_succeeded === 0 &&
+          result.llm_calls_failed >= EXTRACTOR_FAILURE_HALT_STREAK
+        ) {
+          result.aborted_failure_streak = true;
+          result.warnings.push(
+            `aborting phase at page ${result.pages_scanned}/${pages.length}: ` +
+            `${result.llm_calls_failed} consecutive extractor failures with zero successes — ` +
+            `halting to avoid re-billing every remaining page (no tombstones written; pages retry next cycle)`,
+          );
+          break;
+        }
         continue;
       }
+      result.llm_calls_succeeded += 1;
+      llmHalt.reset();
 
       // Write proposals to take_proposals. #2138: the idempotency key is
       // per-CLAIM — take_proposals_idempotency_idx folds md5(claim_text) into
@@ -751,8 +895,13 @@ class ProposeTakesPhase extends BaseCyclePhase {
       }
     }
     // A deadline-hit run halted mid-list the same way a budget-exhausted one
-    // does — record it as a halt, not a completed round.
-    const halted = result.budget_exhausted || result.deadline_hit === true;
+    // does — record it as a halt, not a completed round. A global-error
+    // abort (#3044) is the same posture: the round did not complete.
+    const halted =
+      result.budget_exhausted ||
+      result.deadline_hit === true ||
+      result.aborted_global_error !== undefined ||
+      result.aborted_failure_streak === true;
     await upsertExtractRollup(engine, {
       kind: 'takes.proposed',
       source_id: sourceIdForReceipt,
@@ -760,10 +909,31 @@ class ProposeTakesPhase extends BaseCyclePhase {
       halt_delta: halted ? 1 : 0,
     });
 
+    // Status folds warnings in (the extract_facts precedent from #1928): a
+    // run with swallowed per-page failures must not read as a clean 'ok'.
+    // Severity split (#3044): a global halt with ZERO successful extractor
+    // calls means the whole LLM lane is down — that is a phase 'fail', not a
+    // 'warn' (deriveStatus turns one failed phase into a 'partial' cycle;
+    // the autopilot handler deliberately does not throw on partial). A halt
+    // after some successes is a partial run → 'warn'.
+    const warningCount = result.warnings.length;
+    // #3763: an all-failures streak halt is the same severity as a
+    // zero-success global halt — the whole extractor lane is down.
+    const phaseFailed =
+      (result.aborted_global_error !== undefined && result.llm_calls_succeeded === 0) ||
+      result.aborted_failure_streak === true;
     return {
-      summary: `propose_takes: scanned ${result.pages_scanned} pages, ${result.cache_hits} cached, ${result.proposals_inserted} new proposals, ${result.tombstones_written} empty (run ${proposalRunId})`,
-      details: { ...result, proposal_run_id: proposalRunId, prompt_version: promptVersion },
-      status: result.budget_exhausted || result.deadline_hit ? 'warn' : 'ok',
+      summary:
+        `propose_takes: scanned ${result.pages_scanned} pages, ${result.cache_hits} cached, ${result.proposals_inserted} new proposals, ${result.tombstones_written} empty (run ${proposalRunId})` +
+        (result.aborted_global_error
+          ? `; aborted on ${result.aborted_global_error} error after ${result.pages_scanned} page(s)`
+          : '') +
+        (result.aborted_failure_streak
+          ? `; aborted after ${result.llm_calls_failed} consecutive extractor failures (zero successes)`
+          : '') +
+        (warningCount > 0 ? ` (${warningCount} warning(s))` : ''),
+      details: { ...result, halted, proposal_run_id: proposalRunId, prompt_version: promptVersion },
+      status: phaseFailed ? 'fail' : halted || warningCount > 0 ? 'warn' : 'ok',
     };
   }
 }

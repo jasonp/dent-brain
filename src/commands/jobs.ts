@@ -4,6 +4,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
+import type { FactsBackstopResult } from '../core/facts/backstop.ts';
 // Leaf module (no flag surface of its own) — see that file for why this
 // isn't imported from extract-conversation-facts.ts directly (#4135).
 import { ALLOWED_TYPES, type AllowedType } from '../core/facts/conversation-types.ts';
@@ -14,6 +15,7 @@ import {
   JOB_CHILD_EXIT_USAGE,
 } from '../core/minions/worker-exit-codes.ts';
 import { CHILD_ENV, resolveChildCliInvocation } from '../core/minions/job-isolation.ts';
+import { withFactsAbsorbHaltCooldown } from '../core/minions/llm-halt-cooldown.ts';
 import { runChildJobEntry } from '../core/minions/run-child.ts';
 import type { MinionHandler, MinionJob, MinionJobStatus } from '../core/minions/types.ts';
 import type { PaceKeyOverrides } from '../core/pace-mode.ts';
@@ -46,16 +48,60 @@ export function resolveJobPull(data: Record<string, unknown>): boolean {
  * from DB-backed model config immediately before queued jobs enter gateway-backed
  * paths, so a stale process-level default cannot route new work to the wrong
  * provider.
+ *
+ * Three staleness tiers (documented in KEY_FILES's refreshGatewayForJob entry):
+ *   - DB-plane model config: re-resolved here (reconfigureGatewayWithEngine).
+ *   - FILE-plane config (`~/.gbrain/config.json` — incl. provider API keys):
+ *     re-folded here, so a key added to config.json reaches the worker at the
+ *     next job. NOTE `gbrain config set *_api_key` writes the DB plane, which
+ *     loadConfigWithEngine deliberately never merges for key fields — routing
+ *     those writes to the file plane is a filed TODO.
+ *   - True process env vars: fixed at worker start; need a restart.
  */
-async function refreshGatewayForJob(engine: BrainEngine): Promise<void> {
-  const { reconfigureGatewayWithEngine } = await import('../core/ai/gateway.ts');
+export async function refreshGatewayForJob(engine: BrainEngine): Promise<void> {
+  // Env-only refresh: a full configureGateway(buildGatewayConfig(loadConfig()))
+  // would clobber the DB-plane-merged fields the worker's boot fold installed
+  // (provider_base_urls, chat options, …) with file-plane-only values.
+  const { refreshGatewayEnvFromFilePlane, reconfigureGatewayWithEngine } = await import('../core/ai/gateway.ts');
+  refreshGatewayEnvFromFilePlane();
   await reconfigureGatewayWithEngine(engine);
 }
 
+/** Shared predicate: an inline result reporting execution-time unavailability. */
+export function factsAbsorbUnavailable(result: FactsBackstopResult): boolean {
+  return (
+    result.mode === 'inline' &&
+    (result.skipped === 'extraction_unavailable' || result.skipped_reason === 'chat_unavailable')
+  );
+}
+
+/**
+ * The facts-absorb retry decision (@internal exported for tests). A job that
+ * finds chat unavailable at EXECUTION in a KEYED worker is config drift — it
+ * must throw (retry/backoff → visible, re-runnable failure), never return
+ * success and silently consume the job. A KEYLESS worker executing a job
+ * enqueued by some other process is the steady expected state — completing
+ * as a calm skip (the execution-time gate already printed the keyless note)
+ * beats a retry loop that parks every page write as a failed job.
+ */
+export function factsAbsorbShouldRetry(
+  result: FactsBackstopResult,
+  classification: 'keyed' | 'keyless',
+): boolean {
+  return classification === 'keyed' && factsAbsorbUnavailable(result);
+}
+
+// Job names whose handlers call the LLM gateway: registerBuiltinJob wraps
+// them with refreshGatewayForJob so file-plane keys + DB-plane model config
+// reach a long-lived worker. Drift guard: test/jobs-gateway-refresh-set.test.ts
+// pins this set against the registerBuiltinJob call sites — a gateway-using
+// handler registered via bare worker.register() runs with a stale gateway
+// (the #3387 chronicle_extract silent-no_events class).
 const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed',
   'extract-conversation-facts',
   'enrich',
+  'facts-absorb',
   'contextual_reindex_per_chunk',
   'autopilot-cycle',
   'synthesize',
@@ -66,6 +112,10 @@ const GATEWAY_REFRESH_JOB_NAMES = new Set([
   'embed-backfill',
   'extract-takes-from-pages',
   'embed-catch-up',
+  // #3387: chronicle_extract's judge is a gateway chat call — without the
+  // refresh a worker booted before `config set` never saw the DB-plane chat
+  // model and every extraction silently returned no_events.
+  'chronicle_extract',
 ]);
 
 function registerBuiltinJob(
@@ -303,13 +353,15 @@ USAGE
                             [--idempotency-key K] [--queue Q] [--dry-run]
                             [--redact-secrets]   (shell only; scrubs inherit
                                                   values from stdout/stderr)
-  gbrain jobs list [--status S] [--queue Q] [--limit N]
-  gbrain jobs get <id>
+  gbrain jobs list [--status S] [--queue Q] [--limit N] [--json]
+  gbrain jobs get <id> [--json]
   gbrain jobs cancel <id>
   gbrain jobs retry <id>
   gbrain jobs prune [--older-than 30d] [--dry-run]
   gbrain jobs delete <id>
-  gbrain jobs stats [--queue Q] [--cluster-errors]
+  gbrain jobs stats [--queue Q] [--cluster-errors] [--json]
+                    (dream-inline-* queues report ABANDONED/live only with an
+                     explicit --queue; use \`gbrain doctor\` to discover them)
   gbrain jobs smoke [--sigkill-rescue] [--wedge-rescue]
   gbrain jobs watch [--json] [--follow] [--refresh-ms=N]
   gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
@@ -518,6 +570,30 @@ OPTIONS
   --dry-run         Report what would be deleted without deleting
 `,
 };
+
+// Bare (unsupervised) workers run the same orphaned-private-queue recovery
+// the supervisor runs in beforeSpawn — a deployment that starts
+// `gbrain jobs work` directly must not lose the crash-recovery lane.
+// Supervised children skip it: their supervisor already ran it.
+export async function maybeRunWorkerStartupRecovery(
+  queue: MinionQueue,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (env.GBRAIN_SUPERVISED === '1') return;
+  try {
+    const recovered = await queue.reconcileOrphanedPrivateQueues({
+      reason: 'worker startup recovery: orphaned dream-inline private queue',
+    });
+    if (recovered.cancelled_jobs > 0) {
+      console.error(
+        `[gbrain jobs] private-queue startup recovery: cancelled ${recovered.cancelled_jobs} ` +
+        `job(s) across ${recovered.cancelled_queues} orphaned queue(s)`,
+      );
+    }
+  } catch (e) {
+    console.error(`[gbrain jobs] private-queue startup recovery failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
 export async function runJobs(engineOrNull: BrainEngine | null, args: string[]): Promise<void> {
   const sub = args[0];
@@ -798,6 +874,15 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         jobs = await queue.getJobs({ status, queue: queueName, limit });
       }
 
+      // #3685: --json emits the machine-readable array the CHANGELOG's
+      // scripting guidance promises (before this guard the flag was accepted
+      // and silently discarded — scripts got the padded ASCII table). Guard
+      // sits BEFORE the empty-check so an empty queue emits `[]`, not prose.
+      if (hasFlag(args, '--json')) {
+        console.log(JSON.stringify(jobs, null, 2));
+        break;
+      }
+
       if (jobs.length === 0) {
         console.log('No jobs found.');
         return;
@@ -837,6 +922,11 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         job = await queue.getJob(id);
       }
       if (!job) { console.error(`Job #${id} not found.`); process.exit(1); }
+      // #3685: same machine-readable contract as `list --json` above.
+      if (hasFlag(args, '--json')) {
+        console.log(JSON.stringify(job, null, 2));
+        break;
+      }
       console.log(formatJobDetail(job));
       break;
     }
@@ -1049,8 +1139,25 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
         const mins = w.minutes_since_completion;
         // Shared derivation (queue.ts deriveWedgeSignal) so this line, the
         // doctor wedged_queue check, and the get_job_stats op agree (#1801).
-        const { wedged, wedge_threshold_minutes: wedgeMins } = deriveWedgeSignal(w);
-        if (wedged) {
+        const { wedged, wedge_threshold_minutes: wedgeMins, private_queue } = deriveWedgeSignal(w);
+        // Parent-owned dream-inline queue: no shared worker can EVER claim it,
+        // so the supervisor-restart advice below would be a dead end (the
+        // incident bug class). Gate the ABANDONED line on the SAME classifier
+        // recovery uses — a healthy mid-drain queue (active_healthy 0 in a
+        // claim gap) classifies live and must not scream.
+        const privateVerdict = private_queue && w.active_healthy === 0 && w.waiting > 0
+          ? await queue.classifyPrivateQueueForRecovery(w.queue)
+          : null;
+        if (privateVerdict === 'orphan' || privateVerdict === 'unowned') {
+          const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;
+          console.log(
+            `\n  ⚠  ABANDONED PRIVATE QUEUE '${w.queue}': ${w.waiting} waiting, 0 active (live-lock), ${since}.\n` +
+            `     This dream-inline queue is parent-owned; restarting a worker cannot consume it.\n` +
+            (privateVerdict === 'orphan'
+              ? `     Auto-recovery cancels it at the next worker spawn or dream-cycle start.`
+              : `     Legacy unowned queue: preview \`gbrain dream retriage --help\` before manual cancellation.`),
+          );
+        } else if (wedged) {
           const since = mins === null ? 'no completions on record' : `${mins}m since last completion`;
           console.log(
             `\n  ⚠  WEDGED QUEUE '${w.queue}': ${w.waiting} waiting, 0 active (live-lock), ${since}.\n` +
@@ -1506,6 +1613,8 @@ export async function runJobs(engineOrNull: BrainEngine | null, args: string[]):
 
       try { await queue.ensureSchema(); }
       catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
+
+      await maybeRunWorkerStartupRecovery(queue);
 
       // issue #6: the direct-pool kill switch collapses lock renewal, health
       // probes, and handler workload onto ONE shared pool — silently. Make
@@ -2014,11 +2123,23 @@ export async function registerBuiltinHandlers(
     // standalone handler dropped it. Callers that want inline extract can
     // pass { noExtract: false } in job params explicitly.
     const noExtract = job.data.noExtract !== false;
+    // v0.46: github-kind single-item refresh (webhook path). The payload
+    // carries {repo, number, kind} and sync refreshes exactly that item.
+    const githubItem =
+      job.data.github_item && typeof job.data.github_item === 'object'
+        ? {
+            repo: String((job.data.github_item as Record<string, unknown>).repo),
+            number: Number((job.data.github_item as Record<string, unknown>).number),
+            kind: (job.data.github_item as Record<string, unknown>).kind === 'pr' ? 'pr' as const : 'issue' as const,
+            deleted: (job.data.github_item as Record<string, unknown>).deleted === true,
+          }
+        : undefined;
     let result;
     try {
       result = await performSync(engine, {
         repoPath, sourceId, noPull, noEmbed, noExtract,
         concurrency: concurrencyOverride,
+        ...(githubItem ? { githubItem } : {}),
       });
     } catch (err) {
       // v0.42.x (#1794, Part B): single-flight backpressure. A concurrent
@@ -2186,7 +2307,10 @@ export async function registerBuiltinHandlers(
   // LLM spend per page; no shell). Enqueued by the put_page chronicle backstop
   // and by `gbrain chronicle backfill`. Idempotent (content-addressed event
   // slugs + projection upsert), so a retry re-runs to the same state.
-  worker.register('chronicle_extract', async (job) => {
+  // #3387: registered via registerBuiltinJob (gateway-refresh wrap) — the
+  // judge is a gateway chat call, so a stale worker gateway meant silent
+  // no_events for every extraction.
+  registerBuiltinJob(worker, engine, 'chronicle_extract', async (job) => {
     const slug = typeof job.data.slug === 'string' ? job.data.slug : undefined;
     if (!slug) throw new Error('chronicle_extract job requires data.slug');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
@@ -2316,7 +2440,12 @@ export async function registerBuiltinHandlers(
     const dir = typeof job.data.dir === 'string'
       ? job.data.dir
       : (await engine.getConfig('sync.repo_path')) ?? '.';
-    return await runExtractCore(engine, { mode, dir, dryRun: !!job.data.dryRun });
+    // #3957: thread the job's source id into the fs-walk extractors. Without
+    // it the batch rows default to source_id='default' and the pages JOIN
+    // drops every row on a non-'default' brain (silent "created 0"), and the
+    // full-walk watermark stamp targets the wrong source.
+    const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
+    return await runExtractCore(engine, { mode, dir, dryRun: !!job.data.dryRun, sourceId });
   });
 
   worker.register('backlinks', async (job) => {
@@ -2337,10 +2466,12 @@ export async function registerBuiltinHandlers(
   // Local patch 2026-06-11: durable facts:absorb. One-shot CLI processes
   // (capture/put/sync) can't finish the extraction chat before their exit
   // drain aborts it, so backstop.ts submits this job instead and the
-  // long-lived worker does the LLM work here. Inline mode: errors throw,
-  // so minion retry/backoff handles transient gateway failures and real
-  // failures stay visible in `gbrain jobs list --status failed`.
-  worker.register('facts-absorb', async (job) => {
+  // long-lived worker does the LLM work here. Inline mode: errors throw, so
+  // minion retry/backoff handles transient failures and real ones stay visible
+  // in `gbrain jobs list --status failed`. In the gateway-refresh set (model
+  // config re-stamped per job). #4310: wrapped in the provider-halt cooldown
+  // (llm-halt-cooldown.ts) — a globally-broken provider defers the queue.
+  registerBuiltinJob(worker, engine, 'facts-absorb', withFactsAbsorbHaltCooldown(async (job) => {
     const slug = typeof job.data.slug === 'string' ? job.data.slug : '';
     if (!slug) throw new Error('facts-absorb job requires data.slug');
     const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : 'default';
@@ -2351,7 +2482,7 @@ export async function registerBuiltinHandlers(
     const source = (KNOWN_SOURCES as readonly string[]).includes(job.data.source as string)
       ? (job.data.source as typeof KNOWN_SOURCES[number])
       : 'mcp:put_page';
-    return await runFactsBackstop(
+    const result = await runFactsBackstop(
       {
         slug: page.slug,
         type: page.type,
@@ -2369,7 +2500,26 @@ export async function registerBuiltinHandlers(
         ...(typeof job.data.model === 'string' && job.data.model ? { model: job.data.model } : {}),
       },
     );
-  });
+    // Execution-time chat_unavailable in a KEYED worker is config drift —
+    // throw (typed) so minion retry/backoff parks it as a VISIBLE, re-runnable
+    // failure instead of consuming the job and silently losing the facts. A
+    // KEYLESS worker completes the job as a calm skip (its execution-time gate
+    // already printed the keyless note; a retry loop would turn every page
+    // write into failed-job noise). The retry conversion lives HERE, not in
+    // the shared pipeline — the same pipeline serves the extract_facts op,
+    // which must return its keyless envelope instead of throwing. The
+    // classification runs in the WORKER process (the submitting hook
+    // subprocess may have a deliberately neutered env).
+    if (factsAbsorbUnavailable(result)) {
+      const { classifyUnavailable } = await import('../core/facts/backstop.ts');
+      const jobModel = typeof job.data.model === 'string' && job.data.model ? job.data.model : undefined;
+      if (factsAbsorbShouldRetry(result, await classifyUnavailable(jobModel))) {
+        const { FactsExtractionError } = await import('../core/facts/extract.ts');
+        throw new FactsExtractionError('chat_unavailable', jobModel);
+      }
+    }
+    return result;
+  }));
 
   // Autopilot-cycle handler: delegates to runCycle. Shares the exact same
   // phase set and ordering as `gbrain dream` and autopilot's inline path —
@@ -2473,12 +2623,32 @@ export async function registerBuiltinHandlers(
     const effectiveBrainDir: string | null = sourceId ? sourceLocalPath : repoPath;
 
     // Allow callers to select phases via job data (e.g. skip embed for
-    // fast cycles). Validates against ALL_PHASES to prevent injection.
-    const { ALL_PHASES } = await import('../core/cycle.ts');
+    // fast cycles). Validates against ALL_PHASES to prevent injection, then
+    // normalizes per-source payloads to the freshness set (queue payloads
+    // are machine-authored; see normalizeQueuedSourcePhases in cycle.ts).
+    const { ALL_PHASES, normalizeQueuedSourcePhases } = await import('../core/cycle.ts');
     const validPhases = new Set(ALL_PHASES);
     const requestedPhases = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
+    const { phases: effectivePhases, rejected: phasesRejectedByNormalization } =
+      normalizeQueuedSourcePhases(requestedPhases as any, sourceId);
+    // An explicitly-empty phase list (arrived empty, or emptied by the
+    // normalization) is a no-op — NOT an implicit run. The reason string is
+    // honest about WHICH of the two happened.
+    if (effectivePhases !== undefined && effectivePhases.length === 0) {
+      return {
+        partial: false,
+        status: 'skipped',
+        report: {
+          reason: phasesRejectedByNormalization.length > 0
+            ? 'all_phases_rejected_by_normalization'
+            : 'empty_phase_list',
+          ...(sourceId ? { source_id: sourceId } : {}),
+          phases_rejected_by_normalization: phasesRejectedByNormalization,
+        },
+      };
+    }
 
     const pull = resolveJobPull(job.data);
 
@@ -2502,8 +2672,9 @@ export async function registerBuiltinHandlers(
       pull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
+      privateQueueOwnerJobId: job.id,
       ...(sourceId ? { sourceId } : {}),
-      ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
+      ...(effectivePhases !== undefined ? { phases: effectivePhases as any } : {}),
       yieldBetweenPhases: async () => {
         // Yield to the event loop so worker lock-renewal can fire.
         await new Promise<void>(r => setImmediate(r));
@@ -2514,32 +2685,45 @@ export async function registerBuiltinHandlers(
       partial: report.status === 'partial' || report.status === 'failed',
       status: report.status,
       report,
+      // Surfaced so operators can see the queue-boundary normalization at
+      // work in job results (runCycle never sees rejected phases, so its
+      // excludedPhases skip-reporting cannot cover them).
+      ...(phasesRejectedByNormalization.length > 0
+        ? { phases_rejected_by_normalization: phasesRejectedByNormalization }
+        : {}),
     };
   });
 
-  // #2194 fix #3 / #2227 bug #3 — brain-wide maintenance. Runs the `global`
-  // cycle phases (embed, orphans, purge, resolve_symbol_edges, grade_takes,
-  // calibration_profile, synthesize_concepts, skillopt) ONCE per window instead
-  // of N times concurrently across per-source cycles (the 4→10GB RSS blowout).
+  // Brain-wide maintenance. Runs mixed + global phases ONCE per window instead
+  // of repeating cross-source transcript/reflection reads in every source.
   // No source_id → uses the legacy global cycle lock; stamps autopilot.last_global_at
   // on success so the dispatch gate backs off.
   worker.register('autopilot-global-maintenance', async (job) => {
-    const { runCycle, GLOBAL_PHASES, LAST_GLOBAL_AT_KEY, ALL_PHASES } = await import('../core/cycle.ts');
+    const { runCycle, MAINTENANCE_PHASES, LAST_GLOBAL_AT_KEY } = await import('../core/cycle.ts');
     const repoPath: string | null = typeof job.data.repoPath === 'string'
       ? job.data.repoPath
       : (await engine.getConfig('sync.repo_path')) ?? null;
 
-    const validPhases = new Set(ALL_PHASES);
+    // #4250: queued maintenance payloads are machine-authored too — intersect
+    // with MAINTENANCE_PHASES so a stale (or remote-submitted) payload can't
+    // run source-scoped phases through the global lane, symmetric with the
+    // per-source normalization in the autopilot-cycle handler.
+    const maintenanceSet = new Set<string>(MAINTENANCE_PHASES);
     const requested = Array.isArray(job.data.phases)
-      ? (job.data.phases as string[]).filter((p) => validPhases.has(p as never))
-      : GLOBAL_PHASES;
-    const phases = (requested.length > 0 ? requested : GLOBAL_PHASES) as typeof GLOBAL_PHASES;
+      ? (job.data.phases as string[]).filter((p) => maintenanceSet.has(p))
+      : MAINTENANCE_PHASES;
+    const phases = (requested.length > 0 ? requested : MAINTENANCE_PHASES) as typeof MAINTENANCE_PHASES;
 
     const report = await runCycle(engine, {
       brainDir: repoPath,
       pull: false, // brain-wide DB/maintenance work never git-pulls
       signal: job.signal,
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
+      // The maintenance lane is where synthesize/patterns actually run on
+      // multi-source brains (per-source payloads normalize down to the
+      // freshness phases) — without the owner id its private queues would be
+      // owner-less and recovery would degrade to lease-expiry only.
+      privateQueueOwnerJobId: job.id,
       phases,
       forceGlobalOrphans: true,
       yieldBetweenPhases: async () => { await new Promise<void>((r) => setImmediate(r)); },
@@ -2690,6 +2874,7 @@ export async function registerBuiltinHandlers(
       phases: [phase as any],
       signal: job.signal,
       deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
+      privateQueueOwnerJobId: job.id,
     });
     return { phase, status: report.status, report };
   };

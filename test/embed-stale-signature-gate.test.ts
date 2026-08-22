@@ -27,7 +27,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { embedStaleForSource } from '../src/core/embed-stale.ts';
-import type { BrainEngine } from '../src/core/engine.ts';
 import type { ChunkInput } from '../src/core/types.ts';
 
 let engine: PGLiteEngine;
@@ -157,49 +156,41 @@ describe('stale-signature gate', () => {
 });
 
 describe('embedStaleForSource honors the gate', () => {
-  /** Wrap the real engine, counting sweep calls without changing behavior. */
-  function countingSweep(): { engine: BrainEngine; sweeps: () => number } {
-    let sweeps = 0;
-    const proxy = new Proxy(engine, {
-      get(target, prop, receiver) {
-        if (prop === 'invalidateStaleSignatureEmbeddings') {
-          return async (opts: { signature: string; sourceId?: string }) => {
-            sweeps++;
-            return target.invalidateStaleSignatureEmbeddings(opts);
-          };
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-    }) as unknown as BrainEngine;
-    return { engine: proxy, sweeps: () => sweeps };
-  }
+  // #4283 (post-merge note): invalidation now runs through
+  // invalidateStaleSignatureEmbeddingsGuarded (embedding-invalidation.ts),
+  // which issues its own executeRaw UPDATE rather than delegating to
+  // engine.invalidateStaleSignatureEmbeddings — a call-counting proxy on
+  // that method no longer observes it. Assert on the returned
+  // `result.invalidated` count instead, which is the public contract these
+  // tests actually care about.
 
   test('R-4: does NOT sweep when nothing is stale', async () => {
     await seedEmbedded('fresh', CURRENT);
-    const { engine: proxied, sweeps } = countingSweep();
-    await embedStaleForSource(proxied, 'default', {
+    const result = await embedStaleForSource(engine, 'default', {
       embeddingSignature: CURRENT,
       embedFn: async (texts) => texts.map(() => new Float32Array(colDim)),
     });
-    expect(sweeps()).toBe(0);
+    expect(result.invalidated).toBe(0);
   });
 
   test('R-4: DOES sweep when a page has drifted', async () => {
     await seedEmbedded('drifted', PRIOR);
-    const { engine: proxied, sweeps } = countingSweep();
-    await embedStaleForSource(proxied, 'default', {
+    // #4283: invalidation is gated on a live embedder probe whose vector
+    // length matches the signature's declared dims (1280 for CURRENT), not
+    // the schema column width — a mismatched probe is meant to SKIP
+    // invalidation, so the mock must match CURRENT to exercise the sweep.
+    const result = await embedStaleForSource(engine, 'default', {
       embeddingSignature: CURRENT,
-      embedFn: async (texts) => texts.map(() => new Float32Array(colDim)),
+      embedFn: async (texts) => texts.map(() => new Float32Array(1280)),
     });
-    expect(sweeps()).toBe(1);
+    expect(result.invalidated).toBe(1);
   });
 
   test('R-4: no signature supplied → neither gate nor sweep runs', async () => {
     await seedEmbedded('drifted', PRIOR);
-    const { engine: proxied, sweeps } = countingSweep();
-    await embedStaleForSource(proxied, 'default', {
+    const result = await embedStaleForSource(engine, 'default', {
       embedFn: async (texts) => texts.map(() => new Float32Array(colDim)),
     });
-    expect(sweeps()).toBe(0);
+    expect(result.invalidated).toBe(0);
   });
 });

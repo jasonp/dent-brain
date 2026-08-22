@@ -136,7 +136,8 @@ export function isSupabasePoolerUrl(url: string): boolean {
  *
  * Returns null when the URL isn't a recognized Supabase pooler.
  */
-// FORK DIVERGENCE (v0.48.1, RE-CONFIRMED during the v0.50.0.0 upstream sync).
+// FORK DIVERGENCE (v0.48.1, RE-CONFIRMED during the v0.50.0.0 AND the
+// v0.46.19.0-v0.46.28.0 upstream syncs).
 //
 // Upstream derives `db.<ref>.supabase.co` and strips the username to bare
 // `postgres`. We deliberately do NEITHER. Two independent reasons, both of
@@ -162,6 +163,15 @@ export function isSupabasePoolerUrl(url: string): boolean {
 // upstream. Production sets GBRAIN_DIRECT_DATABASE_URL explicitly to the
 // session pooler (:5432), which passes through untouched either way, so the
 // blast radius is fresh installs and teammates without the override.
+//
+// Upstream's #1915 (deriveSessionPoolerUrl + a single-flight retry in
+// ConnectionManager) solves the SAME db.<ref> IPv6-unreachable problem a
+// different way: derive the bad host first, then retry via the session
+// pooler on failure. It's redundant here — this fork's deriveDirectUrl
+// already returns the session-pooler URL on the first try, so there is
+// nothing left to retry to. Dropped wholesale (both the implementation and
+// its test/connection-manager.serial.test.ts additions) during the
+// v0.46.19.0-v0.46.28.0 sync rather than carrying dead code.
 export function deriveDirectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));

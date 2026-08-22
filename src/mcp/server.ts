@@ -13,10 +13,11 @@ import type { Operation } from '../core/operations.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
-  resolveSocketPath,
+  resolveSocketPathForConfig,
   startResolveIpcServer,
   cleanupStaleSocket,
-  ensureIpcSecret,
+  ensureIpcSecretForConfig,
+  type IpcHandlers,
 } from '../core/context/resolve-ipc.ts';
 import { resolveEntitiesToPointers, logDeliveredReflexPointers } from '../core/context/retrieval-reflex.ts';
 import { lexicalArmsEnabled } from '../core/context/reflex.ts';
@@ -179,23 +180,70 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
   // Retrieval Reflex (#1981, D9=C): on a PGLite brain, serve owns the single
   // connection, so the context engine (and the per-prompt hook command)
   // resolve salient entities THROUGH us over a local unix socket rather than
-  // opening a second (impossible) connection.
+  // opening a second (impossible) connection. Engine-uniform since #4245:
+  // Postgres brains listen too (the hook lane is engine-free by design, so
+  // IPC through a serve is its only DB path there) — socket + secret key off
+  // hash12(database_url) under ~/.gbrain/run via resolveSocketPathForConfig.
   // Best-effort; failure to bind never blocks the MCP server.
   let resolveServer: import('node:net').Server | null = null;
   let resolveSocket: string | null = null;
   try {
     const cfg = loadConfig();
-    if (cfg?.engine === 'pglite' && cfg.database_path) {
-      resolveSocket = resolveSocketPath(cfg.database_path);
+    resolveSocket = resolveSocketPathForConfig(cfg);
+    if (resolveSocket) {
       const { sourceId: defaultSource } = await resolveMcpStdioSourceScope(engine);
-      // [S3#6] turn_context requires the shared secret from the data dir
-      // (created 0600 here if absent). If the secret can't be provisioned,
-      // turn_context stays fail-closed ('unauthorized') while the secret-free
-      // resolve kind keeps working.
+      // [S3#6] turn_context requires the shared secret from the config-keyed
+      // path (created 0600 here if absent). If the secret can't be
+      // provisioned, turn_context stays fail-closed ('unauthorized') while
+      // the secret-free resolve kind keeps working.
       let ipcSecret: string | undefined;
       try {
-        ipcSecret = ensureIpcSecret(cfg.database_path);
+        ipcSecret = ensureIpcSecretForConfig(cfg) ?? undefined;
       } catch { /* turn_context disabled; resolve unaffected */ }
+      // Serve-delegated sync kinds — built in their OWN try/catch so a
+      // runner import/registration failure can never take resolve /
+      // turn_context / context_pack down with it (this whole block's shared
+      // catch would otherwise swallow the error and start NO listener).
+      // Kill switch: GBRAIN_SERVE_SYNC_IPC=0 → the kinds are simply not
+      // registered and clients get 'unsupported_kind' (the polite refusal).
+      let syncHandlers: Pick<IpcHandlers, 'sync_start' | 'sync_status' | 'sync_abort'> = {};
+      if (process.env.GBRAIN_SERVE_SYNC_IPC !== '0') {
+        try {
+          const runner = await import('../core/serve-sync-runner.ts');
+          syncHandlers = {
+            sync_start: (req) =>
+              runner.startDelegatedSync(engine, req.options, req.clientToken, {
+                boundSourceId: defaultSource,
+              }),
+            sync_status: (req) => runner.getDelegatedSyncStatus(req.jobId),
+            sync_abort: (req) => runner.abortDelegatedSync(req.jobId),
+          };
+        } catch (e) {
+          process.stderr.write(
+            `[serve-sync] handlers unavailable: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        }
+      }
+      // Serve-delegated maintenance sweep (#677) — same posture, own
+      // try/catch so a runner failure never takes the other kinds down.
+      // Shares the GBRAIN_SERVE_SYNC_IPC kill switch (one delegation family).
+      let sweepHandlers: Pick<IpcHandlers, 'sweep_start' | 'sweep_status'> = {};
+      if (process.env.GBRAIN_SERVE_SYNC_IPC !== '0') {
+        try {
+          const sweepRunner = await import('../core/serve-sweep-runner.ts');
+          sweepHandlers = {
+            sweep_start: (req) =>
+              sweepRunner.startDelegatedSweep(engine, req.options, req.clientToken, {
+                boundSourceId: defaultSource,
+              }),
+            sweep_status: (req) => sweepRunner.getDelegatedSweepStatus(req.jobId),
+          };
+        } catch (e) {
+          process.stderr.write(
+            `[serve-sweep] handlers unavailable: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        }
+      }
       resolveServer = await startResolveIpcServer(
         resolveSocket,
         {
@@ -244,6 +292,8 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
           // the runtime owns entity merge, banking, the since-cursor, and the
           // complete-pack-only monotonic cursor advance.
           context_pack: makeContextPackIpcHandler(engine, defaultSource),
+          ...syncHandlers,
+          ...sweepHandlers,
         },
         {
           // The IPC resolve path IS the ambient reflex channel. Logging happens
@@ -307,6 +357,11 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
     import('../core/context/checkpoint-harvest.ts')
       .then((m) => m.shutdownCheckpointHarvest())
       .catch(() => {})
+      // Delegated-sync settle BEFORE disconnect (idempotent shared promise —
+      // serve.ts's beginShutdown races here on the same signals): the job's
+      // final checkpoint flush and row-lock release need the live engine.
+      .then(() => import('../core/serve-sync-runner.ts').then((m) => m.shutdownDelegatedSync()))
+      .catch(() => {})
       .then(() => Promise.resolve(engine.disconnect?.()))
       .catch(() => {})
       .finally(() => process.exit(code));
@@ -329,13 +384,16 @@ export async function startMcpServer(engine: BrainEngine, opts: { surface?: McpS
 
 // Backward compat: used by `gbrain call` command (trusted local path).
 // v0.31.8 (D22): accept opts.sourceId so `gbrain call --source X <op> <json>`
-// can scope the op handler to that source. resolveSourceId() in call.ts is
-// the upstream resolver; this layer just passes the resolved id through.
+// can scope the op handler to that source. resolveSourceWithTier() in call.ts
+// is the upstream resolver; this layer just passes the resolved id through.
+// #3874: also accept opts.localFederatedSourceIds so an ambient-tier
+// resolution widens unqualified reads across federated sources exactly like
+// the direct CLI path (cli.ts makeContext) does.
 export async function handleToolCall(
   engine: BrainEngine,
   tool: string,
   params: Record<string, unknown>,
-  opts?: { sourceId?: string },
+  opts?: { sourceId?: string; localFederatedSourceIds?: string[] },
 ): Promise<unknown> {
   const op = operations.find(o => o.name === tool);
   if (!op) throw new Error(`Unknown tool: ${tool}`);
@@ -347,6 +405,9 @@ export async function handleToolCall(
     remote: false,
     logger: { info: console.log, warn: console.warn, error: console.error },
     ...(opts?.sourceId ? { sourceId: opts.sourceId } : {}),
+    ...(opts?.localFederatedSourceIds
+      ? { localFederatedSourceIds: opts.localFederatedSourceIds }
+      : {}),
   });
 
   return op.handler(ctx, params);
