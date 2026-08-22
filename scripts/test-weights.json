@@ -812,7 +812,6 @@
  "test/queue-started-at-retry.test.ts": 991,
  "test/rate-leases-uncapped.test.ts": 782,
  "test/rate-leases.test.ts": 431,
- "test/readme-hero-anchors.test.ts": 5,
  "test/recall-extensions.test.ts": 2447,
  "test/recall-footer.test.ts": 17,
  "test/recall-rollup.test.ts": 78,
