@@ -2404,22 +2404,29 @@ describe('v117 — context_volunteer_events_table', () => {
   });
 });
 
-// #4252 — v134 heal: brains whose `migrate embeddings` run predates the
-// runSchemaTransition capture/replay fix lost both `embedding IS NULL`
-// partial indexes to the DROP COLUMN cascade. v66/v103 are recorded as
-// applied on those brains, so their IF NOT EXISTS never re-runs; v134
-// re-issues both defs. No-op on healthy brains.
-describe('v134 — restore_chunks_embedding_null_partial_indexes', () => {
-  test('recreates both partial indexes lost to a pre-fix embedding transition', async () => {
+// #4252 — v142 heal (upstream authored this as v134; renumbered during the
+// v0.46.19.0-v0.46.28.0 sync, see SLOT HISTORY on v127 in migrate.ts): brains
+// whose `migrate embeddings` run predates the runSchemaTransition
+// capture/replay fix lost the `embedding IS NULL` partial index to the DROP
+// COLUMN cascade. v103 is recorded as applied on those brains, so its IF NOT
+// EXISTS never re-runs; v142 re-issues the def. No-op on healthy brains.
+//
+// FORK ADAPTATION: upstream's version also re-issues `idx_chunks_embedding_null`
+// (the v66 name) — correct upstream, where that name was never retired. This
+// fork's own v127 (pages_embedding_signature_idx_and_dup_drop) deliberately
+// DROPPED idx_chunks_embedding_null as a duplicate of content_chunks_stale_idx,
+// so v142 restores only the surviving name; recreating both would silently
+// undo v127's fix on every fresh install / full migration replay.
+describe('v142 — restore_content_chunks_stale_idx', () => {
+  test('recreates content_chunks_stale_idx lost to a pre-fix embedding transition, without reviving the retired idx_chunks_embedding_null duplicate', async () => {
     const engine = new PGLiteEngine();
     await engine.connect({});
     try {
       await engine.initSchema();
-      // Simulate the pre-fix damage: both partial indexes gone.
-      await engine.executeRaw(`DROP INDEX IF EXISTS idx_chunks_embedding_null`);
+      // Simulate the pre-fix damage: the surviving partial index gone.
       await engine.executeRaw(`DROP INDEX IF EXISTS content_chunks_stale_idx`);
-      // Rewind so v134 re-runs.
-      await engine.setConfig('version', '133');
+      // Rewind so v142 re-runs.
+      await engine.setConfig('version', '141');
       await runMigrations(engine);
 
       const rows = await engine.executeRaw<{ indexname: string; indexdef: string }>(
@@ -2428,10 +2435,9 @@ describe('v134 — restore_chunks_embedding_null_partial_indexes', () => {
             AND indexname IN ('idx_chunks_embedding_null', 'content_chunks_stale_idx')
           ORDER BY indexname`,
       );
-      expect(rows.map(r => r.indexname)).toEqual(['content_chunks_stale_idx', 'idx_chunks_embedding_null']);
-      for (const r of rows) {
-        expect(r.indexdef).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
-      }
+      // Only the surviving name comes back — v127 retired the duplicate for good.
+      expect(rows.map(r => r.indexname)).toEqual(['content_chunks_stale_idx']);
+      expect(rows[0].indexdef).toMatch(/WHERE\s+\(?embedding IS NULL\)?/i);
     } finally {
       await engine.disconnect();
     }

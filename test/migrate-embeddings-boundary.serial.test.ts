@@ -32,6 +32,7 @@ import {
   __setEmbedTransportForTests,
 } from '../src/core/ai/gateway.ts';
 import { runEmbedCore } from '../src/commands/embed.ts';
+import { EMBED_PROBE_TEXT } from '../src/core/embed-stale.ts';
 import { runMigrateEmbeddings } from '../src/commands/migrate-embeddings.ts';
 import { MIGRATION_STATE_KEY, MIGRATION_COMPLETED_KEY } from '../src/core/embedding-migration.ts';
 
@@ -84,7 +85,9 @@ beforeAll(async () => {
     env: { ZEROENTROPY_API_KEY: 'ze-test-fake', OPENAI_API_KEY: 'sk-test-fake' },
   });
   __setEmbedTransportForTests(async ({ values }: { values: string[] }) => {
-    for (const v of values) if (v !== PROBE_TEXT) embeddedTexts.push(v);
+    // #4283: filter out the stale-signature preflight probe alongside the
+    // migration's own completion probe (see migrate-embeddings-flow test).
+    for (const v of values) if (v !== PROBE_TEXT && v !== EMBED_PROBE_TEXT) embeddedTexts.push(v);
     return {
       embeddings: values.map(() => new Array(currentDims).fill(0).map((_, i) => Math.sin(i) * 0.01 + 0.003)),
       usage: { tokens: values.length * 4 },

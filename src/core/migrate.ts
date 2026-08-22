@@ -5738,6 +5738,13 @@ export const MIGRATIONS: Migration[] = [
     // Re-running this on a brain that already applied it as v116 is a no-op:
     // the CREATE is `IF NOT EXISTS`, the DROP is `IF EXISTS` and additionally
     // gated on the v103 survivor being present and valid.
+    //
+    // FORWARD REFERENCE: v142 (restore_content_chunks_stale_idx, upstream
+    // #4252, adapted during the v0.46.19.0-v0.46.28.0 sync) re-issues
+    // content_chunks_stale_idx's CREATE INDEX for brains whose `migrate
+    // embeddings` schema transition cascade-dropped it — but deliberately
+    // does NOT restore idx_chunks_embedding_null, since THIS migration
+    // retires that name for good. Keep it that way if v142 changes.
     // v0.49.4.0 — the stale-signature gate index, plus one duplicate index drop.
     //
     // WHY (measured on production 2026-08-11, 13.2-day pg_stat_statements window):
@@ -6133,62 +6140,6 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 133,
-    name: 'content_chunks_embedded_text_hash',
-    // #4246: per-chunk embed-time content revision. upsertChunks stamps
-    // md5(chunk_text) whenever an embedding lands; a later text rewrite that
-    // keeps the vector is then detectable (embedded_text_hash <> md5(chunk_text))
-    // and invalidateContentDriftEmbeddings NULLs it into the existing
-    // embed-stale cursor. Deliberately NO backfill: hashing existing rows
-    // would assert "this vector matches this text" for rows where that is
-    // exactly what's in question, and treating NULL as stale would force a
-    // corpus-wide re-embed spike on upgrade. NULL is grandfathered (heal-
-    // forward); each row picks up its hash on its next re-embed. No index:
-    // the column is only scanned by the invalidation sweep inside embed
-    // runs (bootstrap-coverage: column-only, no probe needed). Keep in sync
-    // with src/schema.sql (regenerate schema-embedded.ts via build:schema)
-    // and src/core/pglite-schema.ts.
-    idempotent: true,
-    sql: `
-      ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedded_text_hash TEXT;
-    `,
-  },
-  {
-    version: 134,
-    name: 'restore_chunks_embedding_null_partial_indexes',
-    // #4252 heal: `migrate embeddings` rebuilt content_chunks.embedding via
-    // DROP COLUMN, which cascade-dropped the `embedding IS NULL` partial
-    // indexes (v66 idx_chunks_embedding_null, v103 content_chunks_stale_idx)
-    // without recreating them. runSchemaTransition now captures + replays
-    // dependent indexes, but brains that already ran a transition lost both
-    // permanently — v66/v103 are recorded as applied, so their IF NOT EXISTS
-    // never re-runs. Re-issue both defs; a no-op everywhere else.
-    // Engine-aware split mirrors v103: Postgres uses CREATE INDEX
-    // CONCURRENTLY + invalid-remnant pre-drop; PGLite plain CREATE INDEX.
-    transaction: false,
-    sql: '',
-    handler: async (engine) => {
-      const defs: Array<[string, string]> = [
-        ['idx_chunks_embedding_null', `ON content_chunks (page_id, chunk_index) WHERE embedding IS NULL;`],
-        ['content_chunks_stale_idx', `ON content_chunks (page_id, chunk_index) WHERE embedding IS NULL;`],
-      ];
-      for (const [name, tail] of defs) {
-        if (engine.kind === 'postgres') {
-          await dropInvalidConcurrentIndex(engine, 134, name);
-          await engine.runMigration(
-            134,
-            `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ${tail}`
-          );
-        } else {
-          await engine.runMigration(
-            134,
-            `CREATE INDEX IF NOT EXISTS ${name} ${tail}`
-          );
-        }
-      }
-    },
-  },
-  {
     version: 135,
     name: 'facts_event_time_index',
     // Event-time recall (FactListOpts.eventTime) filters and orders on
@@ -6358,6 +6309,76 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_chat_usage_log_model
         ON chat_usage_log (model, created_at);
     `,
+  },
+  {
+    // Authored upstream as v133; collided with this fork's pre-existing
+    // v133 (drop_job_wide_subagent_tool_use_id_unique, #4155) — renumbered
+    // during the v0.46.19.0-v0.46.28.0 sync, same pattern as v127/v130.
+    version: 141,
+    name: 'content_chunks_embedded_text_hash',
+    // #4246: per-chunk embed-time content revision. upsertChunks stamps
+    // md5(chunk_text) whenever an embedding lands; a later text rewrite that
+    // keeps the vector is then detectable (embedded_text_hash <> md5(chunk_text))
+    // and invalidateContentDriftEmbeddings NULLs it into the existing
+    // embed-stale cursor. Deliberately NO backfill: hashing existing rows
+    // would assert "this vector matches this text" for rows where that is
+    // exactly what's in question, and treating NULL as stale would force a
+    // corpus-wide re-embed spike on upgrade. NULL is grandfathered (heal-
+    // forward); each row picks up its hash on its next re-embed. No index:
+    // the column is only scanned by the invalidation sweep inside embed
+    // runs (bootstrap-coverage: column-only, no probe needed). Keep in sync
+    // with src/schema.sql (regenerate schema-embedded.ts via build:schema)
+    // and src/core/pglite-schema.ts.
+    idempotent: true,
+    sql: `
+      ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedded_text_hash TEXT;
+    `,
+  },
+  {
+    // Authored upstream as v134; collided with this fork's pre-existing v134
+    // (session_context_state_checkpoint_manifest, Cathedral 5) — renumbered
+    // to v142 during the v0.46.19.0-v0.46.28.0 sync.
+    //
+    // FORK ADAPTATION: upstream's version unconditionally re-creates BOTH
+    // `idx_chunks_embedding_null` (the v66 name) AND `content_chunks_stale_idx`
+    // (the v103 name). That's correct upstream, where both names have always
+    // coexisted as permanent duplicates. This fork's own v127
+    // (drop_chunks_embedding_null_duplicate_index, not present upstream)
+    // deliberately DROPPED `idx_chunks_embedding_null` for good — recreating
+    // it here would silently undo that fix on every fresh install / full
+    // migration replay (caught by test/migrate.test.ts's v66→v127 dedup
+    // guard). Re-issuing ONLY `content_chunks_stale_idx` keeps this heal's
+    // actual purpose (restore a live "embedding IS NULL" partial index for
+    // brains whose `migrate embeddings` schema transition cascade-dropped
+    // it) without resurrecting the retired duplicate name.
+    version: 142,
+    name: 'restore_content_chunks_stale_idx',
+    // #4252 heal: `migrate embeddings` rebuilt content_chunks.embedding via
+    // DROP COLUMN, which cascade-dropped the `embedding IS NULL` partial
+    // index without recreating it. runSchemaTransition now captures +
+    // replays dependent indexes, but brains that already ran a transition
+    // lost it permanently — v103 is recorded as applied, so its IF NOT
+    // EXISTS never re-runs. Re-issue the def; a no-op everywhere else.
+    // Postgres uses CREATE INDEX CONCURRENTLY + invalid-remnant pre-drop
+    // (mirrors v103); PGLite plain CREATE INDEX.
+    transaction: false,
+    sql: '',
+    handler: async (engine) => {
+      const name = 'content_chunks_stale_idx';
+      const tail = `ON content_chunks (page_id, chunk_index) WHERE embedding IS NULL;`;
+      if (engine.kind === 'postgres') {
+        await dropInvalidConcurrentIndex(engine, 142, name);
+        await engine.runMigration(
+          142,
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ${tail}`
+        );
+      } else {
+        await engine.runMigration(
+          142,
+          `CREATE INDEX IF NOT EXISTS ${name} ${tail}`
+        );
+      }
+    },
   },
 ];
 

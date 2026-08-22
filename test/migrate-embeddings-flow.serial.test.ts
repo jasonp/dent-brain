@@ -32,6 +32,7 @@ import {
   __setEmbedTransportForTests,
 } from '../src/core/ai/gateway.ts';
 import { runEmbedCore } from '../src/commands/embed.ts';
+import { EMBED_PROBE_TEXT } from '../src/core/embed-stale.ts';
 import { runMigrateEmbeddings } from '../src/commands/migrate-embeddings.ts';
 import {
   MIGRATION_STATE_KEY,
@@ -62,7 +63,11 @@ function installTransport(): void {
       }
     }
     for (const v of values) {
-      if (v !== PROBE_TEXT) embeddedTexts.push(v);
+      // #4283: runEmbedCore's stale-signature invalidation gate fires a
+      // preflight probe (EMBED_PROBE_TEXT) before nulling signature-drifted
+      // embeddings — an implementation-detail call, not page content, so it
+      // gets filtered out the same way the migration's own PROBE_TEXT is.
+      if (v !== PROBE_TEXT && v !== EMBED_PROBE_TEXT) embeddedTexts.push(v);
     }
     return {
       embeddings: values.map(() => new Array(currentDims).fill(0).map((_, i) => Math.sin(i) * 0.01 + 0.001)),
