@@ -8,7 +8,6 @@
     "startCommand": "bun run src/dent/serve.ts --port $PORT",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 30,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyType": "ALWAYS"
   }
 }
