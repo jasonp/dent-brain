@@ -198,6 +198,21 @@ afterAll(async () => {
   }
 });
 
+/**
+ * Exit-code assertion that preserves evidence. Bun prints only the expected /
+ * received pair, so a `sync` child that failed for its own reason (lock
+ * takeover grace, checkpoint abort, stall watchdog) loses the one line that
+ * explains it. Failures here are rare and remote — keep the stderr.
+ */
+function assertChildOk(r: { code: number; out: string; err: string }, label: string): void {
+  if (r.code === 0) return;
+  throw new Error(
+    `${label}: expected exit 0, got ${r.code}\n` +
+    `--- child stderr ---\n${r.err.trimEnd() || '(empty)'}\n` +
+    `--- child stdout ---\n${r.out.trimEnd() || '(empty)'}`,
+  );
+}
+
 describe('serve-delegated sync (real serve + real sync subprocesses)', () => {
   test('Pin 1 — sync under a live serve delegates and completes', async () => {
     const r = await runSyncChild(['--no-pull', '--yes']);
@@ -256,11 +271,15 @@ describe('serve-delegated sync (real serve + real sync subprocesses)', () => {
     // the rung-2 regression pin. The gbrain-sync ROW lock is dead-held for
     // the 60s takeover grace, so break it explicitly first.
     const br = await runSyncChild(['--force-break-lock', '--yes'], { timeoutMs: 120_000 });
-    expect(br.code).toBe(0);
+    // Bare `Expected 0, Received 1` is unactionable in CI, and this pin is a
+    // known CI-only flake (green locally, intermittent on contended runners).
+    // Carry the child's own output into the failure so one red run names the
+    // cause instead of costing another round trip.
+    assertChildOk(br, 'Pin 4 --force-break-lock');
 
     const r = await runSyncChild(['--no-pull', '--yes', '--no-embed'], { timeoutMs: 180_000 });
     expect(r.err).not.toContain('delegating the sync');
-    expect(r.code).toBe(0);
+    assertChildOk(r, 'Pin 4 direct sync (delegation correctly declined)');
 
     // The pages are really in the brain (direct engine open works now).
     const engineConfig = { engine: 'pglite' as const, database_path: dbDir };
