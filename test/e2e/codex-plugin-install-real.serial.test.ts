@@ -129,12 +129,39 @@ async function mcpToolCallProbe(opts: {
   await proc.stdin.end();
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
+  // Drain stderr. It was piped but never read, which threw away the server's
+  // own account of why it died — and an unread pipe can wedge a chatty child
+  // once the buffer fills.
+  const errDecoder = new TextDecoder();
+  let errBuf = '';
+  const stderrPump = (async () => {
+    const r = proc.stderr.getReader();
+    for (;;) {
+      const { done, value } = await r.read();
+      if (done) break;
+      errBuf += errDecoder.decode(value, { stream: true });
+    }
+  })().catch(() => { /* child gone */ });
+  const failure = async (reason: string): Promise<Error> => {
+    await Promise.race([stderrPump, new Promise((r) => setTimeout(r, 2_000))]);
+    const code = await Promise.race<number | null>([
+      proc.exited,
+      new Promise((r) => setTimeout(() => r(null), 2_000)),
+    ]);
+    return new Error(
+      `mcpToolCallProbe: ${reason} (server exit=${code ?? 'still running'})\n` +
+      `--- server stderr ---\n${errBuf.trimEnd() || '(empty)'}`,
+    );
+  };
   let buf = '';
   const deadline = Date.now() + (opts.timeoutMs ?? 90_000);
   try {
     while (Date.now() < deadline) {
       const { done, value } = await reader.read();
-      if (done) break;
+      // Distinct from the deadline below: stdout closing means the server
+      // EXITED without answering. Reporting that as a timeout sent triage
+      // after a latency problem that was never there.
+      if (done) throw await failure('the MCP server closed stdout without answering id:2');
       buf += decoder.decode(value, { stream: true });
       for (const line of buf.split('\n').slice(0, -1)) {
         if (!line.trim()) continue;
@@ -148,7 +175,7 @@ async function mcpToolCallProbe(opts: {
       }
       buf = buf.slice(buf.lastIndexOf('\n') + 1);
     }
-    throw new Error('mcpToolCallProbe: no response before deadline');
+    throw await failure(`no response before the ${opts.timeoutMs ?? 90_000}ms deadline`);
   } finally {
     try { proc.kill(); } catch { /* dead */ }
   }
