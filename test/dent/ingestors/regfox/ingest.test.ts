@@ -62,8 +62,8 @@ describe('ingestOne — DB-backed end-to-end', () => {
     // The stub page exists in the DB on source 'dent'.
     const page = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
     expect(page).not.toBeNull();
-    expect(page?.compiled_truth ?? '').toContain('Registered for Test Conf 2026');
-    expect(page?.compiled_truth ?? '').toContain('$500.00 USD');
+    expect(`${page?.compiled_truth ?? ''}${page?.timeline ?? ''}`).toContain('Registered for Test Conf 2026');
+    expect(`${page?.compiled_truth ?? ''}${page?.timeline ?? ''}`).toContain('$500.00 USD');
 
     // Canonical rendering carries the stub frontmatter + Timeline section.
     const md = await readPageMarkdown(engine, 'entities/people/alice-example');
@@ -121,7 +121,7 @@ describe('ingestOne — DB-backed end-to-end', () => {
 
     // No bullet was appended to the existing page (could be wrong attribution).
     const existing = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
-    expect(existing?.compiled_truth ?? '').not.toContain('Registered for Test Conf 2026');
+    expect(`${existing?.compiled_truth ?? ''}${existing?.timeline ?? ''}`).not.toContain('Registered for Test Conf 2026');
 
     // The pending-review page got a checklist row, on source 'dent'.
     const pending = await readPageMarkdown(engine, '_ingest/pending_regfox');
@@ -158,7 +158,7 @@ describe('ingestOne — DB-backed end-to-end', () => {
   test('case 1 with discount code: bullet includes discount clause', async () => {
     await ingestOne(engine, baseRegistrant({ fieldData: { coupon_code: 'EARLYBIRD' } }));
     const page = await engine.getPage('entities/people/alice-example', { sourceId: DENT_SOURCE_ID });
-    expect(page?.compiled_truth ?? '').toContain('with discount code EARLYBIRD');
+    expect(`${page?.compiled_truth ?? ''}${page?.timeline ?? ''}`).toContain('with discount code EARLYBIRD');
   });
 
   test('case 2 array shape: page with emails: list matches by any address in the list', async () => {
