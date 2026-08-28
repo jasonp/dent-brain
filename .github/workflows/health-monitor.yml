@@ -119,7 +119,7 @@ jobs:
         id: recover
         if: steps.decide.outputs.redeploy == 'true'
         run: |
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             BODY="$(curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null || true)"
             if printf '%s' "$BODY" | grep -q '"status":"ok"'; then
               echo "recovered after redeploy: $BODY"
