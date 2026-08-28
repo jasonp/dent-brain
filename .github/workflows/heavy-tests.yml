@@ -192,10 +192,18 @@ jobs:
   # auth hermes fails this job rather than skipping.
   hermes-door:
     name: Hermes door e2e (real binary, loud-fail)
+    # FORK NOTE: this fork has no ANTHROPIC_API_KEY secret, so the schedule
+    # and generic `heavy-tests` legs are removed here — same reasoning, and
+    # the same shape, as grok-door's XAI_API_KEY deferral below: an absent
+    # secret must not paint nightly heavy runs red. Deliberate invocation
+    # still works (the `real-agent-e2e` PR label, or a manual dispatch), and
+    # the job still loud-fails there — absence of the key is reported, not
+    # hidden. The commit that lands AFTER an admin creates ANTHROPIC_API_KEY
+    # re-adds the schedule leg and the heavy-tests label leg.
     if: |
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'real-agent-e2e') ||
-      contains(github.event.pull_request.labels.*.name, 'heavy-tests')
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'real-agent-e2e')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Four serial door tests at 600s each plus the installer budget cannot
     # fit the sibling job's 20 minutes.
@@ -716,10 +724,18 @@ jobs:
   # non-PR arm, so an input would be dead yaml.
   opencode-door:
     name: opencode door e2e (real binary, keyless SMOKE)
+    # FORK NOTE: this fork has no ANTHROPIC_API_KEY secret, so the schedule
+    # and generic `heavy-tests` legs are removed here — same reasoning, and
+    # the same shape, as grok-door's XAI_API_KEY deferral below: an absent
+    # secret must not paint nightly heavy runs red. Deliberate invocation
+    # still works (the `real-agent-e2e` PR label, or a manual dispatch), and
+    # the job still loud-fails there — absence of the key is reported, not
+    # hidden. The commit that lands AFTER an admin creates ANTHROPIC_API_KEY
+    # re-adds the schedule leg and the heavy-tests label leg.
     if: |
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'real-agent-e2e') ||
-      contains(github.event.pull_request.labels.*.name, 'heavy-tests')
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'real-agent-e2e')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Measured local door wall-time: full 6-test run 35.8s + one-time
     # compiled gbrain build (~2-4 min) + npm install (~15s); free-tier +
