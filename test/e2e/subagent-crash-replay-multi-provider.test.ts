@@ -94,6 +94,17 @@ type ProviderShape = {
   finalResponse: ChatResult;
 };
 
+/**
+ * OpenRouter is deliberately NOT in this matrix. Its recipe declares
+ * `supports_subagent_loop: false` — tool_call_ids are not stable through the
+ * proxy — and v0.46.28.0 moved that refusal to BOTH submit (minions/queue.ts)
+ * and handler dispatch (minions/handlers/subagent.ts). An OR-proxied subagent
+ * loop is therefore an unreachable configuration, not a response shape to
+ * reconcile; replaying one here asserted behaviour the product now forbids.
+ * The refusal itself is pinned as a negative case at the bottom of this file.
+ */
+const NO_SUBAGENT_LOOP_MODEL = 'openrouter:anthropic/claude-sonnet-4-6';
+
 const PROVIDER_MATRIX: ProviderShape[] = [
   {
     providerId: 'anthropic',
@@ -129,18 +140,6 @@ const PROVIDER_MATRIX: ProviderShape[] = [
       usage: { input_tokens: 80, output_tokens: 6, cache_read_tokens: 0, cache_creation_tokens: 0 },
       model: 'google:gemini-1.5-pro',
       providerId: 'google',
-    },
-  },
-  {
-    providerId: 'openrouter',
-    modelId: 'openrouter:anthropic/claude-sonnet-4-6',
-    finalResponse: {
-      text: 'openrouter resumed: proxied claude response',
-      blocks: [{ type: 'text', text: 'openrouter resumed: proxied claude response' }] as ChatBlock[],
-      stopReason: 'end',
-      usage: { input_tokens: 50, output_tokens: 7, cache_read_tokens: 0, cache_creation_tokens: 0 },
-      model: 'openrouter:anthropic/claude-sonnet-4-6',
-      providerId: 'openrouter',
     },
   },
   {
@@ -344,6 +343,26 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
 
       expect(result.result).toBe(provider.finalResponse.text);
       expect(result.stop_reason).toBe('end_turn');
+    });
+  });
+
+  describe('provider whose recipe declares supports_subagent_loop: false', () => {
+    it('refuses the OR-proxied model instead of replaying it', async () => {
+      // The gateway must never be reached — the capability verdict is checked
+      // before any chat turn. If this transport is called, the gate regressed.
+      __setChatTransportForTests(async () => {
+        throw new Error('gateway.chat() must not be reached for a refused provider');
+      });
+
+      const executions: Array<{ name: string; input: unknown }> = [];
+      const handler = buildHandler(makeStubTools(executions));
+
+      const { jobId } = await seedCrashedState('find foo (openrouter)', 'v2');
+      const ctx = await makeCrashedCtx(jobId, 'find foo (openrouter)', NO_SUBAGENT_LOOP_MODEL);
+
+      await expect(handler(ctx)).rejects.toThrow(/supports_subagent_loop: false/);
+      // And it refuses BEFORE dispatching anything.
+      expect(executions.length).toBe(0);
     });
   });
 
