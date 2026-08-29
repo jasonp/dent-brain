@@ -107,6 +107,13 @@ export function compareCorpus(
 // main
 // ---------------------------------------------------------------------------
 
+/**
+ * Base ref for the baseline. Defaults to upstream's `origin/master`; forks
+ * whose default branch differs set GBRAIN_MAIN_REF, matching the existing
+ * BRAINBENCH_MAIN_REF convention in scripts/ci-brainbench-gate.sh.
+ */
+const MAIN_REF = process.env.GBRAIN_MAIN_REF || "origin/master";
+
 function infraFail(msg: string): never {
   process.stderr.write(`coverage-baseline-gate: infrastructure error: ${msg}\n`);
   process.exit(2);
@@ -124,7 +131,7 @@ function fetchBaselineFromMaster(): BaselineFetch {
     if (override === "GIT_FAILURE") return { status: "git-failure", msg: "simulated by COVERAGE_BASELINE_JSON_OVERRIDE" };
     return { status: "ok", text: override };
   }
-  const res = spawnSync("git", ["show", "origin/master:scripts/coverage-baseline.json"], {
+  const res = spawnSync("git", ["show", `${MAIN_REF}:scripts/coverage-baseline.json`], {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });

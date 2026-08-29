@@ -495,11 +495,17 @@ jobs:
         shell: bash
         env:
           COVERAGE_GATE_ENFORCE: '0'
+          # FORK: our default branch is `main`, not upstream's `master`. Same
+          # override convention as BRAINBENCH_MAIN_REF above. Without it the
+          # gate dies on `origin/master` and reds the whole run while every
+          # test shard is green.
+          GBRAIN_MAIN_REF: origin/main
         run: bun scripts/coverage-diff-gate.ts --summary "$RUNNER_TEMP/coverage-merged/summary.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Baseline gate (prCorpus, like-for-like)
         shell: bash
         env:
           COVERAGE_GATE_ENFORCE: '0'
+          GBRAIN_MAIN_REF: origin/main  # FORK: see above.
         run: bun scripts/coverage-baseline-gate.ts --summary "$RUNNER_TEMP/coverage-merged/summary.json" --corpus prCorpus | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload merged coverage
         if: always()
