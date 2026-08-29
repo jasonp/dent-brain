@@ -1,0 +1,96 @@
+name: Upstream Sync Check
+
+# Detects drift against upstream gbrain (garrytan/gbrain) and files/updates a
+# single tracking GitHub issue. NOTIFY ONLY — this workflow never merges,
+# never opens a PR, never touches code. The actual sync stays 100%
+# human/agent-driven via `bun run sync:upstream` (scripts/sync-from-upstream.sh).
+#
+# Weekly cadence: upstream moves ~20+ commits/day, but since this workflow
+# never acts on drift automatically, checking more often than weekly just
+# means editing the same tracking issue's numbers more often for no benefit.
+# Staggered off osv-scanner.yml/semgrep.yml (Mon 06:30 UTC) and
+# heavy-tests.yml (daily 08:17 UTC).
+
+on:
+  schedule:
+    - cron: '0 9 * * 3'  # weekly, Wednesday 09:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-sync-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: main
+          fetch-depth: 0  # full history required — rev-list --count would
+                           # miscompute against a shallow HEAD
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+
+      - name: Check upstream drift
+        id: drift
+        run: |
+          set +e
+          bun run scripts/check-upstream-drift.ts --json > drift.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat drift.json
+          COMMITS_BEHIND="$(jq -r '.commitsBehind // 0' drift.json)"
+          echo "commits_behind=$COMMITS_BEHIND" >> "$GITHUB_OUTPUT"
+          # Also print the human-readable form to the job log for a quick skim.
+          bun run scripts/check-upstream-drift.ts || true
+
+      - name: Fail loudly on fatal script error
+        if: steps.drift.outputs.exit_code == '2'
+        run: |
+          echo "::error::check-upstream-drift.ts failed fatally (exit 2) — see logs above."
+          exit 1
+
+      - name: Ensure label exists
+        if: steps.drift.outputs.commits_behind != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create upstream-sync --repo "$GITHUB_REPOSITORY" \
+            --color 0e8a16 \
+            --description "Upstream gbrain sync drift tracking" \
+            --force
+
+      - name: Find existing open tracking issue
+        id: existing
+        if: steps.drift.outputs.commits_behind != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NUMBER="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --label upstream-sync --json number --jq '.[0].number // empty')"
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Build issue body
+        if: steps.drift.outputs.commits_behind != '0'
+        run: |
+          bun run scripts/render-upstream-drift-issue.ts drift.json > issue-body.md
+
+      - name: Open or update tracking issue
+        if: steps.drift.outputs.commits_behind != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Upstream sync: ${{ steps.drift.outputs.commits_behind }} commits behind gbrain (as of $(date -u +%Y-%m-%d))"
+          if [ -n "${{ steps.existing.outputs.number }}" ]; then
+            gh issue edit "${{ steps.existing.outputs.number }}" --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --body-file issue-body.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --body-file issue-body.md --label upstream-sync
+          fi
