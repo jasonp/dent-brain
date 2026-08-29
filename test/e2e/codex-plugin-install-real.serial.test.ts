@@ -126,7 +126,12 @@ async function mcpToolCallProbe(opts: {
     { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: opts.tool, arguments: opts.params } },
   ];
   proc.stdin.write(frames.map((f) => JSON.stringify(f)).join('\n') + '\n');
-  await proc.stdin.end();
+  // FLUSH, do not end. A stdio MCP server treats stdin EOF as "the client is
+  // gone" and shuts down: gbrain logs `graceful exit (stdin-end)` and exits 0.
+  // Closing stdin here raced the tools/call it had just been handed, and the
+  // server won that race on every CI run — it exited before answering id:2.
+  // stdin is closed in the finally, once we have the response or timed out.
+  await proc.stdin.flush();
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   // Drain stderr. It was piped but never read, which threw away the server's
@@ -177,6 +182,7 @@ async function mcpToolCallProbe(opts: {
     }
     throw await failure(`no response before the ${opts.timeoutMs ?? 90_000}ms deadline`);
   } finally {
+    try { await proc.stdin.end(); } catch { /* already closed */ }
     try { proc.kill(); } catch { /* dead */ }
   }
 }
