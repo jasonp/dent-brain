@@ -201,9 +201,16 @@ function runGit(args: string[], cwd: string): string {
   return result.stdout || "";
 }
 
+/**
+ * Base ref for the diff. Defaults to upstream's `origin/master`; forks whose
+ * default branch differs set GBRAIN_MAIN_REF, matching the existing
+ * BRAINBENCH_MAIN_REF convention in scripts/ci-brainbench-gate.sh.
+ */
+const MAIN_REF = process.env.GBRAIN_MAIN_REF || "origin/master";
+
 function readChangedFiles(repoRoot: string): string[] {
   const sources = [
-    runGit(["diff", "--name-only", "origin/master...HEAD"], repoRoot),
+    runGit(["diff", "--name-only", `${MAIN_REF}...HEAD`], repoRoot),
     runGit(["diff", "--name-only", "HEAD"], repoRoot),
     runGit(["ls-files", "--others", "--exclude-standard"], repoRoot),
   ];

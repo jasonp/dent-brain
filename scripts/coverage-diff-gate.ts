@@ -193,11 +193,18 @@ const EXEMPTIONS_REPO_PATH = "scripts/coverage-gate-exemptions.txt";
  *      enforcing; report-only warns and falls back to the working tree so
  *      the report still prints.
  */
+/**
+ * Base ref for the gate. Defaults to upstream's `origin/master`; forks whose
+ * default branch differs set GBRAIN_MAIN_REF, matching the existing
+ * BRAINBENCH_MAIN_REF convention in scripts/ci-brainbench-gate.sh.
+ */
+const MAIN_REF = process.env.GBRAIN_MAIN_REF || "origin/master";
+
 function resolveExemptionsText(enforcing: boolean): string {
   const override = process.env.COVERAGE_GATE_EXEMPTIONS_OVERRIDE;
   if (override !== undefined) return override;
 
-  const res = spawnSync("git", ["show", `origin/master:${EXEMPTIONS_REPO_PATH}`], {
+  const res = spawnSync("git", ["show", `${MAIN_REF}:${EXEMPTIONS_REPO_PATH}`], {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });
@@ -232,11 +239,11 @@ interface SummaryJson {
 function main(): void {
   const argv = process.argv.slice(2);
   let summaryPath = "";
-  let base = "origin/master";
+  let base = MAIN_REF;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--summary") summaryPath = argv[++i] ?? "";
-    else if (a === "--base") base = argv[++i] ?? "origin/master";
+    else if (a === "--base") base = argv[++i] ?? MAIN_REF;
     else infraFail(`unknown argument: ${a}`);
   }
   if (!summaryPath) infraFail("--summary <merged json> is required");
