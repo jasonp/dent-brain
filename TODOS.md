@@ -1,5 +1,51 @@
 # TODOS
 
+## Sync lock recovery follow-ups (filed 2026-08-31, adversarial review of the break-lock source-resolution fix)
+
+- [ ] **P1 — `sync --source=<id>` (equals form) is silently ignored on the main
+  sync path.** **What:** `src/commands/sync.ts` resolves the flag with
+  `args.find((a, i) => args[i - 1] === '--source')`, which only matches the
+  space-separated form; `sync` is CLI_ONLY so `parseOpArgs`'s `--key=value`
+  handling never runs. `gbrain sync --source=wiki` therefore syncs whatever the
+  AMBIENT chain resolves, not `wiki`. **Why:** wrong-source sync — writes pages
+  and takes the lock under a source the operator did not name. The break-lock
+  path was fixed in this wave (`readFlagValue` in `src/core/sync-lock.ts`); the
+  sync path was left alone to keep that PR scoped. **Where to start:** reuse
+  `readFlagValue` at the `explicitSource` site (~`sync.ts:3459`) and audit other
+  `args.find((a, i) => args[i - 1] === ...)` call sites for the same gap.
+  **Effort:** S.
+
+- [ ] **P2 — break-lock `--all` targets a BROADER set than `sync --all`.**
+  **What:** `runBreakLockCommand`'s fan-out filters only `s.local_path` (via
+  `listSources`), but `sync --all` additionally filters
+  `config.syncEnabled !== false` (its own `SyncAllSourceRow` query,
+  ~`sync.ts:3558`) and can drop missing checkouts under `--missing-path skip`.
+  **Why:** `--force-break-lock --all` can clear a live lock for a disabled or
+  other-machine source that this `sync --all` would never have contended for —
+  the same set-asymmetry class the source-resolution fix removed. **Where to
+  start:** share one target-selection helper between the two, or have break-lock
+  enumerate actual `gbrain-sync:*` lock rows instead of inferring from sources.
+  **Effort:** M.
+
+- [ ] **P2 — break-lock's DELETE is not acquisition-fenced (PID-recycle race).**
+  **What:** `runBreakLock` deletes via `deleteLockRow(engine, id, holder_pid)`
+  — keyed on `(id, holder_pid)` only. Between `inspectLock` and the delete, a
+  dead holder can be replaced by a NEW holder that recycled the same PID, and
+  the delete removes the successor's LIVE lock. `deleteLockRowExact`
+  (`src/core/db-lock.ts:771`) already takes `acquired_at` as a fence and is used
+  by the takeover ladder — break-lock just doesn't use it. **Why:** silently
+  clears a healthy holder's lock; two syncs then run concurrently. **Where to
+  start:** thread the inspected `acquired_at` into the break paths and switch to
+  `deleteLockRowExact`. **Effort:** S.
+
+- [ ] **P3 — `--all` fan-out has no per-source error containment.** **What:**
+  `runBreakLock` only catches `inspectLock`; a throw from `deleteLockRow` /
+  `deleteLockRowIfStale` escapes the fan-out `for` loop, aborting mid-fleet with
+  some locks already deleted, no `worstExit`, and no `--json` envelope at all.
+  **Why:** automation sees a crash instead of a partial result it can act on.
+  **Where to start:** wrap the per-source call in try/catch, fold failures into
+  `worstExit`, and emit a per-source error envelope. **Effort:** S.
+
 ## Daemon env-file lane follow-ups (#2608 / #4443 takeover, filed 2026-08-21)
 
 - [ ] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**
