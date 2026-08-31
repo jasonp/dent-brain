@@ -132,3 +132,16 @@ describe('sync honors both --source forms identically', () => {
     expect(r.out + r.err).not.toMatch(/sole non-default source registered/);
   }, 120_000);
 });
+
+// capture is a WRITE path, and the one where the old behavior was worst: it did
+// not just read the wrong source, it filed the page under it and reported
+// success. Pre-fix this test's command created `inbox/<date>-<hash>`.
+describe('capture honors --source= on a write path', () => {
+  test('--source=<unknown> refuses instead of silently filing under the ambient source', () => {
+    const r = runCli(['capture', 'a note for the flag-form test', '--source=nosuchsource']);
+
+    expect(r.code).not.toBe(0);
+    expect(r.out + r.err).toContain('nosuchsource');
+    expect(r.out + r.err).not.toMatch(/captured:/);
+  }, 120_000);
+});

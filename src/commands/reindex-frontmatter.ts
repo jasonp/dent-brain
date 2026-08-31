@@ -26,6 +26,7 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { backfillEffectiveDate } from '../core/backfill-effective-date.ts';
 import { createInterface } from 'readline';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 export interface ReindexFrontmatterOpts {
   sourceId?: string;
@@ -163,6 +164,10 @@ export async function runReindexFrontmatter(
  */
 export async function reindexFrontmatterCli(engine: BrainEngine, args: string[]): Promise<void> {
   const opts: ReindexFrontmatterOpts = {};
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--source') opts.sourceId = args[++i];

@@ -48,6 +48,7 @@ import {
   deriveTitle,
   mergeCaptureFrontmatter,
 } from '../core/capture-content.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 export { detectBinaryNullByte, normalizeForHash, mergeCaptureFrontmatter } from '../core/capture-content.ts';
 
@@ -71,6 +72,10 @@ interface RunOpts {
 function parseArgs(args: string[]): RunOpts | { help: true; positional: string | undefined } {
   const opts: RunOpts = {};
   const positional: string[] = [];
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--help' || a === '-h') return { help: true, positional: undefined };

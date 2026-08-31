@@ -35,7 +35,8 @@
  * parseGlobalFlags before a command ever sees args), but an external wrapper
  * that appends a constraining flag would now lose to an earlier one.
  *
- * NOTE: keep literal double-dash tokens OUT of this file. The flag-registry
+ * NOTE: keep literal double-dash tokens OUT of this file AND out of the
+ * comments at every call site. The flag-registry
  * generator scrapes source text and attributes anything flag-shaped to the
  * importing commands, silently drifting the generated registry (caught by
  * test/cli-flag-validation.test.ts, which `bun run verify` does NOT run).
@@ -74,6 +75,33 @@ export function readFlagValues(args: string[], ...flags: string[]): string[] {
         out.push(a.slice(flag.length + 1));
         break;
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * Normalize an argv so an equals-joined flag becomes two tokens.
+ *
+ * The readers above suit a command that pulls a few named values out of argv.
+ * A command with a full parser LOOP (`const a = args[i]` then a chain of
+ * `a === <name>` arms consuming `args[++i]`) is better served by normalizing
+ * ONCE at the top: every flag in that loop then accepts both spellings without
+ * touching a single arm, which is far less invasive — and less risky — than
+ * rewriting a long else-if chain.
+ *
+ * Splits on the FIRST separator only, so a value that itself contains one
+ * survives intact. A token that is not flag-shaped passes through untouched, so
+ * this is safe to apply to a whole argv including positionals.
+ */
+export function expandEqualsFlags(args: string[]): string[] {
+  const out: string[] = [];
+  for (const a of args) {
+    const eq = a.indexOf('=');
+    if (a.startsWith('--') && eq > 2) {
+      out.push(a.slice(0, eq), a.slice(eq + 1));
+    } else {
+      out.push(a);
     }
   }
   return out;

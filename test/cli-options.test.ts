@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { parseGlobalFlags, cliOptsToProgressOptions, DEFAULT_CLI_OPTIONS, setCliOptions, getCliOptions, _resetCliOptionsForTest } from '../src/core/cli-options.ts';
-import { readFlagValue, readFlagValues } from '../src/core/cli-flag-value.ts';
+import { readFlagValue, readFlagValues, expandEqualsFlags } from '../src/core/cli-flag-value.ts';
 
 describe('parseGlobalFlags', () => {
   test('empty argv → defaults, empty rest', () => {
@@ -160,6 +160,42 @@ describe('readFlagValues (repeatable flags)', () => {
 
   test('does not match a prefix-sharing flag', () => {
     expect(readFlagValues(['sync', '--exclude-dir=x'], '--exclude')).toEqual([]);
+  });
+});
+
+describe('expandEqualsFlags (argv normalizer for parser loops)', () => {
+  // For a command with a full else-if parser loop, normalizing argv once is far
+  // less invasive than rewriting every arm — and it makes EVERY flag in that
+  // loop accept both spellings, not just the one being fixed.
+  test('splits a flag-shaped token into two', () => {
+    expect(expandEqualsFlags(['capture', '--source=wiki'])).toEqual(['capture', '--source', 'wiki']);
+  });
+
+  test('leaves the space-separated spelling untouched', () => {
+    expect(expandEqualsFlags(['capture', '--source', 'wiki'])).toEqual(['capture', '--source', 'wiki']);
+  });
+
+  test('splits on the FIRST separator so a value containing one survives', () => {
+    expect(expandEqualsFlags(['--set=a=b=c'])).toEqual(['--set', 'a=b=c']);
+  });
+
+  test('passes positionals and bare flags through untouched', () => {
+    expect(expandEqualsFlags(['capture', 'some note', '--json', '-y'])).toEqual(
+      ['capture', 'some note', '--json', '-y'],
+    );
+  });
+
+  test('a non-flag token containing = is NOT split', () => {
+    // Capture bodies and query strings routinely contain '='.
+    expect(expandEqualsFlags(['capture', 'x=y'])).toEqual(['capture', 'x=y']);
+  });
+
+  test('an empty value yields an empty-string token, matching the space form', () => {
+    expect(expandEqualsFlags(['--source='])).toEqual(['--source', '']);
+  });
+
+  test('a lone -- and short flags are left alone', () => {
+    expect(expandEqualsFlags(['--', '-k=3'])).toEqual(['--', '-k=3']);
   });
 });
 

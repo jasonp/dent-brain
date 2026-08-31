@@ -37,6 +37,7 @@ import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { readCursor, writeCursor } from '../core/recall-cursor-state.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 // Same kebab-case shape gate the source-resolver applies. v0.32: applied
 // locally on thin-client where the canonical resolver's assertSourceExists
@@ -106,6 +107,10 @@ function parseFlags(args: string[]): ParsedFlags {
     watchSeconds: null,
   };
   let positional = '';
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--since') { out.since = parseSinceParam(args[++i] ?? ''); continue; }
