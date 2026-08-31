@@ -58,19 +58,6 @@ export async function formatLockBusyMessage(engine: BrainEngine, lockKey: string
 }
 
 /**
- * Read `<name> value` OR `<name>=value` for a long flag. The bare
- * `args.find(a, i => args[i-1] === '--source')` idiom used elsewhere silently misses the
- * equals form; for a DESTRUCTIVE break that miss would fall through to the
- * ambient chain and clear a lock the operator never named.
- */
-export function readFlagValue(args: string[], flag: string): string | null {
-  const spaced = args.find((a, i) => args[i - 1] === flag);
-  if (spaced !== undefined) return spaced;
-  const eq = args.find((a) => a.startsWith(`${flag}=`));
-  return eq === undefined ? null : eq.slice(flag.length + 1);
-}
-
-/**
  * CLI dispatcher for `gbrain sync --break-lock` / `--force-break-lock`:
  * decides WHICH source's lock key to target, then delegates each break to
  * `runBreakLock`. Returns the process exit code.
