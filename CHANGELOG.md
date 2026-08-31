@@ -17,15 +17,17 @@ The audit that found this was itself incomplete, which is the more useful lesson
 | Metric | Before | After | Δ |
 |---|---|---|---|
 | Spellings of the idiom searched | 1 | 3 | the miss that made the first sweep look complete |
-| Call sites honoring both spellings | 0 | 29 | across 6 command files |
-| `--source` reads that drop the equals spelling | 6 | 0 | sync, files, sources, doctor, orphans |
+| Call sites honoring both spellings | 0 | 27 | across 6 files |
+| `--source` reads on the sync path that drop the equals spelling | 7 | 0 | sync, files, sources, doctor, orphans |
 | Tests pinning the readers | 0 | 19 | plus a guard that fails on any revert |
 
-Twenty-nine is the number that matters, not one. A single-site fix would have left `gbrain doctor --source=wiki` and `gbrain orphans --source=wiki` scanning brain-wide while `sync` behaved correctly, which is a worse kind of broken than uniformly broken.
+Twenty-seven is the number that matters, not one. A single-site fix would have left `gbrain doctor --source=wiki` and `gbrain orphans --source=wiki` scanning brain-wide while `sync` behaved correctly, which is a worse kind of broken than uniformly broken.
 
 ### What this means for you
 
-Both spellings now behave identically everywhere `--source` is read. If you have a script or cron line using the equals spelling, check what it has actually been doing: it was not failing, it was quietly operating on a different source.
+Both spellings now behave identically on `sync`, `files`, `sources`, `doctor` and `orphans`. If you have a script or cron line using the equals spelling against one of those, check what it has actually been doing: it was not failing, it was quietly operating on a different source.
+
+**The sweep is not finished, and this entry is not going to claim otherwise.** A cross-model doc review run against this release found seven more commands still reading `--source` in a fourth spelling of the same idiom (`const a = args[i]` followed by `a === '--source'`), which the new guard does not yet match: `capture`, `enrich`, `recall`, `edges-backfill`, `reindex-frontmatter`, `calibration`, `eval-code-retrieval`. `gbrain capture --source=x` still writes to the ambient source. Tracked as a P1 in TODOS.md. Use the space-separated spelling on those seven until it lands.
 
 Honoring the equals spelling made two values reachable for the first time, and both needed a guard the old code never had to have:
 
@@ -53,7 +55,7 @@ gbrain sources current --source=<id>   # shows what the flag resolves to
 
 **Flag reading**
 - `src/core/cli-flag-value.ts`: new, dependency-free. `readFlagValue` accepts both spellings with alias lists and first-occurrence-wins; `readFlagValues` is the repeatable-flag variant (`--exclude`), since a first-wins reader would silently discard every later value. The module is deliberately free of literal flag tokens: the flag-registry generator follows imports and scrapes source text, so a flag-bearing import writes false-permissive rows into `cli-flag-registry.generated.ts`.
-- 29 call sites converted across `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts`. Every `?? null` / `|| undefined` / cast at those sites is unchanged; the helper returns `string | undefined` so it drops in.
+- 27 call sites converted across `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts`. Every `?? null` / `|| undefined` / cast at those sites is unchanged; the helper returns `string | undefined` so it drops in.
 - `src/commands/sync.ts`: `--exclude` moved to the repeatable reader. It was the worst inconsistency in the first draft, honoring `--src-subpath=x` while dropping `--exclude=y`, so an operator narrowing scope got no exclusion.
 
 **Guards for newly reachable values**
@@ -61,13 +63,14 @@ gbrain sources current --source=<id>   # shows what the flag resolves to
 - `src/commands/sources.ts`: an empty `--secret` is rejected by name.
 
 **Tests**
-- `test/cli-options.test.ts`: 15 unit tests covering both readers, including prefix collisions, values containing `=`, empty values, trailing bare flags, aliases and duplicate-flag precedence.
+- `test/cli-options.test.ts`: 14 unit tests covering both readers, including prefix collisions, values containing `=`, empty values, trailing bare flags, aliases and duplicate-flag precedence.
 - `test/sync-source-flag-forms.serial.test.ts`: 5 CLI-level tests pinning that sync WIRES the helper. Two fail against the pre-fix binary.
-- `test/cli-flag-idiom-guard.test.ts`: source-text guard failing on any reintroduction of either idiom, with an honest allowlist of what is not converted yet. Verified to catch a revert.
+- `test/cli-flag-idiom-guard.test.ts`: source-text guard failing on any reintroduction of either idiom, with an allowlist of what is not converted yet. Verified to catch a revert. Its two regexes match two spellings; a fourth (`const a = args[i]` then `a === '--flag'`) slips past both, which is why the seven commands above went unnoticed. Widening it is part of the P1.
 
 **Documentation**
 - `docs/architecture/KEY_FILES.md`: entry for the new module; removed the stale `readFlagValue` description from the `sync-lock.ts` entry.
-- `TODOS.md`: the P1 is closed accurately, and the sites the first sweep missed (`--pack`, `--url`, `--dir`, `--limit`, and schema's multi-flag parser loops) are filed as a P2 with the three greps that find them.
+- `CLAUDE.md`: the flag-reading rule joins the cross-cutting invariants, so the next agent to add a CLI-only command reads it without going looking. Neither guard test runs under `bun run verify`; the invariant says so.
+- `TODOS.md`: the P1 is closed at its real scope, the seven still-broken `--source` readers are filed as a new P1, and the remaining flags the first sweep missed (`--url`, `--dir`, `--limit`, and schema's multi-flag parser loops) stay a P2 with the greps that find them. `--pack` came off that list: `schema.ts` already handled the equals spelling at both sites.
 
 ## [0.50.1.0] - 2026-08-31
 
