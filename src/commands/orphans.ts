@@ -20,6 +20,7 @@ import {
   loadOrphanPolicyOverrides,
   type OrphanPolicyOverrides,
 } from '../core/orphan-policy.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 // --- Types ---
 
@@ -225,12 +226,7 @@ export async function runOrphans(engine: BrainEngine, args: string[]) {
   // source. Omitted → brain-wide (unchanged). Raw explicit-flag parse on
   // purpose — NOT resolveSourceWithTier, which would pick a default source
   // when the flag is absent and silently scope a bare `gbrain orphans`.
-  let sourceId: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--source' && i + 1 < args.length) {
-      sourceId = args[++i] || undefined;
-    }
-  }
+  const sourceId = readFlagValue(args, '--source') || undefined;
 
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`Usage: gbrain orphans [options]

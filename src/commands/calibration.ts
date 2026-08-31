@@ -24,6 +24,7 @@ import { sourceScopeOpts, type OperationContext } from '../core/operations.ts';
 import type { GBrainConfig } from '../core/config.ts';
 import { GBrainError } from '../core/types.ts';
 import { resolveOwnerHolder } from '../core/owner-holder.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 export interface CalibrationProfileRow {
   /** BIGSERIAL → string (postgres.js int8 wire shape; never Number() — int8
@@ -139,6 +140,10 @@ export interface RunCalibrationArgs {
 function parseArgs(args: string[]): { sub?: string; opts: RunCalibrationArgs } {
   const opts: RunCalibrationArgs = {};
   let sub: string | undefined;
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === 'ab-report') {

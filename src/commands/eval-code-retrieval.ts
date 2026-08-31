@@ -31,6 +31,7 @@ import {
 import { BaselineStrategy, WithCodeIntelStrategy } from '../eval/code-retrieval/strategies.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 interface ParsedArgs {
   help: boolean;
@@ -57,6 +58,10 @@ function parseArgs(args: string[]): ParsedArgs {
     k: 5,
     json: false,
   };
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   let i = 0;
   while (i < args.length) {
     const a = args[i];

@@ -2,6 +2,77 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.50.2.0] - 2026-08-31
+
+## **`--source=wiki` was not a typo. It was silently ignored.**
+
+`gbrain capture "note" --source=nosuchsource` did not fail. It filed the page under whatever the AMBIENT chain resolved and printed `captured:` with a slug. `gbrain sync --source=wiki` did the same, taking the per-source lock under a source you never named, while printing *"pass `--source` to override"* at an operator who had just done exactly that.
+
+Commands read long flags with hand-rolled argv scanning that matched only the space-separated spelling. The equals-joined value had nowhere to be honored, so it was dropped and the command fell back to its default.
+
+The more useful lesson is about the audit, not the bug. Three separate hand-greps each reported the sweep complete. Each had matched one spelling of the idiom and missed others; the count went 1 → 22 → 27 → 13 files converted with 16 more found still broken. Reviews caught every one of those corrections. The guard that ships with this release is machine-checked precisely because hand-counting this bug class has now failed three times.
+
+### The numbers that matter
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Files where `--source` honors both spellings | 0 | 13 | incl. 3 write paths |
+| `--source` readers still dropping the equals spelling | 29 | 16 | named + machine-checked |
+| Tests pinning the readers | 0 | 26 | 3 fail against the old binary |
+| Spellings of the idiom the guard detects | 0 | all | it enumerates, we no longer count by hand |
+
+Sixteen is deliberately still on the board. Converting all of them was a bigger, less verifiable change than one release should carry, so the remainder is a named P1 whose list IS the guard's `PENDING` set: the guard fails if that list ever grows.
+
+### What this means for you
+
+If a script or cron line uses the equals spelling, check what it has actually been doing. It was not failing; it was quietly operating on a different source. `capture`, `enrich` and `edges-backfill` WRITE, so this could have filed pages under the wrong source.
+
+Fixed in `sync`, `capture`, `enrich`, `recall`, `files`, `sources`, `doctor`, `orphans`, `edges-backfill`, `reindex-frontmatter`, `calibration`, `eval-code-retrieval` and the sync reconcile path. Still pending in 16 commands including `embed`, `dream`, `watch`, `takes` and `schema` — `gbrain --help` shows the space-separated spelling everywhere, and that spelling has always worked.
+
+Honoring the equals spelling made two values reachable for the first time, and each needed a guard the old code never had to have:
+
+- **`--strategy=<typo>` is now rejected.** The strategy admission fallback is the *widest* set (markdown + code + images), so an unrecognized value would have broadened ingest and embed spend. Previously the typo was dropped and fell back to narrow markdown-only.
+- **`--secret=` (empty) is now rejected.** It would have persisted a blank webhook credential. Verification is fail-closed, so every delivery would have returned 401 while `sources webhook show` reported "(not set)".
+
+One deliberate semantic change: when a flag appears more than once, the FIRST occurrence wins, in either spelling. The old idiom took the first space-separated occurrence and ignored equals entirely, which was not a rule anyone could rely on.
+
+## To take advantage of v0.50.2.0
+
+No migration and no schema change.
+
+```bash
+gbrain --version                       # expect 0.50.2.0
+gbrain sync --source=<id> --dry-run    # now routes to <id>, not the ambient source
+```
+
+If a script has been using the equals spelling, confirm which source it actually touched:
+
+```bash
+gbrain sources current --source=<id>   # shows what the flag resolves to
+```
+
+### Itemized changes
+
+**Flag reading**
+- `src/core/cli-flag-value.ts`: new, dependency-free. `readFlagValue` accepts both spellings with alias lists and first-occurrence-wins; `readFlagValues` is the repeatable-flag variant (`--exclude`), since a first-wins reader would discard every later value; `expandEqualsFlags` normalizes an argv once, which converts every flag in a parser loop without touching a single arm. Dependency-free is deliberate: the flag-registry generator follows imports and scrapes source text, so a flag-bearing import writes false-permissive rows into `cli-flag-registry.generated.ts`.
+- Converted to the readers: `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts`. Every `?? null` / `|| undefined` / cast at those sites is unchanged; the helper returns `string | undefined` so it drops in.
+- Normalized at the parser loop: `capture.ts`, `enrich.ts`, `recall.ts`, `edges-backfill.ts`, `reindex-frontmatter.ts`, `calibration.ts`, `eval-code-retrieval.ts`.
+- `src/commands/sync.ts`: `--exclude` moved to the repeatable reader. It was the worst inconsistency in the first draft, honoring `--src-subpath=x` while dropping `--exclude=y`, so an operator narrowing scope got no exclusion.
+
+**Guards for newly reachable values**
+- `src/commands/sync.ts`: `--strategy` is validated against `markdown|code|auto` before the cast.
+- `src/commands/sources.ts`: an empty `--secret` is rejected by name.
+
+**Tests**
+- `test/cli-options.test.ts`: 22 unit tests across the three readers, including prefix collisions, values containing the separator, empty values, trailing bare flags, aliases, duplicate-flag precedence, and non-flag tokens that must not be split.
+- `test/sync-source-flag-forms.serial.test.ts`: 6 CLI-level tests pinning the wiring for `sync` and the `capture` write path. Three fail against the pre-fix binary.
+- `test/cli-flag-idiom-guard.test.ts`: enumerates every `--source` reader in `src/` and fails when a new one drops the equals spelling. Its `PENDING` set is the P1's list and may only shrink. Verified to catch a revert.
+
+**Documentation**
+- `CLAUDE.md`: flag-reading added to the cross-cutting invariants, including that `bun run verify` runs neither the flag-registry nor the llms freshness test.
+- `docs/architecture/KEY_FILES.md`: entry for the new module; stale `readFlagValue` text removed from the `sync-lock.ts` entry.
+- `TODOS.md`: the P1 is closed for the 13 converted files, with the 16 remaining `--source` readers filed as a new P1 and the ~75-file non-`--source` class as a P2.
+
 ## [0.50.1.0] - 2026-08-31
 
 ## **The flaky test was right. The comment above it was wrong.**

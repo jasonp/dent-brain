@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { parseGlobalFlags, cliOptsToProgressOptions, DEFAULT_CLI_OPTIONS, setCliOptions, getCliOptions, _resetCliOptionsForTest } from '../src/core/cli-options.ts';
+import { readFlagValue, readFlagValues, expandEqualsFlags } from '../src/core/cli-flag-value.ts';
 
 describe('parseGlobalFlags', () => {
   test('empty argv → defaults, empty rest', () => {
@@ -85,6 +86,116 @@ describe('parseGlobalFlags', () => {
     const r = parseGlobalFlags(['search', '--explain', 'test query']);
     expect(r.cliOpts.explain).toBe(true);
     expect(r.rest).toEqual(['search', 'test query']);
+  });
+});
+
+describe('readFlagValue', () => {
+  // The bug this exists to kill: `gbrain sync --source=wiki` used to fall
+  // through to the AMBIENT source chain and sync (and lock) a source the
+  // operator never named, because every CLI_ONLY command read its flags with
+  // `args.find((a, i) => args[i - 1] === '--source')`, which only ever matches
+  // the space-separated form.
+  test('reads the space-separated form', () => {
+    expect(readFlagValue(['sync', '--source', 'wiki'], '--source')).toBe('wiki');
+  });
+
+  test('reads the equals form (the regression)', () => {
+    expect(readFlagValue(['sync', '--source=wiki'], '--source')).toBe('wiki');
+  });
+
+  test('returns undefined when the flag is absent — drop-in for args.find', () => {
+    expect(readFlagValue(['sync', '--yes'], '--source')).toBeUndefined();
+  });
+
+  test('a trailing flag with no value is undefined, not the next flag', () => {
+    expect(readFlagValue(['sync', '--source'], '--source')).toBeUndefined();
+  });
+
+  test('does not match a flag that merely shares a prefix', () => {
+    expect(readFlagValue(['sync', '--source-of-truth=x'], '--source')).toBeUndefined();
+    expect(readFlagValue(['sync', '--sources', 'x'], '--source')).toBeUndefined();
+  });
+
+  test('an equals value containing = keeps everything after the FIRST =', () => {
+    expect(readFlagValue(['config', '--set=a=b=c'], '--set')).toBe('a=b=c');
+  });
+
+  test('an empty equals value is preserved as empty string, not undefined', () => {
+    // Call sites use `|| null` / `?? null`, so "" must reach them to be
+    // normalized there rather than silently becoming "flag absent".
+    expect(readFlagValue(['sync', '--source='], '--source')).toBe('');
+  });
+
+  test('aliases resolve to whichever spelling appears first in argv', () => {
+    expect(readFlagValue(['sync', '--workers', '4'], '--concurrency', '--workers')).toBe('4');
+    expect(readFlagValue(['sync', '--concurrency=8'], '--concurrency', '--workers')).toBe('8');
+    expect(readFlagValue(['sync', '--workers=2', '--concurrency=9'], '--concurrency', '--workers')).toBe('2');
+  });
+
+  test('first occurrence wins across mixed forms', () => {
+    expect(readFlagValue(['sync', '--source=a', '--source', 'b'], '--source')).toBe('a');
+  });
+});
+
+describe('readFlagValues (repeatable flags)', () => {
+  // readFlagValue is first-wins, so it is NOT a drop-in for a repeatable flag:
+  // using it for `--exclude` would silently discard every pattern after the
+  // first, and the operator's later exclusions would import anyway.
+  test('collects every occurrence in both spellings', () => {
+    expect(readFlagValues(['sync', '--exclude', 'a', '--exclude=b', '--exclude', 'c'], '--exclude'))
+      .toEqual(['a', 'b', 'c']);
+  });
+
+  test('absent flag yields an empty array, not undefined', () => {
+    expect(readFlagValues(['sync'], '--exclude')).toEqual([]);
+  });
+
+  test('a trailing bare flag contributes nothing', () => {
+    expect(readFlagValues(['sync', '--exclude', 'a', '--exclude'], '--exclude')).toEqual(['a']);
+  });
+
+  test('an empty equals value is kept (the caller decides what "" means)', () => {
+    expect(readFlagValues(['sync', '--exclude='], '--exclude')).toEqual(['']);
+  });
+
+  test('does not match a prefix-sharing flag', () => {
+    expect(readFlagValues(['sync', '--exclude-dir=x'], '--exclude')).toEqual([]);
+  });
+});
+
+describe('expandEqualsFlags (argv normalizer for parser loops)', () => {
+  // For a command with a full else-if parser loop, normalizing argv once is far
+  // less invasive than rewriting every arm — and it makes EVERY flag in that
+  // loop accept both spellings, not just the one being fixed.
+  test('splits a flag-shaped token into two', () => {
+    expect(expandEqualsFlags(['capture', '--source=wiki'])).toEqual(['capture', '--source', 'wiki']);
+  });
+
+  test('leaves the space-separated spelling untouched', () => {
+    expect(expandEqualsFlags(['capture', '--source', 'wiki'])).toEqual(['capture', '--source', 'wiki']);
+  });
+
+  test('splits on the FIRST separator so a value containing one survives', () => {
+    expect(expandEqualsFlags(['--set=a=b=c'])).toEqual(['--set', 'a=b=c']);
+  });
+
+  test('passes positionals and bare flags through untouched', () => {
+    expect(expandEqualsFlags(['capture', 'some note', '--json', '-y'])).toEqual(
+      ['capture', 'some note', '--json', '-y'],
+    );
+  });
+
+  test('a non-flag token containing = is NOT split', () => {
+    // Capture bodies and query strings routinely contain '='.
+    expect(expandEqualsFlags(['capture', 'x=y'])).toEqual(['capture', 'x=y']);
+  });
+
+  test('an empty value yields an empty-string token, matching the space form', () => {
+    expect(expandEqualsFlags(['--source='])).toEqual(['--source', '']);
+  });
+
+  test('a lone -- and short flags are left alone', () => {
+    expect(expandEqualsFlags(['--', '-k=3'])).toEqual(['--', '-k=3']);
   });
 });
 

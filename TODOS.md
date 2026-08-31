@@ -2,18 +2,38 @@
 
 ## Sync lock recovery follow-ups (filed 2026-08-31, adversarial review of the break-lock source-resolution fix)
 
-- [ ] **P1 — `sync --source=<id>` (equals form) is silently ignored on the main
-  sync path.** **What:** `src/commands/sync.ts` resolves the flag with
-  `args.find((a, i) => args[i - 1] === '--source')`, which only matches the
-  space-separated form; `sync` is CLI_ONLY so `parseOpArgs`'s `--key=value`
-  handling never runs. `gbrain sync --source=wiki` therefore syncs whatever the
-  AMBIENT chain resolves, not `wiki`. **Why:** wrong-source sync — writes pages
-  and takes the lock under a source the operator did not name. The break-lock
-  path was fixed in this wave (`readFlagValue` in `src/core/sync-lock.ts`); the
-  sync path was left alone to keep that PR scoped. **Where to start:** reuse
-  `readFlagValue` at the `explicitSource` site (~`sync.ts:3459`) and audit other
-  `args.find((a, i) => args[i - 1] === ...)` call sites for the same gap.
-  **Effort:** S.
+- [x] **P1 — `sync --source=<id>` (equals form) is silently ignored.**
+  **Completed:** v0.50.2.0 (2026-08-31). Converted 13 files: `sync.ts`,
+  `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts` now
+  route through `readFlagValue` / `readFlagValues`, and `capture.ts`,
+  `enrich.ts`, `recall.ts`, `edges-backfill.ts`, `reindex-frontmatter.ts`,
+  `calibration.ts`, `eval-code-retrieval.ts` normalize argv once with
+  `expandEqualsFlags` (all in the new `src/core/cli-flag-value.ts`).
+
+- [ ] **P1 — finish the `--source` sweep: 16 commands still drop the equals
+  spelling.** **What:** `auth.ts`, `call.ts`, `claw-test.ts`, `code-callees.ts`,
+  `code-callers.ts`, `compile-context.ts`, `dream.ts`, `embed.ts`,
+  `frontmatter-install-hook.ts`, `schema.ts`, `sweep-delegate.ts`,
+  `sync-delegate.ts`, `takes.ts`, `thin-client-routing.ts`, `transcripts.ts`,
+  `watch.ts` read `--source` by argv position, so `--source=<id>` is dropped and
+  the command falls back to the AMBIENT source. **Why:** wrong-source reads, and
+  `embed`/`sweep` touch stored data. This is the same defect v0.50.2.0 fixed
+  elsewhere; it was scoped out to keep that release verifiable rather than
+  broad. **Where to start:** the list is machine-checked — `PENDING` in
+  `test/cli-flag-idiom-guard.test.ts` IS this list, and the guard fails if it
+  grows. For a parser loop, one `args = expandEqualsFlags(args)` before the loop
+  converts every flag in it; for a few named reads, use `readFlagValue`. Delete
+  each file from `PENDING` as you go. **Effort:** M.
+
+- [ ] **P2 — the same hand-rolled argv shape exists for flags OTHER than
+  `--source`, across ~75 files.** **What:** `args[++i]` / `args[i + 1]`
+  positional reads appear in ~75 files (`grep -rl 'args\[++i\]\|args\[i + 1\]' src/`).
+  Every one of them drops the equals spelling for its flags. **Why:** same class,
+  much lower individual blast radius than `--source` (no cross-source data
+  consequence), which is why the guard is scoped to `--source` only. **Where to
+  start:** `expandEqualsFlags` at the top of each parser loop is a one-line
+  conversion; the risk is volume, not difficulty. Do it in batches with the
+  command's own tests green. **Effort:** L.
 
 - [ ] **P2 — break-lock `--all` targets a BROADER set than `sync --all`.**
   **What:** `runBreakLockCommand`'s fan-out filters only `s.local_path` (via

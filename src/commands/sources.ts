@@ -66,6 +66,7 @@ import {
 } from '../core/sources-load.ts';
 import { sqlQueryForEngine } from '../core/sql-query.ts';
 import { preflightOauthClientColumns } from './auth.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 // ── Validation ──────────────────────────────────────────────
 
@@ -1171,8 +1172,8 @@ async function runWebhookSet(engine: BrainEngine, args: string[]): Promise<void>
     console.error(`Source "${id}" not found.`);
     process.exit(1);
   }
-  const explicitSecret = args.find((a, i) => args[i - 1] === '--secret');
-  const githubRepo = args.find((a, i) => args[i - 1] === '--github-repo');
+  const explicitSecret = readFlagValue(args, '--secret');
+  const githubRepo = readFlagValue(args, '--github-repo');
   const srcCfg = parseConfig(src.config);
   const isGitHubKind = srcCfg.kind === 'github';
   // v0.46: github-kind sources span many repos, so --github-repo is optional
@@ -1186,6 +1187,14 @@ async function runWebhookSet(engine: BrainEngine, args: string[]): Promise<void>
     process.exit(2);
   }
 
+  // An EMPTY --secret is an operator mistake, not a request for a random one.
+  // `??` would let `""` through (only null/undefined fall back), writing a blank
+  // webhook_secret: verification is fail-closed, so every delivery would 401
+  // while `sources webhook show` reported "(not set)". Reject it by name.
+  if (explicitSecret !== undefined && explicitSecret.length === 0) {
+    console.error('--secret was given an empty value. Omit the flag to generate one, or pass a real secret.');
+    process.exit(2);
+  }
   const { randomBytes } = await import('node:crypto');
   const secret = explicitSecret ?? randomBytes(32).toString('hex');
   const cfg = parseConfig(src.config);
@@ -1296,7 +1305,7 @@ async function runTrackedBranch(engine: BrainEngine, args: string[]): Promise<vo
     console.error(`Source "${id}" not found.`);
     process.exit(1);
   }
-  const setArg = args.find((a, i) => args[i - 1] === '--set');
+  const setArg = readFlagValue(args, '--set');
   const detect = args.includes('--detect');
   const cfg = parseConfig(src.config);
 
@@ -1346,12 +1355,7 @@ async function runTrackedBranch(engine: BrainEngine, args: string[]): Promise<vo
 
 async function runCurrent(engine: BrainEngine, args: string[]): Promise<void> {
   const json = args.includes('--json');
-  let explicit: string | null = null;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--source' && i + 1 < args.length) {
-      explicit = args[++i] || null;
-    }
-  }
+  const explicit = readFlagValue(args, '--source') || null;
 
   let result: Awaited<ReturnType<typeof resolveSourceWithTier>>;
   try {

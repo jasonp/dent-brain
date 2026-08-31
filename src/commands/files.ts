@@ -6,6 +6,7 @@ import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
 import { humanSize } from '../core/file-resolver.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 /** Size threshold: files >= 100 MB use TUS resumable upload */
 const SIZE_THRESHOLD = 100 * 1024 * 1024;
@@ -131,7 +132,7 @@ async function listFiles(engine: BrainEngine, slug?: string) {
 
 async function uploadFile(engine: BrainEngine, args: string[]) {
   const filePath = args.find(a => !a.startsWith('--'));
-  const pageSlug = args.find((a, i) => args[i - 1] === '--page') || null;
+  const pageSlug = readFlagValue(args, '--page') || null;
 
   if (!filePath || !existsSync(filePath)) {
     console.error('Usage: gbrain files upload <file> --page <slug>');
@@ -196,8 +197,8 @@ async function uploadFile(engine: BrainEngine, args: string[]) {
  */
 async function uploadRaw(engine: BrainEngine, args: string[]) {
   const filePath = args.find(a => !a.startsWith('--'));
-  const pageSlug = args.find((a, i) => args[i - 1] === '--page') || null;
-  const fileType = args.find((a, i) => args[i - 1] === '--type') || null;
+  const pageSlug = readFlagValue(args, '--page') || null;
+  const fileType = readFlagValue(args, '--type') || null;
   const noPointer = args.includes('--no-pointer');
 
   if (!filePath || !existsSync(filePath)) {
@@ -223,7 +224,7 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
     }
     const { resolveSourceId } = await import('../core/source-resolver.ts');
     const { resolvePageWriteTarget } = await import('../core/write-through.ts');
-    const sourceArg = args.find((a, i) => args[i - 1] === '--source') || null;
+    const sourceArg = readFlagValue(args, '--source') || null;
     const sourceId = await resolveSourceId(engine, sourceArg);
     const target = await resolvePageWriteTarget(engine, pageSlug, sourceId);
     if (!target.ok) {

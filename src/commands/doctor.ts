@@ -223,6 +223,7 @@ import {
   buildMemoryVerbsCheck,
   buildRetrievalReflexCheck,
 } from './doctor/checks/verbs-reflex.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 export interface Check {
   name: string;
   status: 'ok' | 'warn' | 'fail';
@@ -512,12 +513,7 @@ export async function buildChecks(
   // silently scope a bare `gbrain doctor` to one source; we want bare doctor to
   // stay brain-wide. Only `orphan_ratio` consumes this for now (other checks
   // staying brain-wide is a separate, larger change — see TODOS.md).
-  let orphanRatioSourceId: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--source' && i + 1 < args.length) {
-      orphanRatioSourceId = args[++i] || undefined;
-    }
-  }
+  const orphanRatioSourceId = readFlagValue(args, '--source') || undefined;
 
   const checks: Check[] = [];
   let autoFixReport: AutoFixReport | null = null;

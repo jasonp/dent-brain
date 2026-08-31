@@ -31,6 +31,7 @@ import { willEmbedSynchronously } from '../core/embedding.ts';
 import type { SyncManifest } from '../core/sync.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { readFlagValue, readFlagValues } from '../core/cli-flag-value.ts';
 import { loadConfig } from '../core/config.ts';
 import {
   autoConcurrency,
@@ -110,7 +111,6 @@ import {
   formatLockBusyMessage,
   runBreakLock,
   runBreakLockCommand,
-  readFlagValue,
   buildPartialResult,
 } from '../core/sync-lock.ts';
 import {
@@ -498,14 +498,14 @@ See also:
     return;
   }
 
-  const sourceIdArg = args.find((a, i) => args[i - 1] === '--source') ?? null;
+  const sourceIdArg = readFlagValue(args, '--source') ?? null;
   if (!sourceIdArg) {
     console.error('Error: --source <id> is required');
     console.error("Usage: gbrain sync trigger --source <id> [--priority high|normal|low]");
     process.exit(2);
   }
 
-  const priorityArg = args.find((a, i) => args[i - 1] === '--priority') ?? 'high';
+  const priorityArg = readFlagValue(args, '--priority') ?? 'high';
   const priorityMap: Record<string, number> = { high: -10, normal: 0, low: 5 };
   const priority = priorityMap[priorityArg];
   if (priority === undefined) {
@@ -3263,9 +3263,9 @@ See also:
     return;
   }
 
-  const repoPath = args.find((a, i) => args[i - 1] === '--repo') || undefined;
+  const repoPath = readFlagValue(args, '--repo') || undefined;
   const watch = args.includes('--watch');
-  const intervalStr = args.find((a, i) => args[i - 1] === '--interval');
+  const intervalStr = readFlagValue(args, '--interval');
   const interval = intervalStr ? parseInt(intervalStr, 10) : 60;
   const dryRun = args.includes('--dry-run');
   const full = args.includes('--full');
@@ -3305,7 +3305,7 @@ See also:
   // --break-lock; mutually exclusive with --force-break-lock (--force skips
   // every guard; --max-age is one specific extra guard so the two policies
   // can't coexist).
-  const maxAgeStr = args.find((a, i) => args[i - 1] === '--max-age');
+  const maxAgeStr = readFlagValue(args, '--max-age');
   let maxAgeSeconds: number | undefined;
   try {
     maxAgeSeconds = parseDurationSeconds(maxAgeStr, '--max-age');
@@ -3329,7 +3329,7 @@ See also:
   // --all is set and accept maxAgeSeconds for age-gated breaks.
   if (breakLock || forceBreakLock) {
     const exit = await runBreakLockCommand(engine, {
-      explicitSource: readFlagValue(args, '--source'),
+      explicitSource: readFlagValue(args, '--source') ?? null,
       repoPath,
       syncAll,
       force: forceBreakLock,
@@ -3367,19 +3367,26 @@ See also:
   // --max-sources N caps fan-out (default min(sources.length, 8)).
   const serialFlag = args.includes('--serial');
   const noAutoEmbed = args.includes('--no-auto-embed');
-  const maxSourcesStr = args.find((a, i) => args[i - 1] === '--max-sources');
+  const maxSourcesStr = readFlagValue(args, '--max-sources');
   const maxSources = maxSourcesStr ? parseInt(maxSourcesStr, 10) : undefined;
   if (maxSourcesStr && (!Number.isFinite(maxSources!) || maxSources! < 1)) {
     console.error(`Invalid --max-sources value: "${maxSourcesStr}". Must be a positive integer.`);
     process.exit(1);
   }
-  const strategyArg = args.find((a, i) => args[i - 1] === '--strategy') as SyncOpts['strategy'] | undefined;
-  // #753/#774: monorepo subdir-source flags. --exclude is repeatable.
-  const srcSubpath = args.find((a, i) => args[i - 1] === '--src-subpath') || undefined;
-  const excludePatterns: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--exclude' && i + 1 < args.length) excludePatterns.push(args[i + 1]);
+  // Validate rather than blind-cast: isAllowedByStrategy's fallback branch is
+  // the WIDEST admission set (markdown + code + images), so an unrecognized
+  // value silently BROADENS ingest and embed spend. Pre-fix a typo in the
+  // equals spelling was dropped and fell back to narrow 'markdown'; now that
+  // the spelling is honored, the typo has to be caught here.
+  const strategyRaw = readFlagValue(args, '--strategy');
+  if (strategyRaw !== undefined && !['markdown', 'code', 'auto'].includes(strategyRaw)) {
+    console.error(`Invalid --strategy value: "${strategyRaw}". Must be markdown|code|auto.`);
+    process.exit(2);
   }
+  const strategyArg = strategyRaw as SyncOpts['strategy'] | undefined;
+  // #753/#774: monorepo subdir-source flags. --exclude is repeatable.
+  const srcSubpath = readFlagValue(args, '--src-subpath') || undefined;
+  const excludePatterns = readFlagValues(args, '--exclude');
   if (syncAll && (srcSubpath || excludePatterns.length > 0)) {
     console.error(
       `--src-subpath/--exclude scope a single sync invocation; they cannot be combined with --all. ` +
@@ -3388,8 +3395,8 @@ See also:
     );
     process.exit(1);
   }
-  const concurrencyStr = args.find((a, i) => args[i - 1] === '--concurrency' || args[i - 1] === '--workers');
-  const parallelStr = args.find((a, i) => args[i - 1] === '--parallel');
+  const concurrencyStr = readFlagValue(args, '--concurrency', '--workers');
+  const parallelStr = readFlagValue(args, '--parallel');
   // v0.22.13 (PR #490 Q2): parseWorkers throws on '0', '-3', 'foo', '1.5' instead
   // of silently falling through to auto-concurrency or NaN. Loud failure beats
   // a 4-worker spawn from a typo. v0.40.3.0: same validation applies to --parallel.
@@ -3417,7 +3424,7 @@ See also:
   // --timeout 60` (no source scope) is rejected at parse time — the natural
   // single-source case requires the user to either name the source or opt
   // into the global fan-out, so the error message tells them which to add.
-  const timeoutStr = args.find((a, i) => args[i - 1] === '--timeout');
+  const timeoutStr = readFlagValue(args, '--timeout');
   let timeoutSeconds: number | undefined;
   try {
     timeoutSeconds = parseDurationSeconds(timeoutStr, '--timeout');
@@ -3425,7 +3432,7 @@ See also:
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
-  const explicitSourceArg = args.find((a, i) => args[i - 1] === '--source');
+  const explicitSourceArg = readFlagValue(args, '--source');
   if (timeoutSeconds !== undefined && !syncAll && !explicitSourceArg) {
     console.error(`--timeout requires either --source <id> or --all to scope the per-source budget.`);
     process.exit(1);
@@ -3456,7 +3463,7 @@ See also:
   // single-source brains to the right place automatically; the nudge
   // surfaces the auto-route to stderr so the user knows what happened
   // and can pass --source to override if needed.
-  const explicitSource = args.find((a, i) => args[i - 1] === '--source') || null;
+  const explicitSource = readFlagValue(args, '--source') || null;
   const { resolveSourceWithTier, resolveSourceForRepoPath, formatSoleNonDefaultNudge } =
     await import('../core/source-resolver.ts');
   // #3765: an explicit --repo anchors source resolution at the REPO dir, not

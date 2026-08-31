@@ -21,6 +21,7 @@ import { resolveSourceId } from '../core/source-resolver.ts';
 // — that's a deeper symbol-resolver rewrite filed as a follow-up.
 import { runSlidingPool } from '../core/worker-pool.ts';
 import { parseWorkers, resolveWorkersWithClamp } from '../core/sync-concurrency.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 interface BackfillOpts {
   source?: string;
@@ -33,6 +34,10 @@ interface BackfillOpts {
 
 function parseFlags(args: string[]): BackfillOpts {
   const opts: BackfillOpts = {};
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--source') {

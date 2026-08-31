@@ -5,6 +5,7 @@
  */
 import { execFileSync } from 'child_process';
 import { parseDurationSeconds } from './sync-concurrency.ts';
+import { readFlagValue } from './cli-flag-value.ts';
 
 /**
  * #2828 full-sync reconcile safety-valve thresholds. A reconcile that would
@@ -166,7 +167,7 @@ export function resolveSyncHardDeadline(
 
   if (args.includes('--no-hard-deadline')) return null;
 
-  const hardStr = args.find((a, i) => args[i - 1] === '--hard-deadline');
+  const hardStr = readFlagValue(args, '--hard-deadline');
   if (hardStr !== undefined) {
     // Throws on a bad value (cli.ts surfaces it + exits 1) — same posture as --timeout.
     const sec = parseDurationSeconds(hardStr, '--hard-deadline');
@@ -176,7 +177,7 @@ export function resolveSyncHardDeadline(
   // --timeout auto-arms a hard backstop at timeout(+grace), but ONLY single-source.
   // For --all, per-source budgets don't collapse to one wall-clock; fall through.
   const isAll = args.includes('--all');
-  const timeoutStr = args.find((a, i) => args[i - 1] === '--timeout');
+  const timeoutStr = readFlagValue(args, '--timeout');
   if (timeoutStr !== undefined && !isAll) {
     const sec = parseDurationSeconds(timeoutStr, '--timeout');
     if (sec && sec > 0) return mk(sec, 'flag:--timeout');
