@@ -58,8 +58,8 @@ export async function formatLockBusyMessage(engine: BrainEngine, lockKey: string
 }
 
 /**
- * Read `--flag value` OR `--flag=value`. The bare `args.find(a, i => args[i-1]
- * === '--source')` idiom used elsewhere in the sync CLI silently misses the
+ * Read `<name> value` OR `<name>=value` for a long flag. The bare
+ * `args.find(a, i => args[i-1] === '--source')` idiom used elsewhere silently misses the
  * equals form; for a DESTRUCTIVE break that miss would fall through to the
  * ambient chain and clear a lock the operator never named.
  */

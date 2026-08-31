@@ -3235,9 +3235,30 @@ Options:
                        1 = any error, 2 = cost-prompt-not-confirmed.
   --yes                Accept any interactive prompts (CI / non-TTY).
 
+Lock recovery (clears a stuck sync lock instead of syncing):
+  --break-lock         Clear the sync lock and exit. Lock keys are
+                       per-source (gbrain-sync:<id>), so the target
+                       resolves exactly the way sync resolves its source:
+                       --source flag > derived from --repo > the ambient
+                       chain (GBRAIN_SOURCE, .gbrain-source, cwd path).
+                       Confirm with 'gbrain sources current' first. Safe:
+                       refuses to delete a lock whose holder is alive. An
+                       unknown --source exits 1; an archived source is
+                       still breakable by name. With --all it breaks every
+                       active source that has a local_path, and refuses to
+                       be combined with --source or --repo.
+  --force-break-lock   Like --break-lock but skips the liveness check.
+                       Use only when the holder process is known gone.
+  --max-age <dur>      (with --break-lock) Only break a lock that has not
+                       refreshed within the window, so a healthy
+                       long-running holder stays safe. Accepts 1800, 30m,
+                       1h. Rejected with --force-break-lock, which already
+                       skips every guard.
+
 See also:
   gbrain embed --stale    Re-embed all stale chunks (post --no-embed).
   gbrain doctor           Diagnose dim mismatches and other sync issues.
+  gbrain sources current  Which source (and which tier) a bare command hits.
 `);
     return;
   }
@@ -3273,9 +3294,9 @@ See also:
   const yesFlag = args.includes('--yes');
   // v0.41.6.0 D3: lock-recovery flags. --break-lock (safe) verifies the
   // holder is local-host + (TTL-expired OR PID-dead+60s-old) before
-  // deleting the row. --force-break-lock skips the liveness check. Both
-  // are refused when combined with --all (per-source invocation required;
-  // v0.40 lock keys are gbrain-sync:<sourceId>).
+  // deleting the row. --force-break-lock skips the liveness check. Lock
+  // keys are per-source (gbrain-sync:<sourceId>); runBreakLockCommand
+  // resolves WHICH one, and refuses --all beside --source/--repo.
   const breakLock = args.includes('--break-lock');
   const forceBreakLock = args.includes('--force-break-lock');
 

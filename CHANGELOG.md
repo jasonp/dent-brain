@@ -60,7 +60,9 @@ gbrain doctor
 - `src/core/sync-lock.ts`: new `readFlagValue()` reads both `--flag value` and `--flag=value`. The bare `args.find` idiom missed the equals form, which for a destructive break meant falling through to the ambient chain.
 - `src/core/sync-lock.ts`: resolution failures now emit a `--json` envelope, matching every other exit in the file.
 - `src/core/sync-lock.ts`: an archived source named explicitly is still breakable; a name matching no row at all stays a loud exit 1.
-- `scripts/module-size-limits.tsv`: `src/commands/sync.ts` ceiling lowered 4512 to 4491 for the peel.
+- `src/core/sync-lock.ts`: reworded the `readFlagValue` doc comment. Its literal `--flag` example was being scraped into `src/core/cli-flag-registry.generated.ts` as a legal flag for `sync`, `jobs`, `status` and `reinit-pglite`, drifting the committed registry against `test/cli-flag-validation.test.ts`.
+- `src/commands/sync.ts`: the comment above the break-lock flags still said both are refused with `--all`. That refusal was dropped releases ago, and the comment twenty lines below already said so.
+- `scripts/module-size-limits.tsv`: `src/commands/sync.ts` ceiling ends at 4512, unchanged from before the branch. The peel freed 21 lines; 20 went to the help text below.
 
 **Test fixes (the stale assertion)**
 - `test/e2e/claude-plugin-install-real.serial.test.ts`: read the plugin and marketplace names from the `marketplace.json` under test instead of hardcoding upstream's `gbrain@gbrain`. This fork generates `dent-brain@dent-brain` from `org_prefix`, so the door failed with `Plugin "gbrain" not found in marketplace "gbrain"`. The persona-variant case skips when the marketplace publishes no variants, and asserts a non-empty variant list when it does, so it cannot pass by iterating nothing.
@@ -71,6 +73,11 @@ gbrain doctor
 
 **Documentation**
 - `CLAUDE.md`: corrected the plugin-tree regeneration instructions. The documented `--out plugin` invocation deletes the fork-owned `plugin/manifest.json`, `plugin/marketplace/` and `plugin/fm-mcp/` paths, 50 tracked files, because the generator wipes its output directory. Replaced with a tmpdir-and-copy-back recipe matching what `scripts/check-plugin-tree.sh` actually compares.
+- `skills/conventions/brain-routing.md`: the source-resolution chain now names `--break-lock` / `--force-break-lock` as a path that honors it, and states what a destructive break refuses rather than guesses: `--all` beside a narrowing flag, and a `--source` matching no registered source. The archived-source carve-out is documented alongside them as the one deliberate allow.
+- `docs/architecture/serve-sync-concurrency.md`: the dead-serve recovery step told you to run a bare `gbrain sync --force-break-lock`. It now says which source's key that actually breaks, and how to aim it.
+- `docs/architecture/KEY_FILES.md`: the `sync-lock.ts` entry covers `runBreakLockCommand` and `readFlagValue`, which the peel moved into that file.
+- `gbrain sync --help`: new "Lock recovery" section for `--break-lock`, `--force-break-lock` and `--max-age`. All three have shipped for releases and appeared in no help output, so the flags whose behavior this release changed were invisible from the CLI itself.
+- `docs/architecture/KEY_FILES.md`: the `source-resolver.ts` entry called the chain 6-tier while listing seven names, and ordered `sole_non_default` above `brain_default`. Corrected to the code's order, which `skills/conventions/brain-routing.md` already had right.
 - `TODOS.md`: filed four follow-ups the adversarial passes surfaced as pre-existing, including the same equals-form flag gap on the main `sync` path and an unfenced lock DELETE that can drop a successor's live lock on PID reuse.
 
 ## [0.50.0.2] - 2026-08-13

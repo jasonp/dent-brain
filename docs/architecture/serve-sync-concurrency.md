@@ -60,7 +60,13 @@ Progress is checkpointed — re-run `gbrain sync` to resume. Two notes:
 
 - The dead serve's `gbrain-sync:<source>` row lock is only auto-reclaimed
   once it is ≥60s old (PID-reuse defense). If the re-run reports a dead-PID
-  sync lock, `gbrain sync --force-break-lock` clears it immediately.
+  sync lock, `gbrain sync --force-break-lock` clears it immediately. The
+  break targets ONE source's key, resolved through the same precedence as
+  the sync it is unblocking (`--source` flag > `--repo`-derived > the
+  ambient tiers), so run it with the routing you ran the sync with.
+  `--all` breaks the lock of every active source that has a `local_path`
+  (archived and pure-DB sources are skipped; they hold no sync lock) and
+  refuses to be combined with `--source` or `--repo`.
 - The dead serve's PGLite data-dir lock is reaped automatically (dead PID).
 
 ## Diagnosing a sync hang
