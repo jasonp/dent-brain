@@ -2,18 +2,26 @@
 
 ## Sync lock recovery follow-ups (filed 2026-08-31, adversarial review of the break-lock source-resolution fix)
 
-- [ ] **P1 — `sync --source=<id>` (equals form) is silently ignored on the main
-  sync path.** **What:** `src/commands/sync.ts` resolves the flag with
-  `args.find((a, i) => args[i - 1] === '--source')`, which only matches the
-  space-separated form; `sync` is CLI_ONLY so `parseOpArgs`'s `--key=value`
-  handling never runs. `gbrain sync --source=wiki` therefore syncs whatever the
-  AMBIENT chain resolves, not `wiki`. **Why:** wrong-source sync — writes pages
-  and takes the lock under a source the operator did not name. The break-lock
-  path was fixed in this wave (`readFlagValue` in `src/core/sync-lock.ts`); the
-  sync path was left alone to keep that PR scoped. **Where to start:** reuse
-  `readFlagValue` at the `explicitSource` site (~`sync.ts:3459`) and audit other
-  `args.find((a, i) => args[i - 1] === ...)` call sites for the same gap.
-  **Effort:** S.
+- [x] **P1 — `sync --source=<id>` (equals form) is silently ignored on the main
+  sync path.** **Completed:** v0.50.2.0 (2026-08-31). Replaced the flag reads in
+  `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts` and
+  `orphans.ts` with a shared `readFlagValue` / `readFlagValues` in the new
+  dependency-free `src/core/cli-flag-value.ts`. Every `--source` read in the
+  codebase now honors both spellings.
+
+- [ ] **P2 — finish the equals-form sweep: `--pack`, `--url`, `--dir`,
+  `--limit`, and schema's multi-flag parsers.** **What:** the v0.50.2.0 sweep
+  was driven by a grep for `args.find((a, i) => args[i - 1] === ...)` and
+  therefore MISSED two other spellings of the same bug. Still space-only:
+  `schema.ts:926,1027` (`--pack`), `skillpack.ts:725` (`--url`),
+  `sources-demo.ts:55,61` (`--dir`, `--limit`), and the `a === '--flag'` +
+  `args[++i]` parser loops at `schema.ts:452,1055-1104`. **Why:** same silent
+  drop, same class; `gbrain schema --pack=x` still falls through. Lower blast
+  radius than sync (no lock, no page writes), which is why it was not bundled.
+  **Where to start:** grep all three spellings, not one —
+  `args\[i - 1\] ===`, `args\[i\] === '--`, and `args\[\+\+i\]`. The first two are
+  drop-ins for `readFlagValue`; the schema parser loops consume `++i` across
+  many flags and need care. **Effort:** M.
 
 - [ ] **P2 — break-lock `--all` targets a BROADER set than `sync --all`.**
   **What:** `runBreakLockCommand`'s fan-out filters only `s.local_path` (via
