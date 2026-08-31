@@ -74,6 +74,18 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   to the write's source (`getPage(slug, { sourceId: x ?? 'default' })`). Guarded by
   `scripts/check-getpage-scoped-write.mjs` (opt-out marker
   `gbrain-allow-unscoped-getpage` for read-only first-match sites).
+- **Long-flag reads go through `readFlagValue` / `readFlagValues`**
+  (`src/core/cli-flag-value.ts`). Never hand-roll argv scanning in a CLI_ONLY command: every
+  hand-rolled spelling has matched only the space-separated form and silently DROPPED the
+  equals-joined one, so the command fell through to ambient defaults — for `sync --source=`
+  that meant writing pages and taking the per-source lock under a source the operator never
+  named. `readFlagValue` is first-occurrence-wins; a repeatable flag needs `readFlagValues`
+  or every value after the first vanishes. Keep `cli-flag-value.ts` dependency-free and free
+  of literal flag tokens: `scripts/generate-flag-registry.ts` follows imports and scrapes
+  source text, so a flag token there writes false-permissive rows into
+  `cli-flag-registry.generated.ts`. Guarded by `test/cli-flag-idiom-guard.test.ts` (source-text,
+  with an allowlist of the sites the sweep has not reached yet) + `test/cli-flag-validation.test.ts`
+  — `bun run verify` runs NEITHER, so run them explicitly after touching flag parsing.
 - **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it (a jsonb
   string scalar); PGLite hides the bug. This bites BOTH spellings — the template form
   (`${JSON.stringify(x)}::jsonb`) AND the positional form (`executeRaw(\`…$N::jsonb\`, [JSON.stringify(x)])`,
