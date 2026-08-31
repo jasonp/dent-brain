@@ -2,6 +2,77 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.50.1.0] - 2026-08-31
+
+## **The flaky test was right. The comment above it was wrong.**
+
+`test/e2e/sync-delegation-under-serve.serial.test.ts` carried a note calling its Pin 4 failure "a known CI-only flake (green locally, intermittent on contended runners)." It was not a flake. `gbrain sync --break-lock` picked its target source with `args.find(--source) ?? 'default'`, bypassing the 6-tier resolver every other sync codepath runs through. Under `GBRAIN_SOURCE=workspace` it broke `gbrain-sync:default`, a key nobody held, printed "nothing to break", and exited 0 while the real lock stayed wedged.
+
+That is the worst shape a recovery tool can take: it reports success, and the thing you were recovering from is still there.
+
+Three workflows were red on main. Two were real bugs. The third was a stale assertion from an upstream merge, and only that one was a test problem.
+
+### The numbers that matter
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Workflows red on `main` | 3 | 0 | E2E, Heavy Tests, OSV-Scanner |
+| Resolution tiers `--break-lock` honored | 1 of 6 | 6 of 6 | plus the `--repo` anchor |
+| Tests pinning break-lock source selection | 0 | 11 | 5 fail against the old code |
+| Dependency advisories in scanned lockfiles | 31 | 0 | all in a non-deployed spike |
+
+Five of the eleven new tests fail against the pre-fix binary. That is the number that matters, because the prior test count was zero: every existing break-lock test passed `--source` explicitly, which is exactly why the bug survived this long.
+
+Two adversarial review passes then found the fix had reintroduced the same asymmetry one level down. An ambient `GBRAIN_SOURCE=__all__` was being treated as `--all`, so a bare `--force-break-lock` would delete every source's lock while missing `gbrain-sync:__all__`, the one key a sync under that env actually holds. Symmetry with `sync` is the invariant, and convenience is not worth breaking it.
+
+### What this means for you
+
+If you route by `GBRAIN_SOURCE`, a `.gbrain-source` dotfile, a cwd-matched `local_path`, or `--repo`, and you have ever run `gbrain sync --break-lock` on a wedged sync, it very likely cleared nothing and told you it succeeded. Re-run it on this version.
+
+Four user-visible behavior changes, all on the break-lock path:
+
+- An unknown `--source` now exits 1 with the source named, instead of exiting 0 after breaking a phantom key.
+- `--all` combined with `--source` or `--repo` is refused. A narrowing flag beside a fleet-wide flag used to be silently ignored, which turned a typo into a force-delete of every lock.
+- `--source=<id>` (equals form) is honored. It used to fall through to the ambient chain.
+- An archived source's lock stays breakable. Recovery has to work on sources you already retired.
+
+## To take advantage of v0.50.1.0
+
+No migration and no schema change.
+
+```bash
+gbrain --version                    # expect 0.50.1.0
+gbrain sync --break-lock --source <id>   # now targets the source you name
+```
+
+If a past `--break-lock` reported "nothing to break" on a sync you knew was stuck, check for a surviving row and clear it on this version:
+
+```bash
+gbrain doctor
+```
+
+### Itemized changes
+
+**Sync lock recovery (the real bug)**
+- `src/core/sync-lock.ts`: new `runBreakLockCommand()` resolves the break target through the same precedence `sync` uses, `--source` flag > `--repo`-derived > the ambient 6-tier chain, then delegates to the existing `runBreakLock()`. Peeled out of `src/commands/sync.ts`, which now only parses flags and calls it.
+- `src/core/sync-lock.ts`: an ambient `__all__` sentinel is no longer reinterpreted as `--all`. `sync` has no `__all__` handling either, so it hands the sentinel to `performSync`, which takes `gbrain-sync:__all__`. Fanning out here would clear every other lock and miss that one.
+- `src/core/sync-lock.ts`: `--all` alongside `--source`/`--repo` is refused rather than resolved in favor of the destructive reading.
+- `src/core/sync-lock.ts`: new `readFlagValue()` reads both `--flag value` and `--flag=value`. The bare `args.find` idiom missed the equals form, which for a destructive break meant falling through to the ambient chain.
+- `src/core/sync-lock.ts`: resolution failures now emit a `--json` envelope, matching every other exit in the file.
+- `src/core/sync-lock.ts`: an archived source named explicitly is still breakable; a name matching no row at all stays a loud exit 1.
+- `scripts/module-size-limits.tsv`: `src/commands/sync.ts` ceiling lowered 4512 to 4491 for the peel.
+
+**Test fixes (the stale assertion)**
+- `test/e2e/claude-plugin-install-real.serial.test.ts`: read the plugin and marketplace names from the `marketplace.json` under test instead of hardcoding upstream's `gbrain@gbrain`. This fork generates `dent-brain@dent-brain` from `org_prefix`, so the door failed with `Plugin "gbrain" not found in marketplace "gbrain"`. The persona-variant case skips when the marketplace publishes no variants, and asserts a non-empty variant list when it does, so it cannot pass by iterating nothing.
+- `test/sync-break-lock-source-resolution.serial.test.ts`: new, 11 tests driving the real CLI against a temp PGLite brain.
+
+**Dependencies**
+- `experiments/a6-cowork-hook-spike/package-lock.json`: refreshed to clear 31 advisories that were failing the OSV scan. All were transitive dependencies of a throwaway local spike that is never built or deployed; `bun.lock` and `admin/bun.lock` were already clean. No direct dependency moved.
+
+**Documentation**
+- `CLAUDE.md`: corrected the plugin-tree regeneration instructions. The documented `--out plugin` invocation deletes the fork-owned `plugin/manifest.json`, `plugin/marketplace/` and `plugin/fm-mcp/` paths, 50 tracked files, because the generator wipes its output directory. Replaced with a tmpdir-and-copy-back recipe matching what `scripts/check-plugin-tree.sh` actually compares.
+- `TODOS.md`: filed four follow-ups the adversarial passes surfaced as pre-existing, including the same equals-form flag gap on the main `sync` path and an unfenced lock DELETE that can drop a successor's live lock on PID reuse.
+
 ## [0.50.0.2] - 2026-08-13
 
 ## **Forty CI checks, and not one of them builds the image we deploy.**
