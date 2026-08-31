@@ -2,48 +2,38 @@
 
 ## Sync lock recovery follow-ups (filed 2026-08-31, adversarial review of the break-lock source-resolution fix)
 
-- [x] **P1 — `sync --source=<id>` (equals form) is silently ignored on the main
-  sync path.** **Completed:** v0.50.2.0 (2026-08-31). Replaced the flag reads in
-  `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts` and
-  `orphans.ts` with a shared `readFlagValue` / `readFlagValues` in the new
-  dependency-free `src/core/cli-flag-value.ts`. Every `--source` read on those
-  six files honors both spellings. NOT every `--source` read in the codebase —
-  see the P1 directly below, filed when the v0.50.2.0 doc review found seven
-  more.
+- [x] **P1 — `sync --source=<id>` (equals form) is silently ignored.**
+  **Completed:** v0.50.2.0 (2026-08-31). Converted 13 files: `sync.ts`,
+  `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts` now
+  route through `readFlagValue` / `readFlagValues`, and `capture.ts`,
+  `enrich.ts`, `recall.ts`, `edges-backfill.ts`, `reindex-frontmatter.ts`,
+  `calibration.ts`, `eval-code-retrieval.ts` normalize argv once with
+  `expandEqualsFlags` (all in the new `src/core/cli-flag-value.ts`).
 
-- [ ] **P1 — seven more commands still drop `--source=<id>`, in a FOURTH
-  spelling the new guard does not match.** **What:** `capture.ts:95`,
-  `enrich.ts:695`, `recall.ts:119`, `edges-backfill.ts:38`,
-  `reindex-frontmatter.ts:168`, `calibration.ts:156`,
-  `eval-code-retrieval.ts:73` all read `--source` as `const a = args[i]`
-  followed by `a === '--source'` + `args[++i]`. Because the value is bound to
-  `a` first, NEITHER regex in `test/cli-flag-idiom-guard.test.ts` matches, and
-  none of these files is on its allowlist — the guard reads as complete and is
-  not. **Why P1, not P2:** `capture`, `enrich` and `edges-backfill` WRITE. This
-  is the same silent-misroute-under-an-unnamed-source shape that made the
-  original a P1, minus only the lock. `gbrain capture --source=x` writes the
-  page to whatever the ambient chain resolves. **Where to start:** widen the
-  guard FIRST (add a spelling that catches `a === '--` where `a` is bound from
-  `args[i]`, plus the `args[++i]` consumption pattern), let it enumerate the
-  real offender list, then convert. Do not trust a hand-grep to be complete
-  again — that is now the third time this bug class has been under-counted.
-  **Effort:** M. **Found by:** cross-model doc review during
-  /document-release, v0.50.2.0.
+- [ ] **P1 — finish the `--source` sweep: 16 commands still drop the equals
+  spelling.** **What:** `auth.ts`, `call.ts`, `claw-test.ts`, `code-callees.ts`,
+  `code-callers.ts`, `compile-context.ts`, `dream.ts`, `embed.ts`,
+  `frontmatter-install-hook.ts`, `schema.ts`, `sweep-delegate.ts`,
+  `sync-delegate.ts`, `takes.ts`, `thin-client-routing.ts`, `transcripts.ts`,
+  `watch.ts` read `--source` by argv position, so `--source=<id>` is dropped and
+  the command falls back to the AMBIENT source. **Why:** wrong-source reads, and
+  `embed`/`sweep` touch stored data. This is the same defect v0.50.2.0 fixed
+  elsewhere; it was scoped out to keep that release verifiable rather than
+  broad. **Where to start:** the list is machine-checked — `PENDING` in
+  `test/cli-flag-idiom-guard.test.ts` IS this list, and the guard fails if it
+  grows. For a parser loop, one `args = expandEqualsFlags(args)` before the loop
+  converts every flag in it; for a few named reads, use `readFlagValue`. Delete
+  each file from `PENDING` as you go. **Effort:** M.
 
-- [ ] **P2 — finish the equals-form sweep: `--url`, `--dir`, `--limit`, and
-  schema's multi-flag parsers.** **What:** the v0.50.2.0 sweep was driven by a
-  grep for `args.find((a, i) => args[i - 1] === ...)` and therefore MISSED the
-  other spellings of the same bug. Still space-only: `skillpack.ts:725`
-  (`--url`), `sources-demo.ts:55,61` (`--dir`, `--limit`), and the
-  `a === '--flag'` + `args[++i]` parser loops at `schema.ts:452,1055-1104`.
-  `--pack` is NOT on this list: `schema.ts:927,1028` already handle
-  `--pack=<name>` explicitly. **Why:** same silent drop, same class. Lower
-  blast radius than the P1 above (no lock, no page writes), which is why it was
-  not bundled. **Where to start:** grep all four spellings, not one —
-  `args\[i - 1\] ===`, `args\[i\] === '--`, `a === '--` with `a` bound from
-  `args[i]`, and `args\[\+\+i\]`. The first two are drop-ins for
-  `readFlagValue`; the schema parser loops consume `++i` across many flags and
-  need care. **Effort:** M.
+- [ ] **P2 — the same hand-rolled argv shape exists for flags OTHER than
+  `--source`, across ~75 files.** **What:** `args[++i]` / `args[i + 1]`
+  positional reads appear in ~75 files (`grep -rl 'args\[++i\]\|args\[i + 1\]' src/`).
+  Every one of them drops the equals spelling for its flags. **Why:** same class,
+  much lower individual blast radius than `--source` (no cross-source data
+  consequence), which is why the guard is scoped to `--source` only. **Where to
+  start:** `expandEqualsFlags` at the top of each parser loop is a one-line
+  conversion; the risk is volume, not difficulty. Do it in batches with the
+  command's own tests green. **Effort:** L.
 
 - [ ] **P2 — break-lock `--all` targets a BROADER set than `sync --all`.**
   **What:** `runBreakLockCommand`'s fan-out filters only `s.local_path` (via
