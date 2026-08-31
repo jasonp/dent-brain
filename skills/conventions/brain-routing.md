@@ -81,10 +81,32 @@ wins over the auto-route. Archived sources are excluded from the count.
 - `gbrain sources current --source X` shows what an explicit flag
   WOULD resolve to (validates X exists in the sources table).
 
-CLI commands honoring this chain: `gbrain sync`, `gbrain import`,
+CLI commands honoring this chain: `gbrain sync` (including its
+`--break-lock` / `--force-break-lock` recovery path), `gbrain import`,
 `gbrain search`, `gbrain extract` (via `--source-id <id>` since
 `--source` is the fs|db data-source axis), `gbrain graph-query`
 (via `--include-foreign` for cross-source traversal).
+
+**Break-lock resolves like the sync it is unblocking.** The sync lock key
+is per-source (`gbrain-sync:<sourceId>`), so `gbrain sync --break-lock`
+picks its target with `--source` flag > `--repo`-derived > the ambient
+tiers above. Run it with the same routing you ran the wedged sync with; a
+bare break under `GBRAIN_SOURCE=X` or a `.gbrain-source` dotfile targets
+X, not `default`. Because the break is destructive it refuses ambiguity
+rather than guessing:
+
+- `--all` cannot be combined with `--source` or `--repo` (it would
+  silently ignore the narrowing flag and go fleet-wide). On its own,
+  `--all` breaks the lock of every active source that has a `local_path`;
+  archived and pure-DB sources are skipped, since they hold no sync lock.
+- A `--source` naming no registered source exits 1, instead of reporting
+  success for a key that never existed.
+
+One deliberate carve-out: an ARCHIVED source named explicitly IS still
+breakable, even though the resolver otherwise filters `archived = false`.
+A source that wedged and was then archived still needs its lock cleared.
+
+`gbrain sources current` before the break tells you which tier wins.
 
 **Trust boundary (v0.34.1.0):** the resolver is CLI-layer only.
 Operations.ts handlers do NOT read `.gbrain-source` or

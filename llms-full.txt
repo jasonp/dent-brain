@@ -738,10 +738,28 @@ Auto-derived files that also drift on a version bump (regenerate, don't hand-edi
   tree AND the persona variant trees (gbrain-coding, gbrain-daily) embed a
   `gbrain-plugin-tree-stamp: X.Y.Z.W` (the variants' generated plugin
   manifests carry the version too), so every version bump drifts them.
-  Regenerate after the bump: `bun run scripts/generate-plugin-tree.ts --out
-  plugin --variants-out plugin-variants` (guarded by
-  `scripts/check-plugin-tree.sh` in `bun run verify`; the release
-  `publish-codex-plugin` job also drift-gates it before publishing).
+  Regenerate after the bump — but **NEVER with `--out plugin` on this fork.**
+  The generator wipes its output dir, and `plugin/` also holds fork-owned paths
+  (`plugin/manifest.json`, `plugin/marketplace/`, `plugin/fm-mcp/`) that
+  `bun run build:plugin` layers on top; `--out plugin` deletes them (measured:
+  50 tracked files, including the hand-maintained `manifest.json`). Generate to
+  a tmpdir and copy back only what the generator owns — `README.md` + `skills/`
+  — exactly the set `PLUGIN_TREE_EXCLUDES` in `scripts/check-plugin-tree.sh`
+  compares:
+
+  ```bash
+  TMP=$(mktemp -d) && bun run scripts/generate-plugin-tree.ts \
+    --out "$TMP/plugin" --variants-out "$TMP/plugin-variants"
+  cp "$TMP/plugin/README.md" plugin/README.md
+  rm -rf plugin/skills && cp -R "$TMP/plugin/skills" plugin/skills
+  rm -rf plugin-variants && cp -R "$TMP/plugin-variants" plugin-variants
+  rm -rf "$TMP"
+  ```
+
+  `plugin-variants/` IS entirely generator-owned, so it copies wholesale. Run
+  `build:plugin` AFTER this, never before — it writes `plugin/marketplace/`.
+  (Guarded by `scripts/check-plugin-tree.sh` in `bun run verify`; the release
+  `publish-codex-plugin` job also drift-gates it before publishing.)
 - `bun.lock` — root-package version is auto-pinned from `package.json`. After
   bumping `package.json`, run `bun install` to refresh the lockfile.
 - `llms-full.txt` / `llms.txt` — auto-generated documentation bundles. **Any
