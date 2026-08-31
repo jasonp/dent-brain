@@ -2,6 +2,73 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.50.2.0] - 2026-08-31
+
+## **`--source=wiki` was not a typo. It was silently ignored.**
+
+`gbrain sync --source=wiki` dropped the flag and synced whatever the AMBIENT chain resolved instead, writing pages and taking the per-source lock under a source you never named. It even printed *"pass `--source` to override"* at an operator who had just done exactly that.
+
+Every CLI-only command read long-flag values with a hand-rolled idiom that matched only the space-separated spelling. `sync` never reaches the shared `key=value` handling, so the equals spelling had nowhere to be honored.
+
+The audit that found this was itself incomplete, which is the more useful lesson. The first sweep grepped for one spelling of the idiom and reported zero survivors. There were two more spellings, and a pre-landing review caught the over-claim before it shipped.
+
+### The numbers that matter
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Spellings of the idiom searched | 1 | 3 | the miss that made the first sweep look complete |
+| Call sites honoring both spellings | 0 | 29 | across 6 command files |
+| `--source` reads that drop the equals spelling | 6 | 0 | sync, files, sources, doctor, orphans |
+| Tests pinning the readers | 0 | 19 | plus a guard that fails on any revert |
+
+Twenty-nine is the number that matters, not one. A single-site fix would have left `gbrain doctor --source=wiki` and `gbrain orphans --source=wiki` scanning brain-wide while `sync` behaved correctly, which is a worse kind of broken than uniformly broken.
+
+### What this means for you
+
+Both spellings now behave identically everywhere `--source` is read. If you have a script or cron line using the equals spelling, check what it has actually been doing: it was not failing, it was quietly operating on a different source.
+
+Honoring the equals spelling made two values reachable for the first time, and both needed a guard the old code never had to have:
+
+- **`--strategy=<typo>` is now rejected.** The strategy admission fallback is the *widest* set (markdown + code + images), so an unrecognized value would have broadened ingest and embed spend. Previously a typo in the equals spelling was dropped and fell back to narrow markdown-only.
+- **`--secret=` (empty) is now rejected.** It would have persisted a blank webhook credential. Verification is fail-closed, so every delivery would have returned 401 while `sources webhook show` reported "(not set)".
+
+One deliberate semantic change: when a flag appears more than once, the FIRST occurrence wins, in whichever spelling. The old idiom took the first space-separated occurrence and ignored equals entirely, which was not a rule anyone could rely on.
+
+## To take advantage of v0.50.2.0
+
+No migration and no schema change.
+
+```bash
+gbrain --version                       # expect 0.50.2.0
+gbrain sync --source=<id> --dry-run    # now routes to <id>, not the ambient source
+```
+
+If a script has been using the equals spelling, confirm which source it actually touched:
+
+```bash
+gbrain sources current --source=<id>   # shows what the flag resolves to
+```
+
+### Itemized changes
+
+**Flag reading**
+- `src/core/cli-flag-value.ts`: new, dependency-free. `readFlagValue` accepts both spellings with alias lists and first-occurrence-wins; `readFlagValues` is the repeatable-flag variant (`--exclude`), since a first-wins reader would silently discard every later value. The module is deliberately free of literal flag tokens: the flag-registry generator follows imports and scrapes source text, so a flag-bearing import writes false-permissive rows into `cli-flag-registry.generated.ts`.
+- 29 call sites converted across `sync.ts`, `files.ts`, `sources.ts`, `sync-reconcile.ts`, `doctor.ts`, `orphans.ts`. Every `?? null` / `|| undefined` / cast at those sites is unchanged; the helper returns `string | undefined` so it drops in.
+- `src/commands/sync.ts`: `--exclude` moved to the repeatable reader. It was the worst inconsistency in the first draft, honoring `--src-subpath=x` while dropping `--exclude=y`, so an operator narrowing scope got no exclusion.
+
+**Guards for newly reachable values**
+- `src/commands/sync.ts`: `--strategy` is validated against `markdown|code|auto` before the cast.
+- `src/commands/sources.ts`: an empty `--secret` is rejected by name.
+
+**Tests**
+- `test/cli-options.test.ts`: 15 unit tests covering both readers, including prefix collisions, values containing `=`, empty values, trailing bare flags, aliases and duplicate-flag precedence.
+- `test/sync-source-flag-forms.serial.test.ts`: 5 CLI-level tests pinning that sync WIRES the helper. Two fail against the pre-fix binary.
+- `test/cli-flag-idiom-guard.test.ts`: source-text guard failing on any reintroduction of either idiom, with an honest allowlist of what is not converted yet. Verified to catch a revert.
+
+**Documentation**
+- `docs/architecture/KEY_FILES.md`: entry for the new module; removed the stale `readFlagValue` description from the `sync-lock.ts` entry.
+- `TODOS.md`: the P1 is closed accurately, and the sites the first sweep missed (`--pack`, `--url`, `--dir`, `--limit`, and schema's multi-flag parser loops) are filed as a P2 with the three greps that find them.
+
 ## [0.50.1.0] - 2026-08-31
 
 ## **The flaky test was right. The comment above it was wrong.**
