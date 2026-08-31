@@ -109,6 +109,8 @@ import {
   SyncLockBusyError,
   formatLockBusyMessage,
   runBreakLock,
+  runBreakLockCommand,
+  readFlagValue,
   buildPartialResult,
 } from '../core/sync-lock.ts';
 import {
@@ -542,8 +544,9 @@ See also:
 
 // The lock layer minus performSync (SyncLockBusyError, formatLockBusyMessage,
 // runBreakLock, buildPartialResult) was peeled to src/core/sync-lock.ts
-// (pure move). Re-exported so existing importers keep working.
-export { SyncLockBusyError, runBreakLock } from '../core/sync-lock.ts';
+// (pure move); runBreakLockCommand was added there later. Re-exported so
+// existing importers keep working.
+export { SyncLockBusyError, runBreakLock, runBreakLockCommand } from '../core/sync-lock.ts';
 
 export async function performSync(engine: BrainEngine, opts: SyncOpts): Promise<SyncResult> {
   // v0.22.13 CODEX-2: cross-process writer lock prevents two concurrent
@@ -3304,34 +3307,10 @@ See also:
   // source in one call; runBreakLock now widens to iterate sources when
   // --all is set and accept maxAgeSeconds for age-gated breaks.
   if (breakLock || forceBreakLock) {
-    if (syncAll) {
-      const { listSources } = await import('../core/sources-ops.ts');
-      const sources = await listSources(engine);
-      // listSources omits archived sources by default. We also require
-      // local_path because the lock key is per-source; pure-DB sources
-      // (no local_path) don't hold sync locks.
-      const activeSources = sources.filter((s) => s.local_path);
-      if (activeSources.length === 0) {
-        if (jsonOut) console.log(JSON.stringify({ status: 'no_sources' }));
-        else console.error('No active sources to break-lock against.');
-        process.exit(0);
-      }
-      let worstExit = 0;
-      for (const src of activeSources) {
-        const lockKey = `gbrain-sync:${src.id}`;
-        const exit = await runBreakLock(engine, lockKey, src.id, {
-          force: forceBreakLock,
-          json: jsonOut,
-          maxAgeSeconds,
-        });
-        if (exit > worstExit) worstExit = exit;
-      }
-      process.exit(worstExit);
-    }
-    const sourceArg = args.find((a, i) => args[i - 1] === '--source');
-    const sourceId = sourceArg ?? 'default';
-    const lockKey = `gbrain-sync:${sourceId}`;
-    const exit = await runBreakLock(engine, lockKey, sourceId, {
+    const exit = await runBreakLockCommand(engine, {
+      explicitSource: readFlagValue(args, '--source'),
+      repoPath,
+      syncAll,
       force: forceBreakLock,
       json: jsonOut,
       maxAgeSeconds,

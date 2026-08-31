@@ -58,6 +58,145 @@ export async function formatLockBusyMessage(engine: BrainEngine, lockKey: string
 }
 
 /**
+ * Read `--flag value` OR `--flag=value`. The bare `args.find(a, i => args[i-1]
+ * === '--source')` idiom used elsewhere in the sync CLI silently misses the
+ * equals form; for a DESTRUCTIVE break that miss would fall through to the
+ * ambient chain and clear a lock the operator never named.
+ */
+export function readFlagValue(args: string[], flag: string): string | null {
+  const spaced = args.find((a, i) => args[i - 1] === flag);
+  if (spaced !== undefined) return spaced;
+  const eq = args.find((a) => a.startsWith(`${flag}=`));
+  return eq === undefined ? null : eq.slice(flag.length + 1);
+}
+
+/**
+ * CLI dispatcher for `gbrain sync --break-lock` / `--force-break-lock`:
+ * decides WHICH source's lock key to target, then delegates each break to
+ * `runBreakLock`. Returns the process exit code.
+ *
+ * The lock key is per-source (`gbrain-sync:<sourceId>`), so break-lock resolves
+ * the source through the SAME precedence as the sync it is unblocking:
+ * `--source` flag > `--repo`-derived > the ambient 6-tier chain. This used to
+ * live inline in the CLI and read ONLY the `--source` flag, falling back to
+ * `'default'` — so an operator whose source came from GBRAIN_SOURCE, a
+ * `.gbrain-source` dotfile, or a cwd-matched `local_path` broke a key nobody
+ * held and got "nothing to break" with exit 0 while the real lock stayed
+ * wedged. Pinned by test/sync-break-lock-source-resolution.serial.test.ts.
+ */
+export async function runBreakLockCommand(
+  engine: BrainEngine,
+  opts: {
+    explicitSource: string | null;
+    /** `--repo <dir>`: anchors resolution at the repo, not the caller's cwd. */
+    repoPath?: string;
+    syncAll: boolean;
+    force: boolean;
+    json: boolean;
+    maxAgeSeconds?: number;
+  },
+): Promise<number> {
+  const { resolveSourceWithTier, resolveSourceForRepoPath } =
+    await import('./source-resolver.ts');
+  const per = { force: opts.force, json: opts.json, maxAgeSeconds: opts.maxAgeSeconds };
+
+  /** Resolution failures must honor --json like every other exit in this file. */
+  const failResolve = (msg: string): number => {
+    if (opts.json) console.log(JSON.stringify({ status: 'error', error: msg }));
+    else console.error(msg);
+    return 1;
+  };
+
+  // `--all` skips resolution entirely, so an explicit narrowing flag alongside
+  // it would be SILENTLY ignored and the run would go fleet-wide — a typo'd
+  // `--source` becoming a force-delete of every lock. Contradictory intent is
+  // refused, never resolved in favor of the destructive reading.
+  if (opts.syncAll && (opts.explicitSource || opts.repoPath)) {
+    return failResolve(
+      `--all cannot be combined with ${opts.explicitSource ? '--source' : '--repo'} ` +
+      `(--all breaks every source's lock; drop one to say which you meant).`,
+    );
+  }
+
+  let sourceId = '';
+  if (!opts.syncAll) {
+    try {
+      // #3765 parity: an explicit --repo anchors resolution at the REPO dir,
+      // not the caller's cwd. Without this the break targets the cwd-resolved
+      // key — the same wrong-key bug, one tier down.
+      let resolved: { source_id: string } | null = null;
+      if (!opts.explicitSource && opts.repoPath) {
+        const derived = await resolveSourceForRepoPath(engine, opts.repoPath);
+        if (derived) {
+          const envSource = process.env.GBRAIN_SOURCE;
+          if (envSource && envSource !== derived.source_id) {
+            return failResolve(
+              `--repo resolves to source '${derived.source_id}' (via ${derived.tier}) but ` +
+              `GBRAIN_SOURCE='${envSource}' is set. Pass --source <id> to disambiguate.`,
+            );
+          }
+          resolved = derived;
+          process.stderr.write(
+            `[gbrain] breaking the lock for source '${derived.source_id}' ` +
+            `(resolved from --repo via ${derived.tier}).\n`,
+          );
+        }
+      }
+      sourceId = (resolved ?? await resolveSourceWithTier(engine, opts.explicitSource)).source_id;
+    } catch (e) {
+      // ARCHIVED sources must stay breakable. `assertSourceExists` filters
+      // `archived = false`, so routing through the resolver would make a
+      // wedged-then-archived source clearable only by hand-written SQL — and
+      // break-lock is the recovery tool. An explicitly named source that
+      // EXISTS (archived or not) is honored; a name that matches no row at all
+      // stays a loud exit 1 so a typo can't silently "succeed".
+      if (!opts.explicitSource) return failResolve(e instanceof Error ? e.message : String(e));
+      const rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE id = $1`,
+        [opts.explicitSource],
+      );
+      if (rows.length === 0) return failResolve(e instanceof Error ? e.message : String(e));
+      sourceId = rows[0].id;
+      process.stderr.write(`[gbrain] source '${sourceId}' is archived — breaking its lock anyway.\n`);
+    }
+  }
+
+  // Fan out ONLY on the explicit `--all` flag. An `__all__` sentinel arriving
+  // from the resolver is deliberately NOT special-cased: `gbrain sync` has no
+  // `__all__` handling either, so it hands the sentinel straight to
+  // performSync, which takes `gbrain-sync:__all__`. Treating it as `--all`
+  // here would force-delete every OTHER source's lock while leaving the very
+  // key the wedged sync holds untouched — the exact asymmetry this function
+  // exists to remove. Symmetry with sync is the invariant, not convenience.
+  // v3's plan dropped the old --all refusal so cron can self-heal in one call.
+  if (opts.syncAll) {
+    const { listSources } = await import('./sources-ops.ts');
+    const sources = await listSources(engine);
+    // listSources omits archived sources by default. We also require
+    // local_path because the lock key is per-source; pure-DB sources
+    // (no local_path) don't hold sync locks.
+    // NOTE: `sync --all` additionally filters `config.syncEnabled !== false`
+    // (sync.ts, via its own SyncAllSourceRow query). This set is therefore
+    // BROADER than the sync set — tracked in TODOS.md; matching it needs the
+    // richer query, not `listSources`.
+    const activeSources = sources.filter((s) => s.local_path);
+    if (activeSources.length === 0) {
+      if (opts.json) console.log(JSON.stringify({ status: 'no_sources' }));
+      else console.error('No active sources to break-lock against.');
+      return 0;
+    }
+    let worstExit = 0;
+    for (const src of activeSources) {
+      const exit = await runBreakLock(engine, `gbrain-sync:${src.id}`, src.id, per);
+      if (exit > worstExit) worstExit = exit;
+    }
+    return worstExit;
+  }
+
+  return runBreakLock(engine, `gbrain-sync:${sourceId}`, sourceId, per);
+}
+
+/**
  * v0.41.6.0 D3: `gbrain sync --break-lock` / `--force-break-lock` worker.
  * Returns the process exit code (0 = lock cleared or absent; 1 = refused).
  *
