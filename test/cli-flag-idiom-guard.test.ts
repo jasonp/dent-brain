@@ -63,6 +63,9 @@ function offenders(): string[] {
     .filter((f) => f && !f.includes('generated'));
 
   return files.filter((f) => {
+    // test-reads-source-ok: this guard's whole job is to enumerate how src/ reads
+    // argv. Hand-counting this bug class under-counted it three times, so the
+    // count has to come from the source text itself, not from a maintained list.
     const text = readFileSync(resolve(ROOT, f), 'utf8');
     return POSITIONAL.test(text) && !COMPLIANT.test(text) && READS_SOURCE.test(text);
   });
@@ -98,6 +101,8 @@ describe('--source is read the same way in every command', () => {
  */
 describe('values newly reachable via the equals spelling are guarded', () => {
   test('an empty --secret is rejected rather than persisted as a blank credential', () => {
+    // test-reads-source-ok: reaching this branch needs a brain, a registered source
+    // and a configured webhook remote; the one-line guard is not worth that setup.
     const src = readFileSync(resolve(ROOT, 'src/commands/sources.ts'), 'utf8');
     // `??` only falls back on null/undefined, so "" would sail through and be
     // written as webhook_secret. Verification is fail-closed, so every delivery
@@ -107,6 +112,9 @@ describe('values newly reachable via the equals spelling are guarded', () => {
   });
 
   test('--strategy is validated before the cast, not blind-cast', () => {
+    // test-reads-source-ok: the CLI-level case is already covered in
+    // sync-source-flag-forms.serial.test.ts; this pins that the validation itself
+    // does not get refactored away from in front of the cast.
     const src = readFileSync(resolve(ROOT, 'src/commands/sync.ts'), 'utf8');
     // isAllowedByStrategy's fallback is the WIDEST admission set, so an
     // unrecognized value broadens ingest and embed spend instead of narrowing.
