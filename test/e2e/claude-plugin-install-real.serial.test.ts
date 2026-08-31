@@ -5,7 +5,8 @@
  *
  *   1. VALIDATE + INSTALL (no auth turn): `claude plugin validate . --strict`,
  *      `claude plugin marketplace add <stage>`, `claude plugin install
- *      gbrain@gbrain` — asserts the enable entry lands in the hermetic
+ *      <plugin>@<marketplace>` (names read from the marketplace under test)
+ *      — asserts the enable entry lands in the hermetic
  *      CLAUDE_CONFIG_DIR settings (the exact shape claudePluginProvidesName
  *      scans) and uninstall clears it.
  *
@@ -19,7 +20,7 @@
  */
 import { describe, test, expect } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -38,6 +39,48 @@ const REPO_ROOT = resolve(import.meta.dir, '..', '..');
 const CLI = join(REPO_ROOT, 'src', 'cli.ts');
 const CLAUDE_BIN = resolveClaudeBinary();
 const PLUGIN_CAPABLE = !!CLAUDE_BIN && claudeSupportsPlugins(CLAUDE_BIN);
+
+/**
+ * The marketplace + plugin names are GENERATED from `manifest.deploy.org_prefix`
+ * (scripts/build-plugin.ts → `<prefix>-brain`), so a fork ships its own names.
+ * Reading them out of the marketplace.json under test keeps this door pinned to
+ * whatever the repo actually publishes instead of a hardcoded upstream spelling
+ * — the old `gbrain@gbrain` literals turned every rebranded fork red with
+ * `Plugin "gbrain" not found in marketplace "gbrain"`.
+ *
+ * The PRIMARY entry is the one whose name matches the marketplace; any other
+ * entry is a persona variant (upstream ships gbrain-coding / gbrain-daily).
+ */
+function readMarketplace(root: string): { marketplace: string; primary: string; variants: string[] } {
+  const path = join(root, '.claude-plugin', 'marketplace.json');
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+    name?: string;
+    plugins?: Array<{ name: string }>;
+  };
+  const names = (parsed.plugins ?? []).map((p) => p.name).filter(Boolean);
+  if (!parsed.name || names.length === 0) {
+    throw new Error(`${path} declares no marketplace name or no plugins — nothing to install.`);
+  }
+  const primary = names.includes(parsed.name) ? parsed.name : names[0];
+  return { marketplace: parsed.name, primary, variants: names.filter((n) => n !== primary) };
+}
+
+/**
+ * Collection-time view, for the variant skip predicate only (the staged tree is
+ * `git archive HEAD` of this repo). This runs at module load, BEFORE any
+ * `skipIf`, so it must never throw: a repo with no marketplace should skip the
+ * door, not crash the whole file at import. The in-test calls stay strict —
+ * a STAGED tree missing its marketplace is a real failure worth surfacing.
+ */
+function readMarketplaceSafe(root: string): { marketplace: string; primary: string; variants: string[] } {
+  try {
+    return readMarketplace(root);
+  } catch {
+    return { marketplace: '', primary: '', variants: [] };
+  }
+}
+
+const MARKETPLACE = readMarketplaceSafe(REPO_ROOT);
 
 function stageCleanTree(): string {
   const stage = mkdtempSync(join(tmpdir(), 'gb-cplugin-stage-'));
@@ -84,16 +127,18 @@ describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — VALIDATE + INSTALL (no 
 
       // (c) install — enable entry lands in the hermetic settings, in the
       // exact shape the coexistence detector scans.
-      const install = run([CLAUDE_BIN!, 'plugin', 'install', 'gbrain@gbrain']);
+      const { marketplace, primary } = readMarketplace(stage);
+      const spec = `${primary}@${marketplace}`;
+      const install = run([CLAUDE_BIN!, 'plugin', 'install', spec]);
       expect(install.code, install.stderr).toBe(0);
       const settingsPath = join(configDir, 'settings.json');
       expect(existsSync(settingsPath)).toBe(true);
-      expect(claudePluginProvidesName(settingsPath, 'gbrain')).toBe('gbrain@gbrain');
+      expect(claudePluginProvidesName(settingsPath, primary)).toBe(spec);
 
       // (d) uninstall clears the enable entry.
-      const un = run([CLAUDE_BIN!, 'plugin', 'uninstall', 'gbrain@gbrain']);
+      const un = run([CLAUDE_BIN!, 'plugin', 'uninstall', spec]);
       expect(un.code, un.stderr).toBe(0);
-      expect(claudePluginProvidesName(settingsPath, 'gbrain')).toBeNull();
+      expect(claudePluginProvidesName(settingsPath, primary)).toBeNull();
     } finally {
       for (const d of [home, stage]) {
         try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -101,10 +146,13 @@ describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — VALIDATE + INSTALL (no 
     }
   }, 300_000);
 
-  // Persona variant (cathedral-7, prove-before-publish [CX11]): the
-  // marketplace's gbrain-coding entry installs from its self-contained
-  // variant root BEFORE the entries ship to real users.
-  test('persona variant gbrain-coding installs from the same marketplace', async () => {
+  // Persona variants (cathedral-7, prove-before-publish [CX11]): each extra
+  // marketplace entry installs from its self-contained variant root BEFORE the
+  // entries ship to real users.
+  // Skipped on a build whose marketplace publishes only the primary entry —
+  // scripts/build-plugin.ts emits one `<prefix>-brain` plugin, so a fork has no
+  // variant to prove. The pin stays live for any build that does ship them.
+  test.skipIf(MARKETPLACE.variants.length === 0)('persona variants install from the same marketplace', async () => {
     const home = mkdtempSync(join(tmpdir(), 'gb-cplugin-variant-'));
     const configDir = join(home, '.claude');
     mkdirSync(configDir, { recursive: true });
@@ -114,14 +162,21 @@ describe.skipIf(!PLUGIN_CAPABLE)('claude plugin door — VALIDATE + INSTALL (no 
       const addMkt = run([CLAUDE_BIN!, 'plugin', 'marketplace', 'add', stage]);
       expect(addMkt.code, addMkt.stderr).toBe(0);
 
-      const install = run([CLAUDE_BIN!, 'plugin', 'install', 'gbrain-coding@gbrain']);
-      expect(install.code, install.stderr).toBe(0);
+      const { marketplace, variants } = readMarketplace(stage);
+      // skipIf reads the WORKING TREE but the stage is `git archive HEAD`. If
+      // they disagree the loop body would run zero assertions and pass green.
+      expect(variants.length, 'staged marketplace publishes no variants').toBeGreaterThan(0);
       const settingsPath = join(configDir, 'settings.json');
-      expect(claudePluginProvidesName(settingsPath, 'gbrain-coding')).toBe('gbrain-coding@gbrain');
+      for (const variant of variants) {
+        const spec = `${variant}@${marketplace}`;
+        const install = run([CLAUDE_BIN!, 'plugin', 'install', spec]);
+        expect(install.code, install.stderr).toBe(0);
+        expect(claudePluginProvidesName(settingsPath, variant)).toBe(spec);
 
-      const un = run([CLAUDE_BIN!, 'plugin', 'uninstall', 'gbrain-coding@gbrain']);
-      expect(un.code, un.stderr).toBe(0);
-      expect(claudePluginProvidesName(settingsPath, 'gbrain-coding')).toBeNull();
+        const un = run([CLAUDE_BIN!, 'plugin', 'uninstall', spec]);
+        expect(un.code, un.stderr).toBe(0);
+        expect(claudePluginProvidesName(settingsPath, variant)).toBeNull();
+      }
     } finally {
       for (const d of [home, stage]) {
         try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -145,8 +200,9 @@ describe.skipIf(!PLUGIN_CAPABLE || !hasClaudeAuth())('claude plugin door — SMO
       const seeded = await seedBrainForAgent(home, sourceId);
 
       const run = makeClaudeRunner(home, configDir);
+      const { marketplace, primary } = readMarketplace(stage);
       expect(run([CLAUDE_BIN!, 'plugin', 'marketplace', 'add', stage]).code).toBe(0);
-      expect(run([CLAUDE_BIN!, 'plugin', 'install', 'gbrain@gbrain']).code).toBe(0);
+      expect(run([CLAUDE_BIN!, 'plugin', 'install', `${primary}@${marketplace}`]).code).toBe(0);
 
       const binDir = mkdtempSync(join(tmpdir(), 'gb-cplugin-bin-'));
       const gbrainBin = gbrainBinForTests(binDir);

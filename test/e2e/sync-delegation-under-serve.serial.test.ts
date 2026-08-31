@@ -271,10 +271,15 @@ describe('serve-delegated sync (real serve + real sync subprocesses)', () => {
     // the rung-2 regression pin. The gbrain-sync ROW lock is dead-held for
     // the 60s takeover grace, so break it explicitly first.
     const br = await runSyncChild(['--force-break-lock', '--yes'], { timeoutMs: 120_000 });
-    // Bare `Expected 0, Received 1` is unactionable in CI, and this pin is a
-    // known CI-only flake (green locally, intermittent on contended runners).
-    // Carry the child's own output into the failure so one red run names the
-    // cause instead of costing another round trip.
+    // Bare `Expected 0, Received 1` is unactionable in CI, so carry the child's
+    // own output into the failure and let one red run name the cause.
+    // This was long annotated as "a known CI-only flake". It was not. The
+    // intermittency was real: `--force-break-lock` with no `--source` resolved
+    // to 'default' while GBRAIN_SOURCE said 'workspace', so it broke a key
+    // nobody held and exited 0, leaving the real lock for the next line to trip
+    // over. Whether it went red depended only on whether the serve had taken
+    // the lock before Pin 3 killed it. Fixed in v0.50.1.0; the resolution
+    // itself is pinned by test/sync-break-lock-source-resolution.serial.test.ts.
     assertChildOk(br, 'Pin 4 --force-break-lock');
 
     const r = await runSyncChild(['--no-pull', '--yes', '--no-embed'], { timeoutMs: 180_000 });
