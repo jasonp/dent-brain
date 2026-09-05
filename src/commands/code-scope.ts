@@ -15,6 +15,7 @@ import { errorFor } from '../core/errors.ts';
 import { resolveScopedSourceOrThrow, SourceResolutionError } from '../core/sources-ops.ts';
 import { formatSoleNonDefaultNudge, isResolverUserError } from '../core/source-resolver.ts';
 import { codeChunksExist } from '../core/code-graph-readiness.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 // A bad/invalid `.gbrain-source` pin or GBRAIN_SOURCE value surfaces from
 // `resolveSourceWithTier`'s `assertSourceExists` as a resolver user error;
@@ -56,10 +57,9 @@ export function positionalArgs(args: string[]): string[] {
  * generator harvests them from every scanned module (see source-resolver.ts).
  */
 export function parseFlag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  if (i >= 0 && i + 1 < args.length) return args[i + 1];
-  const inline = args.find((a) => a.startsWith(`${name}=`));
-  return inline ? inline.slice(name.length + 1) : undefined;
+  // Delegates to the canonical reader (src/core/cli-flag-value.ts) rather than
+  // keeping a second implementation of both spellings in the tree.
+  return readFlagValue(args, name);
 }
 
 /**

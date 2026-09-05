@@ -42,6 +42,7 @@ import type { WindowTurn } from '../core/context/entity-salience.ts';
 import { DEFAULT_WINDOW_TURNS, windowTurnCount, lexicalArmsEnabled } from '../core/context/reflex.ts';
 import { loadConfig } from '../core/config.ts';
 import { logVolunteerEventsFireAndForget, volunteerEventRowsFrom } from '../core/context/volunteer-events.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 export const WATCH_HELP = `gbrain watch — push-based context: volunteer brain pages per conversation turn (#2095)
 
@@ -68,15 +69,14 @@ Flags:
 `;
 
 function numFlag(args: string[], flag: string): number | undefined {
-  const i = args.indexOf(flag);
-  if (i < 0 || i + 1 >= args.length) return undefined;
-  const n = Number(args[i + 1]);
+  const raw = readFlagValue(args, flag);
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
 }
 
 function strFlag(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+  return readFlagValue(args, flag);
 }
 
 export interface WatchIoDeps {

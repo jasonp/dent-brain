@@ -42,6 +42,7 @@ import {
 } from '../core/context/resolve-ipc.ts';
 import type { DelegatedSyncOptions, SyncStatusResponse, WireSyncResult } from '../core/context/sync-ipc.ts';
 import type { SyncResult } from './sync.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 /** Poll cadence for sync_status while a delegated job runs. */
 const POLL_MS = 1000;
@@ -86,6 +87,10 @@ export type ParsedDelegatedArgs =
 export function parseDelegatedSyncArgs(args: string[]): ParsedDelegatedArgs {
   const options: Record<string, unknown> = {};
   let explicitSource: string | null = null;
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
     if (WIRE_BOOL_FLAGS[tok]) {

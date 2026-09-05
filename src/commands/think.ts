@@ -11,11 +11,10 @@ import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { canonicalLookup } from '../core/model-pricing.ts';
 import { embedQuery } from '../core/embedding.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 function flagValue(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  if (i === -1) return undefined;
-  return args[i + 1];
+  return readFlagValue(args, name);
 }
 
 function flagPresent(args: string[], name: string): boolean {

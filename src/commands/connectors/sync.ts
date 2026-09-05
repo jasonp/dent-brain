@@ -16,6 +16,7 @@ import { connectorProviderNames, isConnectorProviderName } from '../../core/conn
 import { loadCredential } from '../../core/connectors/credentials.ts';
 import { sourceIdKey } from '../../core/connectors/config-keys.ts';
 import type { ConnectorProviderName } from '../../core/connectors/types.ts';
+import { expandEqualsFlags } from '../../core/cli-flag-value.ts';
 
 interface SyncFlags {
   full: boolean;
@@ -32,6 +33,10 @@ interface SyncFlags {
 function parseFlags(args: string[]): { provider: string; flags: SyncFlags } {
   const flags: SyncFlags = { full: false, dryRun: false, embed: false, background: false, json: false, all: false };
   let provider = '';
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--all') flags.all = true;

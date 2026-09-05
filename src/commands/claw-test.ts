@@ -31,6 +31,7 @@ import { HermesRunner } from '../core/claw-test/runners/hermes.ts';
 import { GrokRunner } from '../core/claw-test/runners/grok.ts';
 import { OpencodeRunner } from '../core/claw-test/runners/opencode.ts';
 import { createTranscriptSink } from '../core/claw-test/transcript-capture.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 // Ensure built-in runners are registered.
 registerAgentRunner('openclaw', () => new OpenClawRunner());
@@ -887,6 +888,10 @@ function parseArgs(args: string[]): HarnessOpts {
     help: args.includes('--help') || args.includes('-h'),
     gbrainBin: resolveGbrainBin(),
   };
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--live') out.live = true;

@@ -24,22 +24,19 @@
   `calibration.ts`, `eval-code-retrieval.ts` normalize argv once with
   `expandEqualsFlags` (all in the new `src/core/cli-flag-value.ts`).
 
-- [ ] **P1 — finish the `--source` sweep: 18 commands still drop the equals
-  spelling.** **What:** `auth.ts`, `call.ts`, `claw-test.ts`, `code-scope.ts`,
-  `compile-context.ts`, `connectors/sync.ts`, `dream.ts`, `embed.ts`,
-  `frontmatter-install-hook.ts`, `loops.ts`, `schema.ts`, `sweep-delegate.ts`,
-  `sync-delegate.ts`, `takes.ts`, `thin-client-routing.ts`, `think.ts`,
-  `transcripts.ts`, `watch.ts` read `--source` by argv position, so `--source=<id>` is dropped and
-  the command falls back to the AMBIENT source. **Why:** wrong-source reads, and
-  `embed`/`sweep` touch stored data. This is the same defect v0.50.2.0 fixed
-  elsewhere; it was scoped out to keep that release verifiable rather than
-  broad. Upstream syncs ADD to it: the v0.48.2.0 sync converted two
-  (`code-callees.ts`, `code-callers.ts`) and imported four new offenders with
-  upstream's new commands. **Where to start:** the list is machine-checked —
-  `PENDING` in `test/cli-flag-idiom-guard.test.ts` IS this list, and the guard
-  fails the moment it drifts from the source text in either direction. For a parser loop, one `args = expandEqualsFlags(args)` before the loop
-  converts every flag in it; for a few named reads, use `readFlagValue`. Delete
-  each file from `PENDING` as you go. **Effort:** M.
+- [x] **P1 — finish the `--source` sweep.** **Completed:** v0.48.2.0 sync
+  follow-up. All 18 remaining commands converted: `auth.ts`, `call.ts`,
+  `claw-test.ts`, `code-scope.ts`, `compile-context.ts`, `connectors/sync.ts`,
+  `dream.ts`, `embed.ts`, `frontmatter-install-hook.ts`, `loops.ts`,
+  `schema.ts`, `sweep-delegate.ts`, `sync-delegate.ts`, `takes.ts`,
+  `thin-client-routing.ts`, `think.ts`, `transcripts.ts`, `watch.ts`. Local
+  `flagValue`-style helpers now delegate to `readFlagValue`; parser loops
+  normalize once with `expandEqualsFlags`. `PENDING` in
+  `test/cli-flag-idiom-guard.test.ts` is EMPTY and both arms of that guard are
+  shrink-only, so the list cannot grow back silently. Note the two delegation
+  classifiers (`sweep-delegate.ts`, `sync-delegate.ts`) are default-deny: they
+  previously REFUSED `--source=<id>` as an unknown token rather than dropping
+  it, so their fix turns a refusal into an accepted flag.
 
 - [ ] **P2 — the same hand-rolled argv shape exists for flags OTHER than
   `--source`, across ~75 files.** **What:** `args[++i]` / `args[i + 1]`

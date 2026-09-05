@@ -22,6 +22,7 @@ import type { TranscriptFormat } from '../core/transcripts/types.ts';
 import { runTranscriptsIngest, type TranscriptsIngestResult } from '../core/transcripts/ingest.ts';
 import { isOpenclawCheckpointFile } from '../core/transcripts/openclaw.ts';
 import { isGrokSessionSidecarStrict } from '../core/transcripts/grok.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 interface RecentOpts {
   days?: number;
@@ -32,6 +33,10 @@ interface RecentOpts {
 
 function parseRecentArgs(args: string[]): RecentOpts | { help: true } {
   const opts: RecentOpts = {};
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--help' || a === '-h') return { help: true };
@@ -108,6 +113,10 @@ export function ingestCheckpointFingerprintInput(args: {
 
 export function parseIngestArgs(args: string[]): IngestCliOpts | { help: true } | { error: string } {
   const opts: IngestCliOpts = { paths: [] };
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--help' || a === '-h') return { help: true };

@@ -30,6 +30,7 @@ import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
 import { AITransientError } from '../core/ai/errors.ts';
 import { wrapChunkTextsForStoredMode } from '../core/embedding-context.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 import {
   restampIfDemotedToTitleTier,
   embedBatchWithBackoff,
@@ -784,6 +785,10 @@ export function parsePaceArgs(
 ): { perCallMode?: string; perCall?: PaceKeyOverrides } | undefined {
   let perCallMode: string | undefined;
   let perCall: PaceKeyOverrides | undefined;
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--pace') {

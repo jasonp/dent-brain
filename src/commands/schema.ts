@@ -433,6 +433,7 @@ export const _testHelpers = {
 
 import { runDetect } from '../core/schema-pack/detect.ts';
 import { runSuggest } from '../core/schema-pack/suggest.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 import {
   runReviewCandidates,
   runReviewOrphans,
@@ -448,6 +449,10 @@ function parseFlags(args: string[]): ParsedFlags {
   let json = false;
   let source: string | undefined;
   const positional: string[] = [];
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--json') { json = true; continue; }

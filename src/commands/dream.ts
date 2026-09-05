@@ -36,6 +36,7 @@ import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { fetchSource } from '../core/sources-load.ts';
 import { existsSync } from 'fs';
 import { resolve } from 'node:path';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 interface DreamArgs {
   json: boolean;
@@ -114,6 +115,10 @@ const EXIT_DRAIN_INCOMPLETE = 3;
  */
 function collectFlagValues(args: string[], flag: string): string[] | null {
   const values: string[] = [];
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     if (args[i] !== flag) continue;
     const v = args[i + 1];

@@ -25,10 +25,10 @@ import type { BrainEngine } from '../core/engine.ts';
 import { handleToolCall } from '../mcp/server.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { ALL_SOURCES } from '../core/source-id.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 function sourceFlag(args: string[]): string | undefined {
-  const i = args.indexOf('--source');
-  return i !== -1 ? args[i + 1] : undefined;
+  return readFlagValue(args, '--source');
 }
 
 /** Non-archived sources whose config says kind=google (mute's default scope). */

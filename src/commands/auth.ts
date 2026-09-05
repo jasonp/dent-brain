@@ -28,6 +28,7 @@ import { generateToken, isUndefinedColumnError, isUndefinedTableError } from '..
 import { TOKEN_ID_RE } from '../core/token-mint.ts';
 import { normalizeTokenScopes } from '../core/legacy-token-scope.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -909,6 +910,10 @@ async function rescopeClient(clientId: string, args: string[]) {
  */
 export function parseAuthClientsArgs(args: string[]): { usage: boolean; days: number; json: boolean } {
   const out = { usage: false, days: 30, json: false };
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (flag === '--usage') out.usage = true;
