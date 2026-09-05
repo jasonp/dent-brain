@@ -146,6 +146,8 @@ async function sweepCall(name: string, params: Record<string, unknown>, shape: S
 // documentation — behaviorally identical to the fallback.
 const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   get_page: { slug: WORLD_FENCE_SLUG, include_content: true },
+  // FORK-ONLY (dent-brain) op; upstream's ledgers do not know it.
+  get_page_by_identity: { key: 'title', value: WORLD.pageTitle },
   fetch: { id: WORLD_FENCE_SLUG },
   list_pages: {},
   search: { query: 'WORLDSWEEP' },
@@ -216,6 +218,8 @@ type Outcome = 'data' | 'ok' | 'error' | 'denied';
 const EXPECTED_OUTCOME: Record<string, Outcome> = {
   // reads that must prove corpus contact
   get_page: 'data',
+  // FORK-ONLY (dent-brain) op; upstream's ledgers do not know it.
+  get_page_by_identity: 'data',
   fetch: 'data',
   list_pages: 'data',
   search: 'data',

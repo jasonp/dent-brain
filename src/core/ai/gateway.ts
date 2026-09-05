@@ -126,7 +126,7 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 // v0.35.0.0+: reranker runtime fallback. Used only when search.reranker.enabled
 // is set AND no explicit reranker_model is configured. #3657 seam: the value is
 // `DEFAULT_RERANKER_MODEL` imported from ./defaults.ts (ONE constant, shared with
-// the mode bundles) — `voyage:rerank-2.5` since v0.48.2.
+// the mode bundles) — `cohere:rerank-v3.5` in this fork (see defaults.ts).
 
 let _config: AIGatewayConfig | null = null;
 const _modelCache = new Map<string, any>();

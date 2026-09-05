@@ -31,20 +31,27 @@ const ROOT = resolve(import.meta.dir, '..');
 
 /** Not yet converted — see the P1 "finish the --source sweep" in TODOS.md. */
 const PENDING = new Set([
+  // Refreshed in the v0.46.28.0->v0.48.2.0 upstream sync. Removed:
+  // code-callees.ts / code-callers.ts (upstream converted them). Added, all
+  // new upstream commands that arrived reading --source positionally:
+  // code-scope.ts, connectors/sync.ts, loops.ts, think.ts. The guard is the
+  // count of record; see the P1 in TODOS.md.
   'src/commands/auth.ts',
   'src/commands/call.ts',
   'src/commands/claw-test.ts',
-  'src/commands/code-callees.ts',
-  'src/commands/code-callers.ts',
+  'src/commands/code-scope.ts',
   'src/commands/compile-context.ts',
+  'src/commands/connectors/sync.ts',
   'src/commands/dream.ts',
   'src/commands/embed.ts',
   'src/commands/frontmatter-install-hook.ts',
+  'src/commands/loops.ts',
   'src/commands/schema.ts',
   'src/commands/sweep-delegate.ts',
   'src/commands/sync-delegate.ts',
   'src/commands/takes.ts',
   'src/commands/thin-client-routing.ts',
+  'src/commands/think.ts',
   'src/commands/transcripts.ts',
   'src/commands/watch.ts',
 ]);

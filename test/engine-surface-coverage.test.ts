@@ -51,6 +51,11 @@ const INTERFACE_METHODS: readonly string[] = [
   'connect', 'disconnect', 'reconnect', 'initSchema', 'transaction', 'withReservedConnection',
   // Pages CRUD
   'getPage', 'putPage', 'findDuplicatePage', 'deletePage', 'deletePages', 'resolveSlugsByPaths',
+  // FORK-ONLY (dent-brain): identity-keyed page lookup behind the gws-sync
+  // ingestors. Upstream shipped this inventory test without it because the
+  // method does not exist upstream. Covered by test/dent/ingestors/gws-sync/
+  // ingest.test.ts + test/e2e/engine-parity.test.ts.
+  'getPageByIdentity',
   'softDeletePage', 'softDeletePages', 'restorePage', 'purgeDeletedPages', 'listPages', 'resolveSlugs', 'getAllSlugs',
   'listAllPageRefs', 'listAllSources', 'updateSourceConfig', 'listPrefixSampledPages', 'listCorpusSample',
   // Search
@@ -59,6 +64,9 @@ const INTERFACE_METHODS: readonly string[] = [
   'upsertChunks', 'getChunks', 'countStaleChunks', 'sumStaleChunkChars', 'setPageEmbeddingSignature',
   'invalidateStaleSignatureEmbeddings', 'invalidateContentDriftEmbeddings', 'listStaleChunks',
   'countChunklessPagesWithContent', 'listChunklessPagesWithContent', 'deleteChunks',
+  // FORK-ONLY (dent-brain): cheap page-only staleness probe that gates the
+  // embed sweep. Covered by test/embed-stale-signature-gate.test.ts.
+  'hasStaleSignaturePages',
   // Extraction watermark
   'countStalePagesForExtraction', 'listStalePagesForExtraction', 'markPagesExtractedBatch',
   // Links + graph

@@ -2,7 +2,7 @@
  * v0.48.2 — reranker readiness leaf (src/core/ai/reranker-readiness.ts).
  *
  * Pins:
- *  - the default voyage reranker is ready iff VOYAGE_API_KEY is in the
+ *  - the default reranker (cohere in this fork) is ready iff its key is in the
  *    caller-supplied env (never process.env);
  *  - an explicit ZeroEntropy model is ready before the sunset and
  *    `sunsetPassed` on/after it (injected clock);
@@ -28,15 +28,15 @@ const AFTER = new Date(Date.parse(`${ZEROENTROPY_SUNSET_DATE}T00:00:00Z`) + 86_4
 
 afterAll(() => resetGateway());
 
-describe('rerankerReadiness — default voyage model', () => {
+describe('rerankerReadiness — default reranker model (cohere in this fork)', () => {
   test('key present → ready, no fix', () => {
-    const r = rerankerReadiness(DEFAULT_RERANKER_MODEL, { VOYAGE_API_KEY: 'pa-test' }, { now: BEFORE });
-    expect(r.provider).toBe('voyage');
-    expect(r.modelId).toBe('rerank-2.5');
+    const r = rerankerReadiness(DEFAULT_RERANKER_MODEL, { COHERE_API_KEY: 'co-test' }, { now: BEFORE });
+    expect(r.provider).toBe('cohere');
+    expect(r.modelId).toBe('rerank-v3.5');
     expect(r.recipeKnown).toBe(true);
     expect(r.hasTouchpoint).toBe(true);
     expect(r.modelListed).toBe(true);
-    expect(r.requiredKey).toBe('VOYAGE_API_KEY');
+    expect(r.requiredKey).toBe('COHERE_API_KEY');
     expect(r.keyPresent).toBe(true);
     expect(r.sunset).toBeNull();
     expect(r.ready).toBe(true);
@@ -48,13 +48,13 @@ describe('rerankerReadiness — default voyage model', () => {
     expect(r.keyPresent).toBe(false);
     expect(r.ready).toBe(false);
     const fix = describeRerankerFix(r)!;
-    expect(fix).toContain('VOYAGE_API_KEY not set');
-    expect(fix).toContain('export VOYAGE_API_KEY=');
+    expect(fix).toContain('COHERE_API_KEY not set');
+    expect(fix).toContain('export COHERE_API_KEY=');
     expect(fix).toContain('gbrain config set search.reranker.enabled false');
   });
 
   test('an empty-string key counts as absent (mirrors the gateway env check)', () => {
-    const r = rerankerReadiness(DEFAULT_RERANKER_MODEL, { VOYAGE_API_KEY: '' }, { now: BEFORE });
+    const r = rerankerReadiness(DEFAULT_RERANKER_MODEL, { COHERE_API_KEY: '' }, { now: BEFORE });
     expect(r.keyPresent).toBe(false);
     expect(r.ready).toBe(false);
   });

@@ -162,18 +162,18 @@ describe('doctor command', () => {
     const { checkRerankerHealth } = await import('../src/commands/doctor.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-rerank-doctor-'));
     try {
-      // v0.48.2: the default reranker is keyed on VOYAGE_API_KEY; without it
+      // v0.48.2: the default reranker is keyed on COHERE_API_KEY; without it
       // the check warns "not running" before reading the audit rows.
-      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, VOYAGE_API_KEY: 'pa-test-voyage' }, async () => {
+      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, COHERE_API_KEY: 'co-test-cohere' }, async () => {
         // readiness reads the live gateway plane — give it the key the CLI
         // would have folded so the audit ladder below is what gets exercised.
         (await import('../src/core/ai/gateway.ts')).configureGateway({
           embedding_model: 'openai:text-embedding-3-small', embedding_dimensions: 1536,
-          env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test-voyage' },
+          env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'co-test-cohere' },
         });
         for (let i = 0; i < 3; i++) {
           logRerankFailure({
-            model: 'voyage:rerank-2.5', // the resolved default — rows for other models are filtered out
+            model: 'cohere:rerank-v3.5', // the resolved default — rows for other models are filtered out
             reason: 'unknown',
             query_hash: `unknown${i}`,
             doc_count: 30,
@@ -188,8 +188,8 @@ describe('doctor command', () => {
         expect(check.status).toBe('warn');
         expect(check.message).toContain('unknown');
         // v0.46.3: the hint names the reranker provider's key generically
-        // (VOYAGE_API_KEY example) — ZE is sunsetting.
-        expect(check.message).toContain('VOYAGE_API_KEY');
+        // (COHERE_API_KEY example) — ZE is sunsetting.
+        expect(check.message).toContain('COHERE_API_KEY');
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -200,17 +200,17 @@ describe('doctor command', () => {
     const { checkRerankerHealth } = await import('../src/commands/doctor.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-rerank-budget-doctor-'));
     try {
-      // v0.48.2: the default reranker is keyed on VOYAGE_API_KEY; without it
+      // v0.48.2: the default reranker is keyed on COHERE_API_KEY; without it
       // the check warns "not running" before reading the audit rows.
-      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, VOYAGE_API_KEY: 'pa-test-voyage' }, async () => {
+      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, COHERE_API_KEY: 'co-test-cohere' }, async () => {
         // readiness reads the live gateway plane — give it the key the CLI
         // would have folded so the audit ladder below is what gets exercised.
         (await import('../src/core/ai/gateway.ts')).configureGateway({
           embedding_model: 'openai:text-embedding-3-small', embedding_dimensions: 1536,
-          env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test-voyage' },
+          env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'co-test-cohere' },
         });
         logRerankFailure({
-          model: 'voyage:rerank-2.5', // rows are filtered to the resolved model
+          model: 'cohere:rerank-v3.5', // rows are filtered to the resolved model
           reason: 'budget',
           query_hash: 'budget01',
           doc_count: 30,
@@ -236,18 +236,18 @@ describe('doctor command', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-rerank-passthrough-doctor-'));
     try {
       // v0.48.2: the check filters audit rows to the RESOLVED reranker (the
-      // Voyage default, keyed on VOYAGE_API_KEY) and reads readiness from the
+      // Cohere default, keyed on COHERE_API_KEY) and reads readiness from the
       // live gateway plane — configure both so the pass-through ladder is
       // what gets exercised.
-      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, VOYAGE_API_KEY: 'pa-test-voyage' }, async () => {
+      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, COHERE_API_KEY: 'co-test-cohere' }, async () => {
         (await import('../src/core/ai/gateway.ts')).configureGateway({
           embedding_model: 'openai:text-embedding-3-small', embedding_dimensions: 1536,
-          env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test-voyage' },
+          env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'co-test-cohere' },
         });
         const reasons = ['empty_result_set', 'malformed_shape', 'empty_result_set'] as const;
         reasons.forEach((reason, i) => {
           logRerankFailure({
-            model: 'voyage:rerank-2.5', // the resolved default — rows for other models are filtered out
+            model: 'cohere:rerank-v3.5', // the resolved default — rows for other models are filtered out
             reason,
             query_hash: `passthru${i}`,
             doc_count: 12,
@@ -273,17 +273,17 @@ describe('doctor command', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-rerank-passthrough-doctor-2-'));
     try {
       // v0.48.2: the check filters audit rows to the RESOLVED reranker (the
-      // Voyage default, keyed on VOYAGE_API_KEY) and reads readiness from the
+      // Cohere default, keyed on COHERE_API_KEY) and reads readiness from the
       // live gateway plane — configure both so the pass-through ladder is
       // what gets exercised.
-      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, VOYAGE_API_KEY: 'pa-test-voyage' }, async () => {
+      await withEnv({ GBRAIN_AUDIT_DIR: tmpDir, COHERE_API_KEY: 'co-test-cohere' }, async () => {
         (await import('../src/core/ai/gateway.ts')).configureGateway({
           embedding_model: 'openai:text-embedding-3-small', embedding_dimensions: 1536,
-          env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test-voyage' },
+          env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'co-test-cohere' },
         });
         for (const [i, reason] of (['empty_result_set', 'malformed_shape'] as const).entries()) {
           logRerankFailure({
-            model: 'voyage:rerank-2.5', // the resolved default — rows for other models are filtered out
+            model: 'cohere:rerank-v3.5', // the resolved default — rows for other models are filtered out
             reason,
             query_hash: `passthru-low${i}`,
             doc_count: 12,

@@ -30,7 +30,7 @@ afterAll(() => resetGateway());
 
 describe('buildModesReport — reranker knobs + readiness', () => {
   test('the five reranker knobs are attributed like every other knob', async () => {
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({}));
       for (const k of ['reranker_enabled', 'reranker_model', 'reranker_top_n_in', 'reranker_top_n_out', 'reranker_timeout_ms'] as const) {
@@ -44,20 +44,20 @@ describe('buildModesReport — reranker knobs + readiness', () => {
   });
 
   test('readiness block: key absent → not ready with a fix; key present → ready', async () => {
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({}));
       const rr = report.reranker_readiness!;
       expect(rr.model).toBe(DEFAULT_RERANKER_MODEL);
       expect(rr.enabled).toBe(true);
-      expect(rr.required_key).toBe('VOYAGE_API_KEY');
+      expect(rr.required_key).toBe('COHERE_API_KEY');
       expect(rr.key_present).toBe(false);
       expect(rr.ready).toBe(false);
       expect(rr.self_hosted).toBe(false);
-      expect(rr.fix).toContain('VOYAGE_API_KEY');
+      expect(rr.fix).toContain('COHERE_API_KEY');
     });
-    await withEnv({ VOYAGE_API_KEY: 'pa-test' }, async () => {
-      gw({ VOYAGE_API_KEY: 'pa-test' });
+    await withEnv({ COHERE_API_KEY: 'co-test' }, async () => {
+      gw({ COHERE_API_KEY: 'co-test' });
       const report = await buildModesReport(engineWith({}));
       const rr = report.reranker_readiness!;
       expect(rr.key_present).toBe(true);
@@ -67,7 +67,7 @@ describe('buildModesReport — reranker knobs + readiness', () => {
   });
 
   test('config override is reflected (explicit model + disabled)', async () => {
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({
         'search.reranker.enabled': 'false',
@@ -83,23 +83,23 @@ describe('buildModesReport — reranker knobs + readiness', () => {
 
 describe('formatModesText — reranker lines', () => {
   test('runtime line + per-bundle reranker/autocut line', async () => {
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({}));
       const text = _exports_for_test.formatModesText(report);
       expect(text).toContain(`Reranker: ${DEFAULT_RERANKER_MODEL} (enabled but NOT running)`);
-      expect(text).toContain('VOYAGE_API_KEY');
+      expect(text).toContain('COHERE_API_KEY');
       expect(text).toContain(`reranker=${DEFAULT_RERANKER_MODEL} topNIn=25 autocut=true`); // balanced
       expect(text).toContain('reranker=off topNIn=30 autocut=false'); // conservative
       expect(text).toContain(`reranker=${DEFAULT_RERANKER_MODEL} topNIn=50 autocut=true`); // tokenmax
     });
-    await withEnv({ VOYAGE_API_KEY: 'pa-test' }, async () => {
-      gw({ VOYAGE_API_KEY: 'pa-test' });
+    await withEnv({ COHERE_API_KEY: 'co-test' }, async () => {
+      gw({ COHERE_API_KEY: 'co-test' });
       const report = await buildModesReport(engineWith({}));
       const text = _exports_for_test.formatModesText(report);
-      expect(text).toContain(`Reranker: ${DEFAULT_RERANKER_MODEL} (enabled) — VOYAGE_API_KEY present`);
+      expect(text).toContain(`Reranker: ${DEFAULT_RERANKER_MODEL} (enabled) — COHERE_API_KEY present`);
     });
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({ 'search.reranker.enabled': 'false' }));
       const text = _exports_for_test.formatModesText(report);
@@ -118,7 +118,7 @@ describe('formatModesText — reranker lines', () => {
 
 describe('redactReadinessForRemote — the MCP surface never lists the host key inventory', () => {
   test('strips required_key / key_present / fix, keeps the verdict', async () => {
-    await withEnv({ VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
+    await withEnv({ COHERE_API_KEY: undefined, VOYAGE_API_KEY: undefined, GBRAIN_HOME: emptyHome() }, async () => {
       gw({});
       const report = await buildModesReport(engineWith({}));
       const redacted = redactReadinessForRemote(report);
@@ -130,8 +130,8 @@ describe('redactReadinessForRemote — the MCP surface never lists the host key 
       expect('key_present' in rr).toBe(false);
       expect('fix' in rr).toBe(false);
       expect(rr.self_hosted).toBe(false);
-      expect(JSON.stringify(redacted)).not.toContain('VOYAGE_API_KEY');
-      expect(report.reranker_readiness!.required_key).toBe('VOYAGE_API_KEY');
+      expect(JSON.stringify(redacted)).not.toContain('COHERE_API_KEY');
+      expect(report.reranker_readiness!.required_key).toBe('COHERE_API_KEY');
     });
   });
 });

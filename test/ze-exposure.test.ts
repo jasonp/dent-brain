@@ -234,7 +234,7 @@ describe('renderZeActionRequired — notice copy', () => {
     // here would be wrong for 640d/2560d ZE brains.
     expect(text).toContain('openai:text-embedding-3-small --dim <width>');
     expect(text).toContain('gbrain doctor');
-    expect(text).toContain('search.reranker.model voyage:rerank-2.5');
+    expect(text).toContain('search.reranker.model cohere:rerank-v3.5');
     expect(text).toContain('skills/migrations/v0.46.3.0.md');
     expect(text).toContain('Nothing has been changed automatically');
   });

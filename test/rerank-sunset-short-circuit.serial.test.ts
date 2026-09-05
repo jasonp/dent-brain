@@ -51,7 +51,7 @@ function gwConfig(overrides: Record<string, unknown> = {}): any {
     embedding_dimensions: 1536,
     env: {
       ZEROENTROPY_API_KEY: 'zk-test',
-      VOYAGE_API_KEY: 'vk-test',
+      COHERE_API_KEY: 'vk-test',
       OPENAI_API_KEY: 'sk-test',
     },
     ...overrides,
@@ -240,8 +240,8 @@ describe('gateway.rerank post-sunset short-circuit (#3657)', () => {
 describe('v0.48.2 live default: no ZE config at all', () => {
   test('ABSENT model → live voyage default → transport IS called after the date; no sunset row, no stderr', async () => {
     await withFreshAuditDir(async () => {
-      // Base gwConfig() carries a VOYAGE_API_KEY and NO reranker_model → the
-      // effective model is DEFAULT_RERANKER_MODEL (voyage:rerank-2.5), which
+      // Base gwConfig() carries a COHERE_API_KEY and NO reranker_model → the
+      // effective model is DEFAULT_RERANKER_MODEL (cohere:rerank-v3.5), which
       // is not on the sunset list; the date is irrelevant to it.
       configureGateway({ ...gwConfig(), reranker_model: undefined });
       const transport = installCountingTransport();

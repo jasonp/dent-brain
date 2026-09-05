@@ -25,7 +25,9 @@ import { MIGRATIONS, LATEST_VERSION, runMigrations } from '../src/core/migrate.t
 
 let engine: PGLiteEngine;
 
-const V145_SQL = MIGRATIONS.find(m => m.version === 145)?.sql ?? '';
+// Pinned by NAME: this fork renumbers upstream migrations (+2) on every
+// sync, so 'facts_kind_idea_alter' is v147 here, not upstream's v145.
+const V145_SQL = MIGRATIONS.find(m => m.name === 'facts_kind_idea_alter')?.sql ?? '';
 const WIDENED_LIST = "'event','preference','commitment','belief','fact','idea'";
 const NARROW_LIST = "'event','preference','commitment','belief','fact'";
 
@@ -57,14 +59,13 @@ async function insertIdeaFact(fact: string): Promise<void> {
 
 describe('migration v145 — structure', () => {
   test('exists with canonical name, idempotent flag, probe + widened predicate', () => {
-    const v145 = MIGRATIONS.find(m => m.version === 145);
+    const v145 = MIGRATIONS.find(m => m.name === 'facts_kind_idea_alter');
     expect(v145).toBeDefined();
-    expect(v145?.name).toBe('facts_kind_idea_alter');
     expect(v145?.idempotent).toBe(true);
     expect(V145_SQL).toContain(`conname = 'facts_kind_check'`);
     expect(V145_SQL).toContain('DROP CONSTRAINT facts_kind_check');
     expect(V145_SQL).toContain(`CHECK (kind IN (${WIDENED_LIST}))`);
-    expect(LATEST_VERSION).toBeGreaterThanOrEqual(145);
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(v145!.version);
   });
 });
 

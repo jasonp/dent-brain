@@ -142,9 +142,27 @@ export async function runBreakLockCommand(
         `SELECT id FROM sources WHERE id = $1`,
         [opts.explicitSource],
       );
-      if (rows.length === 0) return failResolve(e instanceof Error ? e.message : String(e));
-      sourceId = rows[0].id;
-      process.stderr.write(`[gbrain] source '${sourceId}' is archived — breaking its lock anyway.\n`);
+      if (rows.length > 0) {
+        sourceId = rows[0].id;
+        process.stderr.write(`[gbrain] source '${sourceId}' is archived — breaking its lock anyway.\n`);
+      } else {
+        // No source row at all. Upstream (#4412) breaks the lock regardless on
+        // the explicit-flag path, so a DELETED source's leftover lock stays
+        // recoverable; this fork refused, so a typo'd name could not silently
+        // "succeed". Both intents hold at once if the LOCK ROW is the
+        // evidence: a deleted source's orphaned lock exists and gets broken, a
+        // typo names no lock and still exits 1 loudly.
+        const orphan = await engine.executeRaw<{ id: string }>(
+          `SELECT id FROM gbrain_cycle_locks WHERE id = $1`,
+          [`gbrain-sync:${opts.explicitSource}`],
+        );
+        if (orphan.length === 0) return failResolve(e instanceof Error ? e.message : String(e));
+        sourceId = opts.explicitSource;
+        process.stderr.write(
+          `[gbrain] no source row for '${sourceId}', but it holds a sync lock — ` +
+          `breaking the orphaned lock (deleted-source recovery).\n`,
+        );
+      }
     }
   }
 

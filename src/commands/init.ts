@@ -605,16 +605,17 @@ function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested:
 }
 
 /**
- * v0.48.2: the mode-bundle reranker default IS `voyage:rerank-2.5` now
- * (`DEFAULT_RERANKER_MODEL`), so a Voyage-keyed install needs NO reranker
- * config row — an explicit `search.reranker.model` equal to the bundle value
- * would only earn doctor's `search_mode` reset nag. Keyed NON-voyage installs
+ * v0.48.2: the mode-bundle reranker default IS a live model now
+ * (`DEFAULT_RERANKER_MODEL` — `cohere:rerank-v3.5` in this fork), so an
+ * install keyed for it needs NO reranker config row — an explicit
+ * `search.reranker.model` equal to the bundle value would only earn doctor's
+ * `search_mode` reset nag. Installs keyed for a DIFFERENT provider
  * (e.g. openai) still get explicit `search.reranker.enabled false`: they have
  * no key for the default and silence beats a `no_key` audit row per process.
  * KEYLESS installs deliberately get NO write — the documented keyless-recovery
  * re-init must find virgin reranker config, and keyless brains take the
  * no-embedding search path, which never reaches applyReranker. A ZeroEntropy
- * embedding pick is just another keyed non-Voyage install now (its hosted
+ * embedding pick is just another keyed non-default install now (its hosted
  * reranker dies 2026-09-04; doctor names the migration). Never clobbers an existing explicit
  * choice (re-init preserves user config). Best-effort: reranking is fail-open,
  * a missed override degrades to no-rerank, never breaks init. Shared by the
@@ -638,7 +639,7 @@ async function writeNewInstallRerankerDefault(
     const { rerankerReadiness } = await import('../core/ai/reranker-readiness.ts');
     const { mergedProviderEnv } = await import('../core/ai/provider-env.ts');
     // Same plane the CLI hands the gateway: env > file > DB-plane provider keys
-    // (a `--force` re-init of a brain whose Voyage key lives only in the config
+    // (a `--force` re-init of a brain whose reranker key lives only in the config
     // table must not be classified keyless and locked into `enabled=false`).
     const fileCfg = loadConfigFileOnly();
     let mergedCfg = fileCfg;
@@ -656,7 +657,7 @@ async function writeNewInstallRerankerDefault(
       return;
     }
     if (resolvedModel) {
-      const key = readiness.requiredKey ?? 'VOYAGE_API_KEY';
+      const key = readiness.requiredKey ?? 'COHERE_API_KEY';
       await engine.setConfig('search.reranker.enabled', 'false');
       console.log(
         `  Reranker: disabled (no ${key} — enable later: export ${key}=… && ` +

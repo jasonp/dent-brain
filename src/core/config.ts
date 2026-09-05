@@ -1257,14 +1257,15 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'database_path',
   'openai_api_key',
   'anthropic_api_key',
-  // NOTE: `cohere_api_key` and `zeroentropy_api_key` are deliberately absent.
-  // They are file-plane-only (read via loadConfig -> buildGatewayConfig), but
-  // `gbrain config set` writes the DB plane. Listing them here would make
-  // `gbrain config set cohere_api_key ...` succeed while the gateway never
-  // sees the value — the same silent-no-op class the embedding_model guard in
-  // commands/config.ts exists to close. Left unlisted so the unknown-key
-  // rejection fires loudly instead. Set them via COHERE_API_KEY in the
-  // environment or by editing ~/.gbrain/config.json.
+  // FORK: `cohere_api_key` is listed now. The comment this replaces said it
+  // was withheld because `gbrain config set` writes the DB plane while the
+  // gateway reads only the file plane — a silent no-op. That premise no
+  // longer holds: the key is in FILE_PLANE_API_KEYS (so `config set` routes
+  // it to the file plane) AND in DB_MERGED_PROVIDER_KEY_FIELDS (so a value
+  // that reached the DB plane is read back), and mergedProviderEnv folds it
+  // into COHERE_API_KEY. It is this fork's DEFAULT reranker key, so it gets
+  // the same treatment voyage_api_key gets upstream.
+  'cohere_api_key',
   'zeroentropy_api_key',
   'openrouter_api_key',
   'voyage_api_key',

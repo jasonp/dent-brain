@@ -34,6 +34,8 @@ const LEDGER: Record<string, string> = {
   synthesize: 'test/memory-verbs-conformance.test.ts',
   forget: 'test/memory-verbs-conformance.test.ts',
   get_page: 'test/get-page-federated-scope.test.ts',
+  // FORK-ONLY (dent-brain) op; upstream's ledgers do not know it.
+  get_page_by_identity: 'test/get-page-by-identity-op.test.ts',
   put_page: 'test/put-page-provenance.test.ts',
   delete_page: 'test/pages-source-scoping-4329.test.ts',
   list_pages: 'test/list-pages-truncation.test.ts',

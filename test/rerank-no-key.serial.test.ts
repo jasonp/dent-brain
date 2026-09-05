@@ -2,7 +2,7 @@
  * v0.48.2 — `no_key` reranker preflight (fail-open, audit-only, once per
  * process per model).
  *
- * With the default reranker now keyed on VOYAGE_API_KEY, a keyless balanced
+ * With the default reranker now keyed on COHERE_API_KEY, a keyless balanced
  * brain reaches gateway.rerank() on every search. Pins:
  *  - the HTTP call is skipped and RerankError('no_key') is thrown;
  *  - ONE audit row per process per model across repeated calls, and NO
@@ -113,7 +113,7 @@ afterAll(() => {
 });
 
 describe('gateway.rerank no_key preflight (v0.48.2)', () => {
-  test('default voyage model, no VOYAGE_API_KEY → RerankError(no_key) before any HTTP call', async () => {
+  test('default voyage model, no COHERE_API_KEY → RerankError(no_key) before any HTTP call', async () => {
     await withFreshAuditDir(async () => {
       configureGateway(keylessGw());
       const transport = installCountingTransport();
@@ -126,7 +126,7 @@ describe('gateway.rerank no_key preflight (v0.48.2)', () => {
       }
       expect(err).toBeInstanceOf(RerankError);
       expect((err as RerankError).reason).toBe('no_key');
-      expect((err as Error).message).toContain('VOYAGE_API_KEY');
+      expect((err as Error).message).toContain('COHERE_API_KEY');
       expect((err as Error).message).toContain('search.reranker.enabled false');
       expect(transport.count()).toBe(0);
     });
@@ -146,9 +146,9 @@ describe('gateway.rerank no_key preflight (v0.48.2)', () => {
       const rows = readRecentRerankFailures(7).filter((r) => r.reason === 'no_key');
       expect(rows).toHaveLength(1);
       expect(rows[0]!.model).toBe(DEFAULT_RERANKER_MODEL);
-      expect(rows[0]!.error_summary).toContain('VOYAGE_API_KEY not set');
+      expect(rows[0]!.error_summary).toContain('COHERE_API_KEY not set');
       expect(rows[0]!.error_summary).toContain('search.reranker.enabled false');
-      expect(stderrText).not.toContain('VOYAGE_API_KEY');
+      expect(stderrText).not.toContain('COHERE_API_KEY');
     });
   });
 
@@ -198,7 +198,7 @@ describe('gateway.rerank no_key preflight (v0.48.2)', () => {
 
   test('key present + exhausted cap → BudgetExhausted BEFORE the transport call; applyReranker files a `budget` row', async () => {
     await withFreshAuditDir(async (dir) => {
-      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test' } }));
+      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'pa-test' } }));
       const transport = installCountingTransport();
       const tracker = new BudgetTracker({ maxCostUsd: 1e-9, label: 'cap', auditPath: path.join(dir, 'b.jsonl') });
       await expect(withBudgetTracker(tracker, () => rerank({ query: 'q', documents: ['d'] }))).rejects.toBeInstanceOf(BudgetExhausted);
@@ -211,7 +211,7 @@ describe('gateway.rerank no_key preflight (v0.48.2)', () => {
 
   test('key present but rejected (HTTP 401) stays `auth`', async () => {
     await withFreshAuditDir(async () => {
-      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-bad' } }));
+      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'pa-bad' } }));
       const transport = installCountingTransport(401);
 
       await expect(rerank({ query: 'q', documents: ['d'] })).rejects.toMatchObject({ reason: 'auth' });
@@ -223,7 +223,7 @@ describe('gateway.rerank no_key preflight (v0.48.2)', () => {
 
   test('key present → the call goes through (no row, no skip)', async () => {
     await withFreshAuditDir(async () => {
-      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-test' } }));
+      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'pa-test' } }));
       const transport = installCountingTransport();
 
       const out = await rerank({ query: 'q', documents: ['d'] });
@@ -278,7 +278,7 @@ describe('applyReranker on no_key (v0.48.2)', () => {
 
   test('a genuine failure (auth) does NOT fire onSkip and DOES write a per-query row', async () => {
     await withFreshAuditDir(async () => {
-      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', VOYAGE_API_KEY: 'pa-bad' } }));
+      configureGateway(keylessGw({ env: { OPENAI_API_KEY: 'sk-test', COHERE_API_KEY: 'pa-bad' } }));
       installCountingTransport(401);
       const skips: string[] = [];
       const out = await applyReranker('q', mkResults(), {

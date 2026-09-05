@@ -51,7 +51,7 @@
  */
 
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
@@ -152,7 +152,20 @@ export type PushLockResult =
   | { acquired: false; holderPid: number | null };
 
 export function pushLockDir(repoRoot: string): string {
-  const hash = createHash('sha256').update(repoRoot).digest('hex').slice(0, 16);
+  // Canonicalize BEFORE hashing: the lock only excludes if every caller
+  // derives the same key for the same repo, and callers do not agree on the
+  // spelling. `workspacePush` keys off `git rev-parse --show-toplevel`, which
+  // returns a fully resolved path, while direct callers pass whatever path
+  // they were handed. On macOS the system temp dir is reached through the
+  // `/var -> /private/var` symlink, so those two spellings differ, hash
+  // differently, and TWO concurrent pushes both "acquire" the lock — the
+  // exact race this file exists to prevent, silently absent on the platform
+  // most likely to hit it. Best-effort: a path that cannot be resolved (not
+  // yet created, permissions) falls back to the raw string, which is still
+  // self-consistent for that caller.
+  let canonical = repoRoot;
+  try { canonical = realpathSync.native(repoRoot); } catch { /* keep raw */ }
+  const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 16);
   return join(ensureGbrainHome(), 'locks', `push-${hash}.lock`);
 }
 

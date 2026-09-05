@@ -1,5 +1,19 @@
 # TODOS
 
+## Reranker cost accounting after the Cohere default (filed 2026-09-05, v0.48.2.0 upstream sync)
+
+- [ ] **P2 — the default reranker has no pricing row, so budget estimates read
+  `unknown` on the default path.** **What:** `src/core/embedding-pricing.ts`
+  prices rerankers per million tokens; Cohere prices Rerank v3.5 per SEARCH
+  (per 1K searches). This fork's default is `cohere:rerank-v3.5`, so
+  `lookupEmbeddingPrice` misses and returns `unknown`. **Why:** not wrong, but
+  blind — `gbrain doctor`'s rerank budget guidance and the cost gate cannot
+  quantify the default rerank spend. A fabricated per-MTok row would be worse
+  than the miss (the table's stated fail-closed discipline), so this needs a
+  real per-search accounting unit rather than a new row. **Where to start:**
+  `EMBEDDING_PRICING` + `lookupEmbeddingPrice` in `src/core/embedding-pricing.ts`
+  and the rerank arm of the budget tracker. **Effort:** M.
+
 ## Sync lock recovery follow-ups (filed 2026-08-31, adversarial review of the break-lock source-resolution fix)
 
 - [x] **P1 — `sync --source=<id>` (equals form) is silently ignored.**
@@ -10,18 +24,20 @@
   `calibration.ts`, `eval-code-retrieval.ts` normalize argv once with
   `expandEqualsFlags` (all in the new `src/core/cli-flag-value.ts`).
 
-- [ ] **P1 — finish the `--source` sweep: 16 commands still drop the equals
-  spelling.** **What:** `auth.ts`, `call.ts`, `claw-test.ts`, `code-callees.ts`,
-  `code-callers.ts`, `compile-context.ts`, `dream.ts`, `embed.ts`,
-  `frontmatter-install-hook.ts`, `schema.ts`, `sweep-delegate.ts`,
-  `sync-delegate.ts`, `takes.ts`, `thin-client-routing.ts`, `transcripts.ts`,
-  `watch.ts` read `--source` by argv position, so `--source=<id>` is dropped and
+- [ ] **P1 — finish the `--source` sweep: 18 commands still drop the equals
+  spelling.** **What:** `auth.ts`, `call.ts`, `claw-test.ts`, `code-scope.ts`,
+  `compile-context.ts`, `connectors/sync.ts`, `dream.ts`, `embed.ts`,
+  `frontmatter-install-hook.ts`, `loops.ts`, `schema.ts`, `sweep-delegate.ts`,
+  `sync-delegate.ts`, `takes.ts`, `thin-client-routing.ts`, `think.ts`,
+  `transcripts.ts`, `watch.ts` read `--source` by argv position, so `--source=<id>` is dropped and
   the command falls back to the AMBIENT source. **Why:** wrong-source reads, and
   `embed`/`sweep` touch stored data. This is the same defect v0.50.2.0 fixed
   elsewhere; it was scoped out to keep that release verifiable rather than
-  broad. **Where to start:** the list is machine-checked — `PENDING` in
-  `test/cli-flag-idiom-guard.test.ts` IS this list, and the guard fails if it
-  grows. For a parser loop, one `args = expandEqualsFlags(args)` before the loop
+  broad. Upstream syncs ADD to it: the v0.48.2.0 sync converted two
+  (`code-callees.ts`, `code-callers.ts`) and imported four new offenders with
+  upstream's new commands. **Where to start:** the list is machine-checked —
+  `PENDING` in `test/cli-flag-idiom-guard.test.ts` IS this list, and the guard
+  fails the moment it drifts from the source text in either direction. For a parser loop, one `args = expandEqualsFlags(args)` before the loop
   converts every flag in it; for a few named reads, use `readFlagValue`. Delete
   each file from `PENDING` as you go. **Effort:** M.
 

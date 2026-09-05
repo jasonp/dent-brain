@@ -29,14 +29,14 @@ let engine: InstanceType<typeof PGLiteEngine>;
 let tmpHome: string;
 const savedGbrainHome = process.env.GBRAIN_HOME;
 const savedAuditDir = process.env.GBRAIN_AUDIT_DIR;
-const savedVoyage = process.env.VOYAGE_API_KEY;
+const savedRerankerKey = process.env.COHERE_API_KEY;
 
-function configure(withVoyageKey: boolean): void {
+function configure(withRerankerKey: boolean): void {
   resetGateway();
   configureGateway({
     embedding_model: 'openai:text-embedding-3-large',
     embedding_dimensions: 1536,
-    env: { OPENAI_API_KEY: 'sk-fake', ...(withVoyageKey ? { VOYAGE_API_KEY: 'pa-fake' } : {}) },
+    env: { OPENAI_API_KEY: 'sk-fake', ...(withRerankerKey ? { COHERE_API_KEY: 'co-fake' } : {}) },
   });
   __setEmbedTransportForTests((async (args: any) => ({
     embeddings: Array.from({ length: args.values.length }, () => Array.from({ length: 1536 }, () => 0.1)),
@@ -47,7 +47,7 @@ beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-reranker-skipped-'));
   process.env.GBRAIN_HOME = tmpHome;
   process.env.GBRAIN_AUDIT_DIR = join(tmpHome, 'audit');
-  delete process.env.VOYAGE_API_KEY;
+  delete process.env.COHERE_API_KEY;
 
   engine = new PGLiteEngine();
   await engine.connect({});
@@ -80,7 +80,7 @@ afterAll(async () => {
   else process.env.GBRAIN_HOME = savedGbrainHome;
   if (savedAuditDir === undefined) delete process.env.GBRAIN_AUDIT_DIR;
   else process.env.GBRAIN_AUDIT_DIR = savedAuditDir;
-  if (savedVoyage !== undefined) process.env.VOYAGE_API_KEY = savedVoyage;
+  if (savedRerankerKey !== undefined) process.env.COHERE_API_KEY = savedRerankerKey;
   try { await engine.disconnect(); } catch { /* ignore */ }
   try { rmSync(tmpHome, { recursive: true, force: true }); } catch { /* ignore */ }
 });
@@ -103,7 +103,7 @@ async function run(query: string): Promise<{ results: SearchResult[]; meta: Hybr
   return { results, meta, stderr: captured };
 }
 
-describe('balanced search without VOYAGE_API_KEY (v0.48.2)', () => {
+describe('balanced search without COHERE_API_KEY (v0.48.2)', () => {
   test('stamps reranker_skipped (no_key) on meta, keeps results, prints nothing', async () => {
     configure(false);
     _resetSunsetWarningsForTest();
@@ -118,7 +118,7 @@ describe('balanced search without VOYAGE_API_KEY (v0.48.2)', () => {
     expect(meta.degraded ?? []).toContainEqual({ stage: 'reranker_skipped', reason: 'no_key' });
     expect(results.every((r) => r.rerank_score === undefined)).toBe(true);
     expect(rerankCalls).toBe(0);
-    expect(stderr).not.toContain('VOYAGE_API_KEY');
+    expect(stderr).not.toContain('COHERE_API_KEY');
 
     // Second search in the same process: still stamped (the stamp is per
     // search; only the audit row is once-per-process).

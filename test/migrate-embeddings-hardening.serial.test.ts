@@ -412,7 +412,9 @@ describe('reranker companion (D8)', () => {
       const plan = await resolveRerankerPlan(engine, 'zeroentropyai:zembed-1', 'openai:text-embedding-3-small', undefined);
       expect(plan.exposed).not.toBeNull();
       expect(plan.action.kind).toBe('none');
-      expect((plan.action as { suggestion: string | null }).suggestion).toBe('voyage:rerank-2.5');
+      // The suggestion tracks NEW_INSTALL_DEFAULT_RERANKER_MODEL, which this
+      // fork points at Cohere (upstream: voyage:rerank-2.5).
+      expect((plan.action as { suggestion: string | null }).suggestion).toBe('cohere:rerank-v3.5');
     } finally {
       await engine.unsetConfig('search.reranker.model');
     }

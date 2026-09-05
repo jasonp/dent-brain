@@ -66,7 +66,7 @@ describe('sunset warn-on-use (v0.46.3)', () => {
     const all = stderrChunks.join('');
     expect(all).toContain('DEPRECATED');
     expect(all).toContain('2026-09-04');
-    expect(all).toContain('search.reranker.model voyage:rerank-2.5');
+    expect(all).toContain('search.reranker.model cohere:rerank-v3.5');
   });
 
   test('fires once per process, not once per call', async () => {
@@ -87,8 +87,8 @@ describe('sunset warn-on-use (v0.46.3)', () => {
   test('a non-sunset provider warns nothing', async () => {
     resetGateway();
     configureGateway({
-      reranker_model: 'voyage:rerank-2.5',
-      env: { VOYAGE_API_KEY: 'pa-test' },
+      reranker_model: 'cohere:rerank-v3.5',
+      env: { COHERE_API_KEY: 'pa-test' },
     });
     await rerank({ query: 'q', documents: ['a'] });
     expect(stderrChunks.join('')).not.toContain('DEPRECATED');

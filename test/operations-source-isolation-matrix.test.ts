@@ -115,6 +115,10 @@ const MATRIX: Row[] = [
   { name: 'advisor', mode: 'skip', reason: 'aggregate advisory over full stack; advisor suites own it' },
   { name: 'open_loops', mode: 'skip', reason: 'loop rows need the Gmail detector pipeline; test/ops-loops.test.ts owns its remote posture (no-scope denial, grant confinement, redacted evidence)' },
   { name: 'list_skills', mode: 'skip', reason: 'bundled skills catalog from the install tree; skills suites own it (throws outside an installed skills dir)' },
+  // FORK-ONLY (dent-brain): this matrix's fixture pages carry no identity
+  // frontmatter field to key on, and the op's own suite already pins the
+  // federated grant ladder (alpha-only grant cannot read a beta match).
+  { name: 'get_page_by_identity', mode: 'skip', reason: 'fork-only op; test/get-page-by-identity-op.test.ts owns its source isolation (allowedSources grant ladder + remote fence stripping)' },
 
   // Deliberately brain-wide (config / registry / identity — not source data).
   { name: 'search_modes', mode: 'brainwide', args: {}, rationale: 'reports search config knobs, no page data' },
