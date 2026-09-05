@@ -82,6 +82,11 @@ function main() {
       'src/mcp/server.ts',
       'src/openclaw-context-engine.ts',
       'src/admin-embedded.ts',
+      // FORK (dent-brain): the deployed HTTP MCP server — this is what the
+      // Dockerfile CMD actually runs in production, and it owns the ingestor
+      // crons. Without it the fork's whole src/dent/ tree reads as orphaned.
+      // `.filter(srcSet.has)` below keeps this harmless upstream.
+      'src/dent/serve.ts',
     ].filter(f => srcSet.has(f));
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     for (const target of Object.values(pkg.exports ?? {})) {

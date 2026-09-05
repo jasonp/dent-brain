@@ -242,7 +242,7 @@ markdown files (tool-agnostic, work with both CLI and plugin contexts).
 Explore via `ls src/core/`, `ls src/commands/`, `ls src/mcp/` — names are descriptive; read files for detail. Do not maintain a file inventory in this doc; it goes stale fast.
 
 **Cross-cutting invariants (must-never-violate, regardless of which file you touch).**
-These used to be buried across the per-file index; they live here so they always load.
+They live here so they always load.
 Per-file detail is in `docs/architecture/KEY_FILES.md`.
 
 - **Trust is fail-closed.** `OperationContext.remote` is REQUIRED on the type. Anything not
@@ -378,16 +378,14 @@ detail on demand.)
 | shipping a release / CHANGELOG / PR conventions | `docs/RELEASING.md` (ship IRON RULES stay inline below) |
 
 The per-file index (`## Key files`), the thin-client routing seam, and the testing
-discipline used to live inline here. They moved to the docs above so this file
-stays small enough to load every session. Nothing was lost — the pre-move content
-is in git, and the docs carry every load-bearing invariant (compressed to
-current-state).
+discipline live in the docs above, not inline, so this file stays small enough to
+load every session. Those docs carry every load-bearing invariant, compressed to
+current state.
 
 ## Maintaining CLAUDE.md and the reference docs
 
-CLAUDE.md grew to ~592KB / ~147k tokens once the per-file index became append-only
-(one `**vX.Y.Z:**` clause per release per file). That is the exact anti-pattern
-gbrain exists to fix. The rules that keep it from recurring:
+An append-only per-file index once grew this file to ~592KB / ~147k tokens — the
+exact anti-pattern gbrain exists to fix. The rules that keep it from recurring:
 
 - **CLAUDE.md is orientation, not the implementation spec.** It carries the North
   Star, the two axes, architecture + cross-cutting invariants, the resolver, and
@@ -525,7 +523,7 @@ audit trail lives in the source repo's git history.
 
 Read the skill files in `skills/` before doing brain operations. GBrain ships 50+ skills
 (the current list lives in `skills/manifest.json`) organized by `skills/RESOLVER.md`
-(`AGENTS.md` is also accepted as of v0.19):
+(`AGENTS.md` is also accepted):
 
 **Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,
 briefing, migrate, setup, publish.
@@ -579,10 +577,8 @@ filed for held-out corpus growth, cross-vendor verification, hierarchical
 area-of-areas, embedding-based pre-router, and the run-1 vs run-2
 prompt-design ablation methodology.
 
-**Operational health (v0.19.1):** smoke-test (8 post-restart health checks; bounded
-auto-fix for Bun, CLI, and Zod CJS; read-only worker topology via native supervisor
-status with duplicate detection; DB, gateway, API key, brain repo; user-extensible
-via `~/.gbrain/smoke-tests.d/*.sh`).
+**Operational health:** `gbrain smoke-test` runs the post-restart health checks
+with bounded auto-fix; user-extensible via `~/.gbrain/smoke-tests.d/*.sh`.
 
 **Conventions:** `skills/conventions/` has cross-cutting rules (quality, brain-first,
 model-routing, test-before-bulk, cross-modal). `skills/_brain-filing-rules.md` and
@@ -645,9 +641,6 @@ the test verification gate (Step 16) because:
 - bun prints failure details before the summary line, so `tail -N` drops them
 - Step T1 needs the full failure list to classify in-branch vs pre-existing
 
-This bit us during v0.26.2 ship: `bun test 2>&1 | tail -10` reported "3911 pass / 23 fail"
-but no failure details survived, forcing a 23-minute re-run to triage.
-
 Apply the same pattern to any long-running command whose exit code matters:
 `bun run typecheck`, `bun run ci:local`, migration runs, eval suites, etc.
 For background tasks (`run_in_background: true`), the harness captures the exit
@@ -664,14 +657,9 @@ per-source lock heartbeats through the direct pool and refuses to steal a live,
 recently-refreshed holder. Six env knobs tune it (all env-only, incident-time escape
 hatches — no config-dashboard surface by design):
 
-| Env var | Default | What it does |
-|---|---|---|
-| `GBRAIN_SYNC_CHECKPOINT_EVERY` | 1000 | Flush the checkpoint every N drained files. |
-| `GBRAIN_SYNC_CHECKPOINT_SECONDS` | 10 | Also flush every N seconds (whichever comes first) — bounds worst-case loss regardless of throughput. Flush also fires after the first file. |
-| `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
-| `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
-| `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
-| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |
+The six env-only tuning knobs (checkpoint cadence, failure ceiling, yield
+interval, lock-steal grace, stall-abort seconds) are documented in
+[`docs/guides/live-sync.md`](docs/guides/live-sync.md#sync-resumability--lock-tuning-knobs-v042x-1794).
 
 ## Pace Mode (DB-contention-aware backfill pacing)
 
@@ -891,13 +879,13 @@ ship — the repeatable mechanical sweep (obfuscation/eval, gitleaks with the te
 allowlist stripped, committed `admin/dist` changes as alarms; new endpoints/spawns/env/deps
 as context).
 
-**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1. Deploys are automatic as of v0.49.0.0 (see below), so a failure here means the last deploy did not land — check the Actions run before shipping on top of it. Shipping more changes over an un-deployed fix compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence.
+**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship: it compares `./VERSION` against the production MCP initialize handshake and exits 1 when production is behind. A failure means the last deploy did not land — fix that before shipping on top of it.
 
 ## Post-ship requirements (production deploy)
 
-**Deploys are automatic.** `.github/workflows/deploy.yml` runs on every push to `main`: it deploys with `railway up --detach --service dent-brain` using the `RAILWAY_TOKEN` project secret, then polls `/health` until production reports the version in `./VERSION`, failing loudly if it never flips. Railway's native GitHub integration cannot be used here — the repo and the paid Railway app live under different GitHub accounts, so the service's `source.repo` is permanently null — and this workflow bypasses that entirely.
+**Deploys are automatic.** `.github/workflows/deploy.yml` runs on every push to `main`: `railway up --detach --service dent-brain` with the `RAILWAY_TOKEN` secret, then polls `/health` until production reports `./VERSION`. (Railway's native GitHub integration cannot be used: repo and paid Railway app live under different GitHub accounts, so `source.repo` is permanently null.)
 
-Watch the Actions run rather than deploying by hand. If it fails (expired token, boot failure), the emergency fallback is `railway up --detach` from the repo root — **not** `railway redeploy`, which redeploys the existing image instead of building the new commit. Confirm with `bun run check:prod-version`.
+Watch the Actions run rather than deploying by hand. If it fails, the emergency fallback is `railway up --detach` from the repo root — **not** `railway redeploy`, which redeploys the existing image instead of building the new commit.
 
 Changing a Railway environment variable also triggers a redeploy on its own; wait for that to settle before deploying again.
 
@@ -911,10 +899,7 @@ Files that MUST be checked on every ship:
   invariants, are recorded HERE. This is the on-demand layer behind the Reference
   map, and it is where per-file and per-version detail belongs.
 - CLAUDE.md — only if an always-loaded rule, the Reference map, or the dispatcher
-  changed. **CLAUDE.md is a map, not a log**: it is read in full at the start of every
-  session, so entries are condensed or deleted as they go stale, never appended to.
-  If an update adds a file inventory, a test inventory, or an "as of vX.Y.Z" note,
-  it belongs in the on-demand layer above instead.
+  changed; it is a map, not a log (see "Maintaining CLAUDE.md" below).
 - CHANGELOG.md — does it cover every commit?
 - TODOS.md — are completed items marked done?
 - docs/ — do any guides need updating?
@@ -3809,6 +3794,22 @@ vars — incident-time escape hatches, not everyday knobs.
 ---
 
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*
+
+## Sync resumability + lock tuning knobs (v0.42.x, #1794)
+
+Six env-only escape hatches for `gbrain sync` — deliberately env-only, with no
+config-dashboard surface, because they are incident-time controls. Moved here
+from CLAUDE.md in the v0.48.2.0 upstream sync: per-command detail belongs in
+the on-demand layer, not the always-loaded map.
+
+| Env var | Default | What it does |
+|---|---|---|
+| `GBRAIN_SYNC_CHECKPOINT_EVERY` | 1000 | Flush the checkpoint every N drained files. |
+| `GBRAIN_SYNC_CHECKPOINT_SECONDS` | 10 | Also flush every N seconds (whichever comes first) — bounds worst-case loss regardless of throughput. Flush also fires after the first file. |
+| `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
+| `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
+| `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
+| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |
 
 ---
 
