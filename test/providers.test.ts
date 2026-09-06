@@ -185,7 +185,7 @@ describe('formatEnvOutput (providers env <id>)', () => {
   test('sunset block positively asserts message + Replacement line (ZE fixture)', () => {
     const out = formatEnvOutput(getRecipe('zeroentropyai')!, {});
     expect(out).toContain('ZeroEntropy is shutting down its hosted API.');
-    expect(out).toContain('Replacement: voyage:voyage-4 (embedding), voyage:rerank-2.5 (reranker)');
+    expect(out).toContain('Replacement: voyage:voyage-4 (embedding), cohere:rerank-v3.5 (reranker)');
   });
 
   test('keyless recipe (ollama): Required: (none) arm renders', () => {

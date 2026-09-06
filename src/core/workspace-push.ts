@@ -51,7 +51,7 @@
  */
 
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
@@ -59,6 +59,7 @@ import { execFileSync } from 'child_process';
 import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, detectDefaultBranch, divergenceSafePull } from './git-remote.ts';
 import { loadConfigFileOnly } from './config.ts';
 import { ensureGbrainHome } from './gbrain-home.ts';
+import { invalidateBackupStatus, loadBackupStatus } from './backup/status-file.ts';
 import {
   githubOwnerRepoString,
   readCachedPrivateVerdict,
@@ -151,7 +152,20 @@ export type PushLockResult =
   | { acquired: false; holderPid: number | null };
 
 export function pushLockDir(repoRoot: string): string {
-  const hash = createHash('sha256').update(repoRoot).digest('hex').slice(0, 16);
+  // Canonicalize BEFORE hashing: the lock only excludes if every caller
+  // derives the same key for the same repo, and callers do not agree on the
+  // spelling. `workspacePush` keys off `git rev-parse --show-toplevel`, which
+  // returns a fully resolved path, while direct callers pass whatever path
+  // they were handed. On macOS the system temp dir is reached through the
+  // `/var -> /private/var` symlink, so those two spellings differ, hash
+  // differently, and TWO concurrent pushes both "acquire" the lock — the
+  // exact race this file exists to prevent, silently absent on the platform
+  // most likely to hit it. Best-effort: a path that cannot be resolved (not
+  // yet created, permissions) falls back to the raw string, which is still
+  // self-consistent for that caller.
+  let canonical = repoRoot;
+  try { canonical = realpathSync.native(repoRoot); } catch { /* keep raw */ }
+  const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 16);
   return join(ensureGbrainHome(), 'locks', `push-${hash}.lock`);
 }
 
@@ -498,7 +512,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function aheadCount(root: string, branch: string): number | undefined {
+/** Commits ahead of origin/<branch> (undefined when git can't answer).
+ * Exported for the backup-coverage probe (src/core/backup/coverage.ts). */
+export function aheadCount(root: string, branch: string): number | undefined {
   const out = tryGit(root, ['rev-list', '--count', `origin/${branch}..HEAD`], { timeoutMs: 15_000 });
   if (out === null) return undefined;
   const n = parseInt(out, 10);
@@ -538,6 +554,21 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
       ...(r.ahead !== undefined ? { ahead: r.ahead } : {}),
       repoRoot: root,
     });
+    // Fix-path invalidation: a successful push changes the backup-coverage
+    // answer (workspace failing→ok, unpushed→pushed) — but ONLY when the
+    // cached verdict carried something a push can fix. The routine healthy
+    // stop-push must not delete an ok cache every session (that would defeat
+    // the monthly compute throttle for the healthiest cohort).
+    if (r.ok) {
+      try {
+        const s = loadBackupStatus();
+        if (s && (s.overall === 'warn' || s.totals.failing > 0 || s.totals.unpushed > 0)) {
+          invalidateBackupStatus();
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
     return r;
   };
 

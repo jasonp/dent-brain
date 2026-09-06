@@ -15,6 +15,7 @@ import {
   rerank,
   __setRerankTransportForTests,
   _resetSunsetWarningsForTest,
+  __setSunsetClockForTests,
 } from '../../src/core/ai/gateway.ts';
 
 function mockResp(json: unknown, status = 200): Response {
@@ -27,7 +28,14 @@ function mockResp(json: unknown, status = 200): Response {
 let stderrChunks: string[] = [];
 let origWrite: typeof process.stderr.write;
 
+// Pin a pre-sunset clock: this suite exercises zerank THROUGH the transport, and
+// past ZEROENTROPY_SUNSET_DATE (2026-09-04) the real clock would make gateway.rerank
+// short-circuit before the transport — a deterministic wall-clock time bomb
+// (mirrors test/ai/rerank.test.ts).
+const BEFORE_SUNSET = new Date('2026-09-01T00:00:00Z');
+
 beforeEach(() => {
+  __setSunsetClockForTests(() => BEFORE_SUNSET);
   _resetSunsetWarningsForTest();
   stderrChunks = [];
   origWrite = process.stderr.write.bind(process.stderr);
@@ -45,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setSunsetClockForTests(null);
   process.stderr.write = origWrite;
   __setRerankTransportForTests(null);
   _resetSunsetWarningsForTest();
@@ -57,7 +66,7 @@ describe('sunset warn-on-use (v0.46.3)', () => {
     const all = stderrChunks.join('');
     expect(all).toContain('DEPRECATED');
     expect(all).toContain('2026-09-04');
-    expect(all).toContain('search.reranker.model voyage:rerank-2.5');
+    expect(all).toContain('search.reranker.model cohere:rerank-v3.5');
   });
 
   test('fires once per process, not once per call', async () => {
@@ -78,8 +87,8 @@ describe('sunset warn-on-use (v0.46.3)', () => {
   test('a non-sunset provider warns nothing', async () => {
     resetGateway();
     configureGateway({
-      reranker_model: 'voyage:rerank-2.5',
-      env: { VOYAGE_API_KEY: 'pa-test' },
+      reranker_model: 'cohere:rerank-v3.5',
+      env: { COHERE_API_KEY: 'pa-test' },
     });
     await rerank({ query: 'q', documents: ['a'] });
     expect(stderrChunks.join('')).not.toContain('DEPRECATED');

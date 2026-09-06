@@ -36,10 +36,18 @@ import type { GBrainConfig } from './config.ts';
 export const DB_MERGED_PROVIDER_KEY_FIELDS = [
   'openai_api_key',
   'anthropic_api_key',
+  // FORK: cohere_api_key is a first-class provider key here — this fork's
+  // DEFAULT reranker is cohere:rerank-v3.5, so it needs the same file-plane
+  // routing + DB-plane read-back Voyage gets upstream. Without the DB-merge
+  // entry, a re-init of a brain whose key reached the DB plane classifies it
+  // keyless and writes search.reranker.enabled=false.
+  'cohere_api_key',
   'zeroentropy_api_key',
   'openrouter_api_key',
   'voyage_api_key',
   'dashscope_api_key',
+  'litellm_api_key',
+  'together_api_key',
   'google_api_key',
   'azure_openai_api_key',
 ] as const;
@@ -53,6 +61,9 @@ export const DB_MERGED_PROVIDER_KEY_FIELDS = [
 export interface DbPlaneEngineReader {
   getConfig(key: string): Promise<string | null | undefined>;
   listConfigKeys?(prefix: string): Promise<string[]>;
+  /** One-round-trip whole-table read (see config-snapshot.ts). Optional so
+   *  narrow readers and SDK callers keep working on the per-key path. */
+  getAllConfig?(): Promise<Record<string, string>>;
   executeRaw?<T = Record<string, unknown>>(
     sql: string,
     params?: unknown[],

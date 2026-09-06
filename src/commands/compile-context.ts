@@ -34,6 +34,7 @@ import { atomicWriteTextFile } from '../core/bootstrap/atomic-write.ts';
 import { compileView, type CompileViewMeta } from '../core/context/compile-view.ts';
 import { loadSensitivityConfig } from '../core/context/sensitivity-scan.ts';
 import { resolveSourceId, ALL_SOURCES } from '../core/source-resolver.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -67,17 +68,15 @@ interface CompileFlags {
 class UsageError extends Error {}
 
 function flagValue(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  if (i >= 0) {
-    const v = args[i + 1];
-    if (v === undefined || v.startsWith('--')) {
-      throw new UsageError(`${flag} requires a value`);
-    }
-    return v;
+  // Value comes from the canonical reader (both spellings, one implementation);
+  // the usage validation below is this command's own and is preserved.
+  const present = args.includes(flag) || args.some((a) => a.startsWith(`${flag}=`));
+  if (!present) return undefined;
+  const v = readFlagValue(args, flag);
+  if (v === undefined || v.startsWith('--')) {
+    throw new UsageError(`${flag} requires a value`);
   }
-  const prefix = `${flag}=`;
-  const kv = args.find((a) => a.startsWith(prefix));
-  return kv ? kv.slice(prefix.length) : undefined;
+  return v;
 }
 
 function parseCompileFlags(args: string[]): CompileFlags {

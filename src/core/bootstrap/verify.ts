@@ -44,11 +44,13 @@ import { loadWorkspaceAllowlist, matchesGlob, scanFiles, type SecretFinding } fr
 import { PUSH_DENY_GLOBS, verifyRemotePrivacy, readPushStatuses, summarizePushStatuses } from '../workspace-push.ts';
 import { FACTS_DEFAULT_VISIBILITY_KEY } from '../facts/visibility.ts';
 import { byteFloors } from './render.ts';
+import { CLAUDE_HOOK_EVENTS, GBRAIN_HOOK_MARKER_KEY, claudeUserSettingsPath } from './host-specs.ts';
 import { BOOTSTRAP_TEMPLATES, loadQuestionBank } from './assets.ts';
 import { readManifest, writeManifest } from './format.ts';
 import { status as interviewStatus } from './interview.ts';
 import { gitOriginUrl, hooksInstalled } from './status.ts';
 import { resolveSourceId } from '../source-resolver.ts';
+import { auditWritebackContract } from './contract.ts';
 import {
   ensureIpcSecret,
   resolveSocketPath,
@@ -271,6 +273,21 @@ function checkByteFloors(ws: string): VerifyCheck {
   }
 }
 
+/** A healthy retrieval surface without a same-turn write-back contract is a
+ * one-way memory: useful now, stale later. Fresh bootstrap renders this gate;
+ * the check catches pre-bootstrap/custom workspaces and points at the
+ * additive repair command rather than overwriting their AGENTS.md. */
+export function checkWritebackContract(ws: string): VerifyCheck {
+  const audit = auditWritebackContract(ws);
+  return audit.ok
+    ? { id: 'writeback_contract', ok: true, detail: audit.detail }
+    : {
+        id: 'writeback_contract',
+        ok: false,
+        detail: `${audit.detail}. Fix: run \`gbrain bootstrap contract --repair\` from the workspace (or pass --workspace explicitly).`,
+      };
+}
+
 /** Tracked files via git; falls back to the rendered file set + state/ when
  * the workspace is not (yet) a git repo. */
 function trackedWorkspaceFiles(ws: string): { files: string[]; via: 'git' | 'fallback' } {
@@ -352,29 +369,48 @@ function checkMcpJsonHygiene(ws: string): VerifyCheck {
   }
 }
 
-/** [D12 upgrade-path guard]: an event carried by BOTH hook files double-fires
- * every turn (possible when the committed carrier arrives via git pull onto a
- * machine whose local file predates the dedupe-aware writers). Warn-only. */
-function checkHookCarrierOverlap(ws: string): VerifyCheck {
+/** [D12 upgrade-path guard, #4585]: an event carried by MORE THAN ONE hook
+ * carrier double-fires every turn — Claude Code merges hook scopes, so the
+ * carriers compared are ALL the files that can inject a gbrain hook for this
+ * workspace: user-scope settings.json (what `bootstrap harness` writes) plus
+ * workspace-scope .claude/settings.json and .claude/settings.local.json
+ * (what `bootstrap hooks` writes). Same-scope overlap arises when the
+ * committed carrier arrives via git pull onto a machine whose local file
+ * predates the dedupe-aware writers; cross-scope overlap arises when both
+ * installers ran on the same box. Warn-only. Exported for tests
+ * (userSettingsPath injectable). */
+export function checkHookCarrierOverlap(
+  ws: string,
+  userSettingsPath = claudeUserSettingsPath(),
+): VerifyCheck {
   const id = 'hook_carrier_overlap';
   try {
-    const events = (['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'] as const).filter((event) => {
-      const has = (rel: string): boolean => {
+    const carriers: Array<{ label: string; path: string }> = [
+      { label: 'user-scope settings.json', path: userSettingsPath },
+      { label: '.claude/settings.json', path: join(ws, '.claude', 'settings.json') },
+      { label: '.claude/settings.local.json', path: join(ws, '.claude', 'settings.local.json') },
+    ];
+    const overlaps: string[] = [];
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      const hits = carriers.filter(({ path }) => {
         try {
-          const parsed = JSON.parse(readFileSync(join(ws, rel), 'utf8')) as { hooks?: Record<string, unknown> };
+          const parsed = JSON.parse(readFileSync(path, 'utf8')) as { hooks?: Record<string, unknown> };
           const groups = parsed?.hooks?.[event];
-          return Array.isArray(groups) && JSON.stringify(groups).includes('"_gbrain"');
+          return Array.isArray(groups) && JSON.stringify(groups).includes(`"${GBRAIN_HOOK_MARKER_KEY}"`);
         } catch {
           return false;
         }
-      };
-      return has(join('.claude', 'settings.json')) && has(join('.claude', 'settings.local.json'));
-    });
-    if (events.length === 0) return { id, ok: true, detail: 'no event fires from both hook carriers' };
+      });
+      if (hits.length >= 2) overlaps.push(`${event} (${hits.map((h) => h.label).join(' + ')})`);
+    }
+    if (overlaps.length === 0) return { id, ok: true, detail: 'no event fires from more than one hook carrier' };
     return {
       id,
       ok: true, // warn-only self-repair channel
-      detail: `WARN: ${events.join(', ')} fire from BOTH .claude/settings.json and settings.local.json (double-fire) — run \`gbrain bootstrap hooks --repair\` to dedupe`,
+      detail:
+        `WARN: double-fire — ${overlaps.join('; ')} carry a gbrain hook in more than one carrier. ` +
+        'Workspace-scope duplication: run `gbrain bootstrap hooks --repair`. ' +
+        'User-scope + workspace overlap: remove one installer\'s wiring (`gbrain bootstrap harness --remove` or `gbrain bootstrap uninstall`), then re-run the one you keep.',
     };
   } catch (e) {
     return { id, ok: true, detail: `carrier overlap probe failed (${(e as Error).message})` };
@@ -864,26 +900,41 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
   }
   let server: { close: () => void } | null = null;
   const prevSource = process.env.GBRAIN_SOURCE;
+  const socketPath = resolveSocketPath(dataDir);
+  // #4474: prefer the REAL socket. Pre-fix the smoke ALWAYS started its own
+  // in-process IPC server, so it manufactured the exact condition it was
+  // testing — a serve posture that never binds IPC (the old `serve --http`)
+  // still passed verify while every production hook degraded to no_serve.
+  // A present socket now means "a live serve is the provider; exercise IT";
+  // only when NO socket exists do we self-provide (plumbing-only smoke) and
+  // say so honestly in the result.
+  const liveSocket = existsSync(socketPath);
   try {
-    const secret = ensureIpcSecret(dataDir);
-    server = await startResolveIpcServer(
-      resolveSocketPath(dataDir),
-      {
-        resolve: async () => null,
-        turn_context: (req) =>
-          assembleTurnContext(engine, {
-            sourceId,
-            window: req.window,
-            ...(req.priorContextText !== undefined ? { priorContextText: req.priorContextText } : {}),
-            ...(req.sessionId !== undefined ? { sessionId: req.sessionId } : {}),
-            ...(req.maxBytes !== undefined ? { maxBytes: req.maxBytes } : {}),
-          }),
-      },
-      { secret, boundSourceId: sourceId },
-    );
-    if (!server) {
-      return { id, ok: true, warn: true, detail: 'could not bind the IPC socket (a live serve owns it?) — smoke skipped; the live serve itself is the IPC provider' };
+    if (!liveSocket) {
+      const secret = ensureIpcSecret(dataDir);
+      server = await startResolveIpcServer(
+        socketPath,
+        {
+          resolve: async () => null,
+          turn_context: (req) =>
+            assembleTurnContext(engine, {
+              sourceId,
+              window: req.window,
+              ...(req.priorContextText !== undefined ? { priorContextText: req.priorContextText } : {}),
+              ...(req.sessionId !== undefined ? { sessionId: req.sessionId } : {}),
+              ...(req.maxBytes !== undefined ? { maxBytes: req.maxBytes } : {}),
+            }),
+        },
+        { secret, boundSourceId: sourceId },
+      );
+      if (!server) {
+        return { id, ok: true, warn: true, detail: 'could not bind the IPC socket (a live serve owns it?) — smoke skipped; the live serve itself is the IPC provider' };
+      }
     }
+    // Provenance suffix for every outcome below: which listener answered.
+    const via = liveSocket
+      ? 'via the live serve’s IPC socket'
+      : `via a verify-owned IPC server (no live serve socket at ${socketPath} — hooks stay degraded (no_serve) until a running \`gbrain serve\` binds it)`;
     process.env.GBRAIN_SOURCE = sourceId;
     // USER_PROMPT_DEADLINE_MS is the hook's own budget — the smoke compares
     // against the same constant it enforces (no drifting hardcoded copy).
@@ -903,22 +954,26 @@ async function checkHooksSmoke(engine: BrainEngine, ws: string, sourceId: string
       if (elapsed >= USER_PROMPT_DEADLINE_MS) {
         // [A7] Real latency is a non-gating benchmark — the hard deadline
         // assertion lives in the hook tests against an injected slow-IPC stub.
-        return { id, ok: true, warn: true, detail: `context block delivered but in ${elapsed}ms (over the ${USER_PROMPT_DEADLINE_MS}ms budget on this box) — watch hook latency` };
+        return { id, ok: true, warn: true, detail: `context block delivered but in ${elapsed}ms (over the ${USER_PROMPT_DEADLINE_MS}ms budget on this box) ${via} — watch hook latency` };
       }
-      return { id, ok: true, detail: `context block delivered in ${elapsed}ms (${out.trim().length} chars)` };
+      // #4474: a self-provided listener is a plumbing-only pass — production
+      // hooks still need a live serve to bind the socket, so it WARNS.
+      return liveSocket
+        ? { id, ok: true, detail: `context block delivered in ${elapsed}ms (${out.trim().length} chars) ${via}` }
+        : { id, ok: true, warn: true, detail: `context block delivered in ${elapsed}ms (${out.trim().length} chars) ${via}` };
     }
     // Empty stdout must be a DOCUMENTED degradation — read the heartbeat it wrote.
     const tail = await readHeartbeatTail(1);
     const reason = tail[tail.length - 1]?.reason ?? 'empty_block';
     if (reason === 'empty_block' || reason === 'empty_window') {
-      return { id, ok: true, warn: true, detail: `empty context block in ${elapsed}ms (documented degradation: ${reason}) — plumbing works, brain has nothing to volunteer yet` };
+      return { id, ok: true, warn: true, detail: `empty context block in ${elapsed}ms (documented degradation: ${reason}) ${via} — plumbing works, brain has nothing to volunteer yet` };
     }
     if (reason === 'deadline' || reason === 'ipc_unavailable' || reason === 'server_budget') {
       // [A7] Latency-shaped degradations don't gate verify (slow CI box ≠
       // broken install); the reason is named so a human can judge.
-      return { id, ok: true, warn: true, detail: `hook degraded on latency (${reason}) in ${elapsed}ms — non-gating; re-run on an idle machine if it persists` };
+      return { id, ok: true, warn: true, detail: `hook degraded on latency (${reason}) in ${elapsed}ms ${via} — non-gating; re-run on an idle machine if it persists` };
     }
-    return { id, ok: false, detail: `hook degraded (${reason}) in ${elapsed}ms — stdin→IPC→stdout plumbing is not healthy` };
+    return { id, ok: false, detail: `hook degraded (${reason}) in ${elapsed}ms ${via} — stdin→IPC→stdout plumbing is not healthy` };
   } catch (e) {
     return { id, ok: false, detail: `hooks smoke failed: ${(e as Error).message}` };
   } finally {
@@ -1074,6 +1129,7 @@ export async function verifyWorkspace(
 
   checks.push(checkTokenSweep(ws));
   checks.push(checkByteFloors(ws));
+  checks.push(checkWritebackContract(ws));
   checks.push(checkSecretScan(ws));
   checks.push(checkDenyGlobs(ws));
   checks.push(await checkRepoPrivacy(ws));

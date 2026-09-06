@@ -179,9 +179,12 @@ describe('models doctor chat probe respects the provider max-output-tokens floor
       // about the CHAT probe, and unrelated providers would contribute
       // failures the assertions below say nothing about. What remains is the
       // two zero-network config probes plus chat and expansion, so the exit
-      // code is a clean function of the thing under test.
+      // code is a clean function of the thing under test. (v0.48.2: the
+      // mode-bundle reranker default is live now — cohere:rerank-v3.5 in
+      // this fork — so cohere joins the skip list; this env has no
+      // COHERE_API_KEY by design. voyage stays skipped for its embeddings.)
       const doctor = await runCli(
-        ['models', 'doctor', '--json', '--skip=zeroentropyai', '--skip=llama-server'],
+        ['models', 'doctor', '--json', '--skip=zeroentropyai', '--skip=voyage', '--skip=cohere', '--skip=llama-server'],
         env,
         120_000,
       );

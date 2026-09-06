@@ -126,7 +126,7 @@ gbrain skillpack scaffold --all
 
 `gbrain init --supabase` walks a short wizard that asks for your Supabase connection string and creates the schema. You'll get that connection string in Step 7 — read 7a and 7b first so you paste the right one (the transaction pooler, not the direct connection). If you'd rather try things locally before paying for a database, `gbrain init --pglite` gives you a zero-config embedded engine instead; you can migrate to Supabase later with `gbrain migrate --to supabase`.
 
-`gbrain skillpack scaffold --all` copies the 50+ bundled skills into your agent workspace as first-class files you can edit freely. (The old managed-install model was retired; see `docs/INSTALL.md` if you're upgrading from an older release.)
+`gbrain skillpack scaffold --all` copies the 50+ bundled skills into your agent workspace as first-class files you can edit freely.
 
 From this point, the agent has working memory and access to every skill.
 
@@ -164,7 +164,11 @@ Configure it via:
 gbrain config set database_url "postgresql://postgres.YOUR-PROJECT:YOUR-PASSWORD@aws-0-us-west-1.pooler.supabase.com:6543/postgres"
 ```
 
-### 7c. Migrations, DDL, and worker locks (works over IPv4 by default)
+This writes `~/.gbrain/config.json` (file-plane routed) and infers
+`engine: postgres` — it works even when the database is unreachable, so you can
+also use it later to point an existing brain at a new URL.
+
+### 7c. Fix the IPv4 gotcha for migrations, DDL, and worker locks
 
 GBrain runs schema migrations, DDL, and background-worker locks on a second,
 *session-mode* connection that needs a pinned backend (advisory locks and

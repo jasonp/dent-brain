@@ -86,6 +86,8 @@ export interface ZeExposure {
   zeCustomColumns: string[];
   /** VOYAGE_API_KEY in env OR voyage_api_key in file config. */
   hasVoyageKey: boolean;
+  /** COHERE_API_KEY in env OR cohere_api_key in file config (this fork's reranker replacement). */
+  hasCohereKey: boolean;
   /** provider_base_urls.zeroentropyai is overridden (file or DB plane) — the
    *  operator may be self-hosting a ZE-wire endpoint, so the HOSTED shutdown
    *  may not break them. Exposure stays exposed (fail-safe: we can't verify
@@ -178,6 +180,7 @@ export async function detectZeExposure(
   const zeCustomColumns = colProbe.columns;
 
   const hasVoyageKey = !!(env.VOYAGE_API_KEY || fileCfg?.voyage_api_key);
+  const hasCohereKey = !!(env.COHERE_API_KEY || fileCfg?.cohere_api_key);
 
   // --- Self-host signal (informational): base-URL override on either plane --
   let selfHostBaseUrl = !!fileCfg?.provider_base_urls?.zeroentropyai;
@@ -242,6 +245,7 @@ export async function detectZeExposure(
     zeReranker,
     zeCustomColumns,
     hasVoyageKey,
+    hasCohereKey,
     selfHostBaseUrl,
     unknownProbes,
     blastRadius,
@@ -303,11 +307,11 @@ export function renderZeActionRequired(exposure: ZeExposure): string {
   }
   if (exposure.zeReranker) {
     lines.push(
-      `Reranking currently resolves to ZE zerank-2 and dies the same day. Fix:`,
+      `Reranking is explicitly configured to a ZE zerank model and dies the same day. Fix:`,
     );
     lines.push(
       `  gbrain config set search.reranker.model ${NEW_INSTALL_DEFAULT_RERANKER_MODEL}` +
-        (exposure.hasVoyageKey ? '' : '   (needs VOYAGE_API_KEY)'),
+        (exposure.hasCohereKey ? '' : '   (needs COHERE_API_KEY)'),
     );
     lines.push(`  (or disable: gbrain config set search.reranker.enabled false)`);
   }

@@ -15,6 +15,8 @@ import {
   TIER_DEFAULTS,
   PROVIDER_TIER_DEFAULTS,
   isAnthropicProvider,
+  isOpenRouterAnthropic,
+  isOpenRouterSubagentFamily,
   _resetDeprecationWarningsForTest,
 } from '../src/core/model-config.ts';
 import type { GBrainConfig } from '../src/core/config.ts';
@@ -302,6 +304,28 @@ describe('resolveModel — v0.31.12 tier system', () => {
     // widen the guard).
     expect(isAnthropicProvider('openai/gpt-5')).toBe(false);
     expect(isAnthropicProvider('google/gemini-3-pro')).toBe(false);
+    // OpenRouter Anthropic is a proxy route, not the Messages API.
+    expect(isAnthropicProvider('openrouter:anthropic/claude-haiku-4.5')).toBe(false);
+  });
+
+  test('isOpenRouterAnthropic matches only openrouter:anthropic/… routes', () => {
+    expect(isOpenRouterAnthropic('openrouter:anthropic/claude-haiku-4.5')).toBe(true);
+    expect(isOpenRouterAnthropic('openrouter:anthropic/claude-sonnet-4.6')).toBe(true);
+    expect(isOpenRouterAnthropic('openrouter:openai/gpt-5.2')).toBe(false);
+    expect(isOpenRouterAnthropic('openrouter:deepseek/deepseek-chat')).toBe(false);
+    expect(isOpenRouterAnthropic('anthropic:claude-sonnet-4-6')).toBe(false);
+    expect(isOpenRouterAnthropic('')).toBe(false);
+  });
+
+  test('isOpenRouterSubagentFamily matches the OR families with a live abort/retry pin', () => {
+    expect(isOpenRouterSubagentFamily('openrouter:anthropic/claude-haiku-4.5')).toBe(true);
+    expect(isOpenRouterSubagentFamily('openrouter:deepseek/deepseek-v4-flash')).toBe(true);
+    expect(isOpenRouterSubagentFamily('openrouter:DeepSeek/deepseek-chat')).toBe(true);
+    expect(isOpenRouterSubagentFamily('openrouter:openai/gpt-5.2')).toBe(false);
+    expect(isOpenRouterSubagentFamily('openrouter:google/gemini-3-flash-preview')).toBe(false);
+    expect(isOpenRouterSubagentFamily('deepseek:deepseek-v4-flash')).toBe(false);
+    expect(isOpenRouterSubagentFamily('anthropic:claude-sonnet-4-6')).toBe(false);
+    expect(isOpenRouterSubagentFamily('')).toBe(false);
   });
 
   test('alias-chain conflict: forward + reverse for same id (Codex F6)', async () => {
