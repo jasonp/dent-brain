@@ -23,6 +23,7 @@ import {
 import {
   NEW_INSTALL_DEFAULT_EMBEDDING_MODEL,
   NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS,
+  DEFAULT_RERANKER_MODEL,
 } from '../../src/core/ai/defaults.ts';
 
 describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end', () => {
@@ -34,6 +35,11 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
   // ambient multi-provider env (Garry's setup) fails the disambiguation gate
   // before the test body runs.
   const SCRUB_KEYS = [
+    // This fork's DEFAULT reranker is cohere:rerank-v3.5, so an ambient Cohere
+    // key decides whether init takes the "ready" branch (no write) or the
+    // "keyed for something else" branch (reranker.enabled=false). Scrub it or
+    // this test's outcome depends on the dev machine.
+    'COHERE_API_KEY',
     'ZEROENTROPY_API_KEY',
     'OPENAI_API_KEY',
     'VOYAGE_API_KEY',
@@ -142,16 +148,18 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
       const colDim = await readContentChunksEmbeddingDim(engine);
       expect(colDim.exists).toBe(true);
       expect(colDim.dims).toBe(NEW_INSTALL_DEFAULT_EMBEDDING_DIMENSIONS);
-      // v0.48.2: the mode-bundle default IS voyage:rerank-2.5 — a Voyage-keyed
-      // init writes NO explicit row; the RESOLVED reranker is the default.
+      // v0.48.2 + fork: the mode-bundle default is DEFAULT_RERANKER_MODEL
+      // (cohere:rerank-v3.5 here, voyage:rerank-2.5 upstream). This install is
+      // keyed for VOYAGE but not for the reranker's provider, so init takes the
+      // "keyed for something else" branch: it never pins a MODEL row, and it
+      // writes enabled=false rather than leaving a default it has no key for to
+      // fail open with a no_key audit row on every search.
       expect(await engine.getConfig('search.reranker.model')).toBeNull();
       {
         const { loadSearchModeConfig, resolveSearchMode } = await import('../../src/core/search/mode.ts');
         const knobs = resolveSearchMode(await loadSearchModeConfig(engine));
-        expect(knobs.reranker_model).toBe('voyage:rerank-2.5');
-        // (reranker_enabled follows the picked mode — non-TTY init may auto-select a
-        // reranker-off bundle; the point here is that no explicit row was written)
-        expect(await engine.getConfig('search.reranker.enabled')).toBeNull();
+        expect(knobs.reranker_model).toBe(DEFAULT_RERANKER_MODEL);
+        expect(await engine.getConfig('search.reranker.enabled')).toBe('false');
       }
     } finally {
       await engine.disconnect();
@@ -327,16 +335,18 @@ describe('E2E: fresh gbrain init --pglite → import → embed works end-to-end'
       const engine = new PGLiteEngine();
       await engine.connect({ database_path: cfg.database_path, engine: 'pglite' });
       try {
-        // v0.48.2: the mode-bundle default IS voyage:rerank-2.5 — a Voyage-keyed
-        // init writes NO explicit row; the RESOLVED reranker is the default.
+        // v0.48.2 + fork: the mode-bundle default is DEFAULT_RERANKER_MODEL
+        // (cohere:rerank-v3.5 here, voyage:rerank-2.5 upstream). This install is
+        // keyed for VOYAGE but not for the reranker's provider, so init takes the
+        // "keyed for something else" branch: it never pins a MODEL row, and it
+        // writes enabled=false rather than leaving a default it has no key for to
+        // fail open with a no_key audit row on every search.
         expect(await engine.getConfig('search.reranker.model')).toBeNull();
         {
           const { loadSearchModeConfig, resolveSearchMode } = await import('../../src/core/search/mode.ts');
           const knobs = resolveSearchMode(await loadSearchModeConfig(engine));
-          expect(knobs.reranker_model).toBe('voyage:rerank-2.5');
-          // (reranker_enabled follows the picked mode — non-TTY init may auto-select a
-          // reranker-off bundle; the point here is that no explicit row was written)
-          expect(await engine.getConfig('search.reranker.enabled')).toBeNull();
+          expect(knobs.reranker_model).toBe(DEFAULT_RERANKER_MODEL);
+          expect(await engine.getConfig('search.reranker.enabled')).toBe('false');
         }
       } finally {
         await engine.disconnect();

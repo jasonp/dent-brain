@@ -53,7 +53,7 @@
 
 import { describe, test, expect, afterEach, afterAll } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -110,7 +110,13 @@ function writeShim(dir: string, name: string, body: string): void {
 }
 
 function makeBase(label: string): BaseFixture {
-  const root = mkdtempSync(join(tmpdir(), `gbrain-bunlink-${label}-`));
+  // Canonicalize the fixture root. On macOS os.tmpdir() is reached through the
+  // `/var -> /private/var` symlink, while the upgrade path prints the RESOLVED
+  // clone path — so an assertion built from the raw mkdtemp path can never
+  // match. Resolving once here fixes every path derived from it (home, clone,
+  // shims) instead of patching assertions one at a time. No-op on Linux, where
+  // upstream's CI runs and where this never surfaced.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), `gbrain-bunlink-${label}-`)));
   cleanupDirs.push(root);
   const home = join(root, 'home');
   mkdirSync(join(home, '.gbrain'), { recursive: true });
@@ -288,7 +294,7 @@ describe('detectInstallMethod — bun-link marker', () => {
   }, 60_000);
 
   test('a source checkout of some OTHER repo is NOT bun-link', () => {
-    const root = mkdtempSync(join(tmpdir(), 'gbrain-bunlink-ctrl-'));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'gbrain-bunlink-ctrl-')));
     cleanupDirs.push(root);
     const ctrl = join(root, 'other');
     mkdirSync(join(ctrl, 'src'), { recursive: true });
