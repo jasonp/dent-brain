@@ -304,6 +304,20 @@ describe('runMaintenanceSweep — watermark progress + link reconciliation (#419
   });
 });
 
+/**
+ * Diagnostic for corpus-pass assertions.
+ *
+ * `expect(r.corpusIngested).toBe(1)` failing tells you nothing about WHY: the
+ * pass short-circuits on budget (`budget_exhausted:corpus`), on capability
+ * (`keyless`), on the writeback gate, and on claim fencing — each reporting
+ * itself through `skipped`, which the bare matcher throws away. CI is the only
+ * place several of those fire, so the reason has to travel with the failure.
+ */
+function sweepDiag(r: { corpusIngested: number; skipped?: unknown }, ms?: number): string {
+  return `corpusIngested=${r.corpusIngested} skipped=${JSON.stringify(r.skipped ?? [])}`
+    + (ms === undefined ? '' : ` elapsedMs=${ms}`);
+}
+
 describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
   test('keyless: skipped with reason keyless, sidecar NOT written', async () => {
     writeFileSync(join(corpusDir, 'session-1.txt'), 'User said something notable.\n');
@@ -312,7 +326,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
       sourceId: 'default',
       capabilities: KEYLESS,
     });
-    expect(r.corpusIngested).toBe(0);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'keyless', count: 1 });
     expect(existsSync(join(corpusDir, 'session-1.txt' + CORPUS_INGESTED_SUFFIX))).toBe(false);
   });
@@ -352,7 +366,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
         sourceId: 'default',
         capabilities: KEYED,
       });
-      expect(r1.corpusIngested).toBe(1);
+      expect(r1.corpusIngested, sweepDiag(r1)).toBe(1);
       expect(chatCalls).toBe(1);
       expect(existsSync(join(corpusDir, 'fresh.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
 
@@ -368,7 +382,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
         sourceId: 'default',
         capabilities: KEYED,
       });
-      expect(r2.corpusIngested).toBe(0);
+      expect(r2.corpusIngested, sweepDiag(r2)).toBe(0);
       expect(chatCalls).toBe(1);
       expect(r2.skipped).toContainEqual({ reason: 'already_ingested', count: 1 });
     } finally {
@@ -390,7 +404,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
       sourceId: 'default',
       capabilities: KEYED,
     });
-    expect(r.corpusIngested).toBe(0);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(chatCalls).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'already_ingested', count: 1 });
   });
@@ -403,7 +417,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
         sourceId: 'default',
         capabilities: KEYED,
       });
-      expect(r.corpusIngested).toBe(0);
+      expect(r.corpusIngested, sweepDiag(r)).toBe(0);
       expect(r.skipped).toContainEqual({ reason: 'extraction_disabled', count: 1 });
       expect(existsSync(join(corpusDir, 'gated.txt' + CORPUS_INGESTED_SUFFIX))).toBe(false);
     } finally {
@@ -443,7 +457,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
 
     // The whole point: one LLM call per FILE, never per (file × sweep).
     expect(chatCalls).toBe(2);
-    expect(r1.corpusIngested + r2.corpusIngested).toBe(2);
+    expect(r1.corpusIngested + r2.corpusIngested, `${sweepDiag(r1)} | ${sweepDiag(r2)}`).toBe(2);
     expect(existsSync(join(corpusDir, 'race-a.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
     expect(existsSync(join(corpusDir, 'race-b.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
     // No claim leftovers — success replaces the claim with the .ingested sidecar.
@@ -463,7 +477,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
     });
 
     const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
-    expect(r.corpusIngested).toBe(0);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(chatCalls).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'corpus_in_progress', count: 1 });
     // The live claim belongs to the other sweep — this run must not release it.
@@ -485,7 +499,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
     });
 
     const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
-    expect(r.corpusIngested).toBe(1);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(1);
     expect(chatCalls).toBe(1);
     expect(existsSync(join(corpusDir, 'stale-claim.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
     expect(existsSync(claim)).toBe(false);
@@ -501,7 +515,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
     });
 
     const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
-    expect(r.corpusIngested).toBe(0);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'corpus_file_error', count: 1 });
     // Neither sidecar remains: no .ingested (it failed), no claim (released).
     expect(existsSync(join(corpusDir, 'flaky.txt' + CORPUS_CLAIM_SUFFIX))).toBe(false);
@@ -575,7 +589,7 @@ describe('runMaintenanceSweep — budget + never-throw', () => {
     });
     expect(r.factsReconciled).toBe(0);
     expect(r.linksExtracted).toBe(0);
-    expect(r.corpusIngested).toBe(0);
+    expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     const reasons = r.skipped.map(s => s.reason);
     expect(reasons.some(x => x.startsWith('budget_exhausted'))).toBe(true);
     expect(typeof r.durationMs).toBe('number');
