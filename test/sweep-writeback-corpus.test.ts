@@ -75,7 +75,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
     });
     const file = await bankWb('sess-swpoff', 'I moved to Lisbon for the spring and summer season.');
 
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'writeback_off', count: 1 });
     expect(chatCalls).toBe(0);
@@ -106,7 +106,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
     });
     const file = await bankWb('sess-swpon', 'I prefer dark mode in every editor, and the sky was cloudy this morning.');
 
-    const r1 = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r1 = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r1.corpusIngested).toBe(1);
     expect(chatCalls).toBe(1);
     expect(existsSync(join(corpusDir, file + CORPUS_INGESTED_SUFFIX))).toBe(true);
@@ -124,7 +124,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
     expect(sweepTagged.length).toBe(0);
 
     // Exactly-once: the sidecar makes the second sweep a no-op.
-    const r2 = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r2 = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r2.corpusIngested).toBe(0);
     expect(chatCalls).toBe(1);
     expect(r2.skipped).toContainEqual({ reason: 'already_ingested', count: 1 });
@@ -142,7 +142,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
       mode: 'keyless',
     };
     const file = await bankWb('sess-swpoffkeyless', 'I moved the standing desk into the garden office yesterday.');
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: keyless });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: keyless });
     expect(r.skipped).toContainEqual({ reason: 'writeback_off', count: 1 });
     const sidecar = JSON.parse(readFileSync(join(corpusDir, file + CORPUS_INGESTED_SUFFIX), 'utf8'));
     expect(sidecar.skipped).toBe('writeback_off');
@@ -166,7 +166,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
     const banked = await bankWritebackTurn(corpusDir, 'sess-src', gated.normalized, gated.hash24, 'wiki');
     expect(banked.flushCorpusFile).toMatch(/\.src-wiki\.txt$/);
 
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested).toBe(1);
     const rows = await engine.executeRaw<{ source_id: string; source_session: string }>(
       `SELECT source_id, source_session FROM facts WHERE source = 'hook:writeback'`,
@@ -198,7 +198,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
         throw new Error('must not be called — drift holds the file');
       });
       const file = await bankWb('sess-drift', 'I moved my standing desk to the garden office for the summer.');
-      const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+      const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
       expect(r.corpusIngested).toBe(0);
       expect(r.skipped).toContainEqual({ reason: 'writeback_plane_drift', count: 1 });
       expect(chatCalls).toBe(0);
@@ -221,7 +221,7 @@ describe('runMaintenanceSweep — ambient-writeback turn files (OV2-11)', () => 
       providerId: 'anthropic',
     }));
     const file = await bankWb('sess-skip', 'I switched my primary editor theme to solarized light last week.');
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested).toBe(1);
     const sidecar = JSON.parse(readFileSync(join(corpusDir, file + CORPUS_INGESTED_SUFFIX), 'utf8'));
     expect(sidecar.facts_inserted).toBe(0);
