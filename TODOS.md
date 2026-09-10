@@ -1,5 +1,25 @@
 # TODOS
 
+## Sweep budget headroom after the v0.48.2.0 merge (filed 2026-09-10)
+
+- [ ] **P2 — the 5s default sweep budget now starves the corpus pass on slow
+  hosts.** **What:** `runMaintenanceSweep` runs three passes against one
+  wall-clock budget (`opts.budgetMs ?? 5_000`, `src/core/sweep.ts`), and pass 3
+  (corpus ingest) is last. The merge added work to passes 1-2, and on GitHub's
+  runners they now consume the whole 5s: CI shard 3 reported
+  `skipped=[{reason:"budget_exhausted:corpus"}]` on five tests that pass in
+  11ms locally. The tests were made deterministic with an explicit
+  `budgetMs: 30_000`, which is the right fix for THEM — but the product default
+  did not change, so a slow or loaded production host can now silently do less
+  corpus ingest per sweep than it did pre-merge. **Why:** not a correctness bug
+  (the pass is budget-gated by design and reports `budget_exhausted:corpus`
+  honestly in the sweep report), but the margin shrank and nothing alerts on
+  it. **Where to start:** either raise the default, give pass 3 its own floor
+  so it cannot be fully starved by passes 1-2, or surface a doctor check when
+  `budget_exhausted:corpus` recurs across sweeps. Decide with a measurement of
+  what passes 1-2 actually cost post-merge, not by guessing at a new constant.
+  **Effort:** M.
+
 ## Reranker cost accounting after the Cohere default (filed 2026-09-05, v0.48.2.0 upstream sync)
 
 - [ ] **P2 — the default reranker has no pricing row, so budget estimates read

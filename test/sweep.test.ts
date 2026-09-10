@@ -108,7 +108,7 @@ describe('runMaintenanceSweep — facts-fence reconciliation [CX2-4]', () => {
   test('fence rows land in the facts index; per-row visibility respected; dedup on re-run', async () => {
     await seedPage('people/alice-example', 'person', FENCE_BODY);
 
-    const r1 = await runMaintenanceSweep(engine, {
+    const r1 = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYLESS,
     });
@@ -126,7 +126,7 @@ describe('runMaintenanceSweep — facts-fence reconciliation [CX2-4]', () => {
     expect(facts[1].visibility).toBe('private');
 
     // Re-run: reconcile is idempotent — no new inserts, no duplicates.
-    const r2 = await runMaintenanceSweep(engine, {
+    const r2 = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYLESS,
     });
@@ -139,7 +139,7 @@ describe('runMaintenanceSweep — facts-fence reconciliation [CX2-4]', () => {
 
   test('pages without a fence are untouched (no destructive wipe)', async () => {
     await seedPage('people/bob-example', 'person', 'Bob has no facts fence.');
-    const r = await runMaintenanceSweep(engine, {
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYLESS,
     });
@@ -165,7 +165,7 @@ describe('runMaintenanceSweep — link/timeline extraction [CX-P0.3]', () => {
       ].join('\n'),
     );
 
-    const r = await runMaintenanceSweep(engine, {
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYLESS,
     });
@@ -196,7 +196,7 @@ describe('runMaintenanceSweep — link/timeline extraction [CX-P0.3]', () => {
         'notes/gated-example', 'note',
         'See [Alice](people/alice-example).\n- **2026-02-03** | gated entry',
       );
-      const r = await runMaintenanceSweep(engine, {
+      const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
         sourceId: 'default',
         capabilities: KEYLESS,
       });
@@ -322,7 +322,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
   test('keyless: skipped with reason keyless, sidecar NOT written', async () => {
     writeFileSync(join(corpusDir, 'session-1.txt'), 'User said something notable.\n');
 
-    const r = await runMaintenanceSweep(engine, {
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYLESS,
     });
@@ -362,7 +362,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
     });
 
     try {
-      const r1 = await runMaintenanceSweep(engine, {
+      const r1 = await runMaintenanceSweep(engine, { budgetMs: 30_000,
         sourceId: 'default',
         capabilities: KEYED,
       });
@@ -378,7 +378,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
       expect(facts[0].visibility).toBe('world');
 
       // Exactly-once: the sidecar makes the second sweep a no-op.
-      const r2 = await runMaintenanceSweep(engine, {
+      const r2 = await runMaintenanceSweep(engine, { budgetMs: 30_000,
         sourceId: 'default',
         capabilities: KEYED,
       });
@@ -400,7 +400,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
       throw new Error('must not be called');
     });
 
-    const r = await runMaintenanceSweep(engine, {
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
       sourceId: 'default',
       capabilities: KEYED,
     });
@@ -413,7 +413,7 @@ describe('runMaintenanceSweep — corpus ingest [CX-P0.1, CX-P0.5]', () => {
     await engine.setConfig('facts.extraction_enabled', 'false');
     try {
       writeFileSync(join(corpusDir, 'gated.txt'), 'Gated content.\n');
-      const r = await runMaintenanceSweep(engine, {
+      const r = await runMaintenanceSweep(engine, { budgetMs: 30_000,
         sourceId: 'default',
         capabilities: KEYED,
       });
@@ -451,8 +451,8 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
     });
 
     const [r1, r2] = await Promise.all([
-      runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED }),
-      runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED }),
+      runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED }),
+      runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED }),
     ]);
 
     // The whole point: one LLM call per FILE, never per (file × sweep).
@@ -476,7 +476,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
       throw new Error('must not be called');
     });
 
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(chatCalls).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'corpus_in_progress', count: 1 });
@@ -498,7 +498,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
       return stubChatResult('reclaimed fact');
     });
 
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested, sweepDiag(r)).toBe(1);
     expect(chatCalls).toBe(1);
     expect(existsSync(join(corpusDir, 'stale-claim.txt' + CORPUS_INGESTED_SUFFIX))).toBe(true);
@@ -514,7 +514,7 @@ describe('runMaintenanceSweep — corpus claim fencing (concurrent sweeps)', () 
       throw new Error('must not be reached');
     });
 
-    const r = await runMaintenanceSweep(engine, { sourceId: 'default', capabilities: KEYED });
+    const r = await runMaintenanceSweep(engine, { budgetMs: 30_000, sourceId: 'default', capabilities: KEYED });
     expect(r.corpusIngested, sweepDiag(r)).toBe(0);
     expect(r.skipped).toContainEqual({ reason: 'corpus_file_error', count: 1 });
     // Neither sidecar remains: no .ingested (it failed), no claim (released).
