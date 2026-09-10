@@ -180,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
-          # select-e2e diffs origin/master...HEAD — needs real history.
+          # select-e2e diffs the default branch...HEAD — needs real history.
           fetch-depth: 0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
@@ -205,12 +205,20 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
           # #3485 preload guard: this job intentionally tests against a DB.
           GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          # FORK: this fork's default branch is `main`, not upstream's
+          # `master`. select-e2e.ts ships the escape hatch for exactly this
+          # (see MAIN_REF there); without it the selector diffs against a ref
+          # that does not exist here.
+          GBRAIN_MAIN_REF: origin/${{ github.event.repository.default_branch }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "scheduled run — coverage-full-e2e carries the full glob tonight; nothing to select"
             exit 0
           fi
-          git fetch origin master --quiet
+          # Was a hardcoded `master`, which does not exist in this fork —
+          # the job died at `couldn't find remote ref master` before running a
+          # single test. Fetch whatever the repo's default branch actually is.
+          git fetch origin "${{ github.event.repository.default_branch }}" --quiet
           # exit 2 from the selector fails this step — fail-loud by design.
           bun scripts/select-e2e.ts > /tmp/selected.txt
           # Exclusions (echoed per file, never silent): files the named jobs
