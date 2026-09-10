@@ -27,11 +27,13 @@ import {
   addTypeToPack,
   invalidatePackCache,
   loadActivePack,
+  loadResolvedPackByName,
   removeAliasFromType,
   removeLinkTypeFromPack,
   removePrefixFromType,
   removeTypeFromPack,
   resolveActivePackNameOnly,
+  resolveLoadedPack,
   loadPackFromFile,
   parseSchemaPackManifest,
   runStatsCore,
@@ -431,6 +433,7 @@ export const _testHelpers = {
 
 import { runDetect } from '../core/schema-pack/detect.ts';
 import { runSuggest } from '../core/schema-pack/suggest.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 import {
   runReviewCandidates,
   runReviewOrphans,
@@ -446,6 +449,10 @@ function parseFlags(args: string[]): ParsedFlags {
   let json = false;
   let source: string | undefined;
   const positional: string[] = [];
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--json') { json = true; continue; }
@@ -728,7 +735,24 @@ async function runLintCmd(args: string[]): Promise<void> {
   let pack: SchemaPackManifest | null;
   if (name) {
     const p = packPathByName(name);
-    try { pack = p ? loadPackFromFile(p) : null; } catch { pack = null; }
+    let raw: SchemaPackManifest | null;
+    try { raw = p ? loadPackFromFile(p) : null; } catch { raw = null; }
+    if (raw) {
+      // #4501: lint the MERGED manifest (extends chain + borrow_from
+      // resolved), matching the no-name branch's loadActivePack path —
+      // a child pack referencing inherited parent types must not fail
+      // raw-manifest lint. Fall back to the raw child (with a stderr
+      // warning) when the chain can't be resolved, e.g. missing parent.
+      try {
+        pack = (await loadResolvedPackByName(name)).manifest;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`warn: could not resolve extends chain for pack \`${name}\` (${msg}); linting raw manifest only`);
+        pack = raw;
+      }
+    } else {
+      pack = null;
+    }
   } else {
     pack = (await loadActivePack({ cfg, remote: false })).manifest;
   }

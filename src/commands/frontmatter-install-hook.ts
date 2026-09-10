@@ -24,6 +24,7 @@ import { execFileSync } from 'child_process';
 import type { BrainEngine } from '../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 const HOOK_BANNER = '# gbrain frontmatter pre-commit hook (v0.22.4+)';
 
@@ -68,6 +69,10 @@ export async function runFrontmatterInstallHook(args: string[]): Promise<void> {
   let uninstall = false;
   let sourceId: string | undefined;
   let help = false;
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--help' || a === '-h') help = true;

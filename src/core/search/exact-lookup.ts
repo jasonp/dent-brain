@@ -58,6 +58,16 @@ export interface ExactLookupOpts {
    * only the slug probe runs.
    */
   titleCandidates?: SearchResult[];
+  /**
+   * #4480 — shape-filter gating. The scored arms apply type/types/
+   * exclude_slugs at SQL level; without the same gate here the tier could
+   * top-inject a page the caller's filters explicitly excluded. Same
+   * semantics as SearchOpts: `type` and `types` are AND-applied, both empty
+   * = no type gate.
+   */
+  type?: string;
+  types?: string[];
+  excludeSlugs?: string[];
 }
 
 /** Max distinct sources probed for a slug-shaped query on a federated call. */
@@ -78,7 +88,17 @@ export async function structuralExactLookup(
 
   const hits: SearchResult[] = [];
   const seen = new Set<string>();
+  // #4480 — mirror the scored arms' shape filters so the tier can never
+  // inject a page the caller explicitly filtered out.
+  const excluded = new Set(opts.excludeSlugs ?? []);
+  const typeGate = (t: string | undefined | null): boolean => {
+    if (opts.type && t !== opts.type) return false;
+    if (opts.types && opts.types.length > 0 && (t == null || !opts.types.includes(t))) return false;
+    return true;
+  };
   const push = (r: SearchResult) => {
+    if (excluded.has(r.slug)) return;
+    if (!typeGate(r.type)) return;
     const key = `${r.source_id ?? 'default'}::${r.slug}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -173,16 +193,32 @@ export async function applyExactLookupTier(
 
   for (const hit of hits) {
     injectScore += 1e-6;
-    const idx = out.findIndex(
-      (r) => r.slug === hit.slug && (r.source_id ?? 'default') === (hit.source_id ?? 'default'),
-    );
-    if (idx >= 0) {
-      // Promote in place: identity match outranks every scored row.
-      out[idx].score = injectScore;
-      out[idx].exact_lookup = hit.exact_lookup;
-      if (hit.alias_hit) out[idx].alias_hit = true;
+    const matchingIndexes: number[] = [];
+    for (let i = 0; i < out.length; i++) {
+      const r = out[i];
+      if (r.slug === hit.slug && (r.source_id ?? 'default') === (hit.source_id ?? 'default')) {
+        matchingIndexes.push(i);
+      }
+    }
+    if (matchingIndexes.length > 0) {
+      // Search is chunk-grained, but an exact identity lookup is page-grained.
+      // Promote the strongest existing chunk (identity match outranks every
+      // scored row) and remove the same page's remaining chunks — dedup allows
+      // 2 chunks/page, so without the collapse the canonical page could appear
+      // twice on the wire for an exact identity lookup.
+      const idx = matchingIndexes.reduce((best, cand) =>
+        out[cand].score > out[best].score ? cand : best,
+      );
+      const promoted = out[idx];
+      promoted.score = injectScore;
+      promoted.exact_lookup = hit.exact_lookup;
+      if (hit.alias_hit) promoted.alias_hit = true;
       if (hit.title_match_boost) {
-        out[idx].title_match_boost = Math.max(out[idx].title_match_boost ?? 1.0, hit.title_match_boost);
+        promoted.title_match_boost = Math.max(promoted.title_match_boost ?? 1.0, hit.title_match_boost);
+      }
+      // Splice highest-index-first so earlier removals don't shift later ones.
+      for (let k = matchingIndexes.length - 1; k >= 0; k--) {
+        if (matchingIndexes[k] !== idx) out.splice(matchingIndexes[k], 1);
       }
       continue;
     }

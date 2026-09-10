@@ -30,23 +30,13 @@ import { resolve } from 'node:path';
 const ROOT = resolve(import.meta.dir, '..');
 
 /** Not yet converted — see the P1 "finish the --source sweep" in TODOS.md. */
-const PENDING = new Set([
-  'src/commands/auth.ts',
-  'src/commands/call.ts',
-  'src/commands/claw-test.ts',
-  'src/commands/code-callees.ts',
-  'src/commands/code-callers.ts',
-  'src/commands/compile-context.ts',
-  'src/commands/dream.ts',
-  'src/commands/embed.ts',
-  'src/commands/frontmatter-install-hook.ts',
-  'src/commands/schema.ts',
-  'src/commands/sweep-delegate.ts',
-  'src/commands/sync-delegate.ts',
-  'src/commands/takes.ts',
-  'src/commands/thin-client-routing.ts',
-  'src/commands/transcripts.ts',
-  'src/commands/watch.ts',
+const PENDING = new Set<string>([
+  // EMPTY as of the v0.48.2.0 sync follow-up: the sweep is finished. Every
+  // CLI_ONLY command now reads long flags through readFlagValue /
+  // readFlagValues, or normalizes argv once with expandEqualsFlags before its
+  // parser loop. Both tests below are shrink-only, so this list cannot grow
+  // silently — a new offender fails the first test, and re-adding an entry
+  // that no longer offends fails the second.
 ]);
 
 /** Routes through the shared readers, or normalizes argv up front. */

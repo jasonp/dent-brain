@@ -40,15 +40,15 @@ Every `put_page` runs `extractEntityRefs` on the markdown body. It matches:
 - Obsidian wikilinks: `[[wiki/people/alice-example|Alice Example]]`
 - Typed-link blockquotes: `> **Convention:** see [path](path).`
 
-Three regexes, zero LLM tokens, single SQL `addLinksBatch` call with `INSERT ... SELECT FROM jsonb_to_recordset(($1::jsonb)->'rows') JOIN pages ON CONFLICT DO NOTHING RETURNING 1` (free-text-safe; the prior `unnest(${arr}::text[])` form crashed on calendar/Zoom context per gbrain#1861). The graph grows on every write at near-zero cost. On a 17K-page brain, full graph extract completes in seconds.
+Three regexes, zero LLM tokens, single SQL `addLinksBatch` call with `INSERT ... SELECT FROM jsonb_to_recordset(($1::jsonb)->'rows') JOIN pages ON CONFLICT DO NOTHING RETURNING 1` (free-text-safe). The graph grows on every write at near-zero cost. On a 17K-page brain, full graph extract completes in seconds.
 
 Heuristic link-type inference (`attended`, `works_at`, `invested_in`, `founded`, `advises`) fires from surrounding sentence context — also LLM-free. Power users who want richer types add them via the typed-link blockquote convention.
 
 ## Cross-encoder reranking: why the stage exists
 
-The mode-bundle default reranker is `zeroentropyai:zerank-2`, on for the `balanced` mode bundle — kept as a LEGACY fallback (v0.46.3 split-default) so brains already keyed for ZeroEntropy keep a working reranker until its hosted API actually dies on 2026-09-04. New installs with a `VOYAGE_API_KEY` get `voyage:rerank-2.5` written as an explicit `search.reranker.model` override at init (same key as embeddings); keyed non-Voyage installs get `search.reranker.enabled false` written instead. Switch an existing brain with `gbrain config set search.reranker.model voyage:rerank-2.5`. `cohere:rerank-v3.5` also works as an explicit choice (see `cohere_api_key` in `src/core/config.ts`) but is not the default on either path.
+The reranker is on for the `balanced` and `tokenmax` mode bundles, off for `conservative`. The mode-bundle default is Cohere `rerank-v3.5` (`DEFAULT_RERANKER_MODEL`, `COHERE_API_KEY`) — a fork divergence from upstream, which answered the same ZeroEntropy sunset with Voyage `rerank-2.5`; a brain with no `search.reranker.model` row reranks with the Cohere default. Without the key, search fails open in RRF order: the gateway skips the HTTP call (`RerankError('no_key')`), writes ONE audit row per process, prints nothing, and stamps `reranker_skipped (no_key)` on the search meta — `gbrain search --explain` shows it, `gbrain search modes` prints a `Reranker:` readiness line, and `gbrain doctor`'s `reranker_health` names the fix (`export COHERE_API_KEY=…` or `gbrain config set search.reranker.enabled false`). An explicit ZeroEntropy `zerank-*` config (`LEGACY_DEFAULT_RERANKER_MODEL`; hosted API ended 2026-09-04) short-circuits past that date before any HTTP: one audit row per process per model plus a single stderr line naming the switch command, and `gbrain doctor`'s `provider_sunset` check explains the state; a `base_urls` recipe override (self-hosted wire-compatible endpoint) suppresses the short-circuit. `reranker_model` is folded into the query-cache key unconditionally, so a model change can never serve a result set reranked by a different model.
 
-The number that justified adding this stage: on a real-corpus benchmark across 20 queries, `zerank-2` reshuffled **60% of top-1 results** after the hybrid + RRF + graph stack. Treat that as the reason the stage exists, not as a current-provider benchmark — it is a ZeroEntropy measurement and has not been re-run against `rerank-v3.5` or `rerank-2.5`.
+The number that justified adding this stage: on a real-corpus benchmark across 20 queries, `zerank-2` reshuffled **60% of top-1 results** after the hybrid + RRF + graph stack. Treat that as the reason the stage exists, not as a current-provider benchmark — it is a ZeroEntropy measurement and has not been re-run against `rerank-v3.5`. Cohere normalizes `relevance_score` to a non-linear [0, 1] scale, so rank-based logic carries over from zerank-2 but absolute cutoffs do not. Upstream's paired LongMemEval numbers for the Voyage default live in [`docs/eval-bench.md`](../eval-bench.md#public-benchmarks-longmemeval).
 
 The mechanical reason: hybrid ranking is locally optimal per strategy but globally suboptimal. A cross-encoder reranker reads the query + each candidate document jointly, with full attention. It catches the cases where the vector + keyword + graph signals all agreed on a document that's semantically related but topically wrong.
 
@@ -60,16 +60,16 @@ The cost: roughly +150ms p50 latency, ~$0.025–0.05/M tokens depending on the r
 
 Hybrid search applies a source-factor CASE expression at the SQL layer (lives in `src/core/search/sql-ranking.ts`). Curated content like `originals/`, `concepts/`, `writing/` outranks bulk content like `your-openclaw/chat/`, `daily/`, `media/x/`. Hard-exclude prefixes (`test/`, `attachments/`, `.raw/`) filter at retrieval, not post-rank.
 
-`archive/` is deliberately NOT hard-excluded (issue #1777): it holds high-signal historical content users expect to find, so it is demoted (`0.5x` in `DEFAULT_SOURCE_BOOSTS`), not hidden. The demote is a prior applied in the outer SQL re-rank; the cross-encoder reranker (balanced/tokenmax modes) can still PROMOTE an archive page that survives the demote into the rerank candidate window — it is not an unconditional suppression. `gbrain doctor`'s `hidden_by_search_policy` check reports how many chunked pages remain hidden by the surviving exclude prefixes.
+`archive/` is deliberately NOT hard-excluded: it holds high-signal historical content users expect to find, so it is demoted (`0.5x` in `DEFAULT_SOURCE_BOOSTS`), not hidden. The demote is a prior applied in the outer SQL re-rank; the cross-encoder reranker (balanced/tokenmax modes) can still PROMOTE an archive page that survives the demote into the rerank candidate window — it is not an unconditional suppression. `gbrain doctor`'s `hidden_by_search_policy` check reports how many chunked pages remain hidden by the surviving exclude prefixes.
 
-The boost map is configurable via `GBRAIN_SOURCE_BOOST` env var or per-call `SearchOpts.exclude_slug_prefixes`. Temporal queries (`detail: 'high'`) bypass the boost so chat pages re-surface for time-sensitive lookups.
+The boost map is configurable via the `GBRAIN_SOURCE_BOOST` env var. Hard exclusions are separate: the exclusion set is defaults ∪ `GBRAIN_SEARCH_EXCLUDE` (env, comma-separated prefixes) ∪ per-call `SearchOpts.exclude_slug_prefixes`. Temporal queries (`detail: 'high'`) bypass the boost so chat pages re-surface for time-sensitive lookups.
 
 ## Named-thing retrieval (per-page pool + title + alias + evidence)
 
 A brain organized around *chosen names* (project codenames, place nicknames —
 say a project named "Helios" whose page is also known as "the Sun Room") needs
-more than embedding proximity. Four layers, added after the incident in
-[`RETRIEVAL_MAXPOOL_INCIDENT.md`](./RETRIEVAL_MAXPOOL_INCIDENT.md):
+more than embedding proximity. Four layers (the failure mode they close is
+written up in [`RETRIEVAL_MAXPOOL_INCIDENT.md`](../incidents/RETRIEVAL_MAXPOOL_INCIDENT.md)):
 
 - **Per-page max-pool** — `searchVector` (both engines) collapses chunk-grain
   candidates to the best chunk per page (`DISTINCT ON (slug)`) over the full
@@ -103,7 +103,7 @@ more than embedding proximity. Four layers, added after the incident in
   cosine and degrade to honest keyword-based labels. `gbrain search --explain`
   prints each result's raw cosine next to its blended score.
 
-**Extraction quarantine lane (issue #160):** pages carrying the unverified
+**Extraction quarantine lane:** pages carrying the unverified
 auto-extracted markers (frontmatter `provenance: auto-extracted` +
 `status: unverified`, see `src/core/extraction-review.ts`) rank as ordinary
 content — they are skipped by the compiled-truth fusion boost and by the
@@ -186,9 +186,18 @@ limit slice → token-budget enforcement (per mode bundle)
 results (+ retrieval-confidence grade in query-op meta — crag.ts)
 ```
 
+Per-arm fail-open has one deliberate exception: when BOTH lexical arms
+(`searchKeyword` + `searchTitles`) come back empty because of an ACCESS-class
+failure (`isDbAccessFailure` in `src/core/pg-access-classify.ts` — the DB
+itself is unreachable, not a schema gap), `hybridSearch` rethrows the arm
+error instead of returning an empty result set. A dead database must surface
+as the classified `database_error` envelope, never as a silent "no results".
+Schema-class arm failures (pre-migration brains) keep the fail-open contract.
+
 The stage order is pinned by `hybridSearch` in `src/core/search/hybrid.ts`:
 dedup runs BEFORE the reranker (so the reranker sees a diverse candidate pool,
-capped by its own `topNIn`), the alias hop runs AFTER the reranker (so a query
+capped by its own `topNIn`; the reranker runs only on the full hybrid path — the
+no-embedding and keyword-fallback paths are never reranked), the alias hop runs AFTER the reranker (so a query
 that is a page's declared name reliably surfaces that page regardless of how
 the reranker scored body chunks), and the token budget is enforced last, on
 the final slice.
@@ -205,10 +214,14 @@ Two cross-cutting seams sit around the pipeline rather than inside it:
   `query` op result (`strong`/`moderate`/`weak`) from the already-stamped
   honesty signals — zero LLM, zero added latency — and attaches the grade to
   response meta. Config-gated and default OFF: `search.crag_escalation=true`
-  re-runs a weak retrieval once at a higher ceiling (expansion + relational +
-  wide limit, autocut off) and keeps the better-graded run;
-  `search.crag_think=true` (local callers) escalates a still-weak result to
-  `think`.
+  re-runs a weak retrieval once at a higher ceiling (expansion + relational
+  on, autocut off, limit = the caller's explicit `limit` or the mode-derived
+  default — never a hardcoded row count — floored at 50) and keeps the
+  better-graded run; the re-run fires only when the first pass did not
+  already run with the caller's expansion on (`shouldEscalateRetrieval` in
+  `crag.ts`), so default-shape callers never pay a second expansion call for
+  a near-identical candidate set. `search.crag_think=true` (local callers)
+  escalates a still-weak result to `think`.
 
 ### Autocut: score-discontinuity result-sizing
 
@@ -230,8 +243,11 @@ Each stage is testable in isolation. Each stage is replaceable. The whole pipeli
 ## How to verify on your own brain
 
 ```bash
-# Run the public LongMemEval benchmark
-gbrain eval longmemeval datasets/longmemeval_s.jsonl
+# Self-check on the public LongMemEval benchmark (cleaned S split, published cutoff k=5)
+# at the default: reranker on when VOYAGE_API_KEY is set; --by-type prints any-hit recall
+gbrain eval longmemeval ~/datasets/longmemeval/longmemeval_s_cleaned.json --retrieval-only --top-k 5 --by-type --no-trajectory
+# The receipted strict recall_all@5 (reranker and autocut pinned off) comes from the gbrain-evals runner:
+#   bash eval/runner/longmemeval-batch.sh --adapters hybrid --embedding-model openai:text-embedding-3-large --embedding-dims 1536
 
 # Capture your own queries and replay against retrieval changes
 export GBRAIN_CONTRIBUTOR_MODE=1
@@ -243,5 +259,7 @@ gbrain eval replay --against before.ndjson
 # A/B retrieval strategies on a labeled fixture
 gbrain eval --qrels labels.tsv --config balanced.json
 ```
+
+The current measured LongMemEval result (93.19% session-level `recall_all@5`, cleaned S split, 470 scored questions, k=5, measured 2026-09-02 at gbrain v0.48.2.0), its per-type table, and the reranker-on arms live in [`docs/eval-bench.md`](../eval-bench.md#public-benchmarks-longmemeval).
 
 Methodology + metric glossary in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](../eval/SEARCH_MODE_METHODOLOGY.md).

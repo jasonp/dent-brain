@@ -15,10 +15,10 @@
 
 import type { GBrainConfig } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
+import { readFlagValue } from '../core/cli-flag-value.ts';
 
 function flagValue(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i === -1 ? undefined : args[i + 1];
+  return readFlagValue(args, name);
 }
 
 function num(v: string | undefined): number | undefined {

@@ -36,7 +36,7 @@ and checking that the page count in `gbrain stats` matches the syncable file
 count in the repo.
 (migrations, DDL, sync imports) to a derived **direct** connection
 (`db.<ref>.supabase.co:5432`). That direct host is IPv6-only, so on an
-IPv4-only host it is unreachable. When that happens gbrain now falls back to
+IPv4-only host it is unreachable. When that happens gbrain falls back to
 the pooler automatically (one stderr warning, then single-pool mode for the
 rest of the process) — but the pooler's ~2-min statement timeout can truncate
 very long migrations or bulk imports.
@@ -57,13 +57,15 @@ gbrain sync --repo /path/to/brain && gbrain embed --stale
 ```
 
 - `gbrain sync --repo <path>` -- one-shot incremental sync. Detects changes via
-  `git diff`, imports only what changed. For small changesets (<= 100 files),
-  embeddings are generated inline during import — unless the inline cost gate
-  intervenes: when the estimated embedding spend crosses the configured floor
-  in a non-interactive session (cron, `--json`), sync auto-defers embeds to a
-  capped `embed-backfill` job instead of spending silently. Either way the
-  chunks get embedded; a deferred run just finishes asynchronously. See
-  [spend controls](../operations/spend-controls.md).
+  `git diff`, imports only what changed. **Commit-driven:** it imports
+  *committed* changes; uncommitted edits and untracked files are counted and
+  reported as drift, not silently ignored (see Tricky Spot 7). For small
+  changesets (<= 100 files), embeddings are generated inline during import —
+  unless the inline cost gate intervenes: when the estimated embedding spend
+  crosses the configured floor in a non-interactive session (cron, `--json`),
+  sync auto-defers embeds to a capped `embed-backfill` job instead of spending
+  silently. Either way the chunks get embedded; a deferred run just finishes
+  asynchronously. See [spend controls](../operations/spend-controls.md).
 - `gbrain embed --stale` -- backfill embeddings for any chunks that don't have
   them. Safety net for large syncs (>100 files) or prior `--no-embed` runs.
   On a keyless brain (installed with `--no-embedding`), a bare stale embed
@@ -125,6 +127,16 @@ Sync only indexes "syncable" markdown files. These are excluded by design:
   (`node_modules/`, `dist/`, `build/`, `venv/`)
 - Meta files: `README.md`, `index.md`, `schema.md`, `log.md`, `RESOLVER.md`
 
+A dot-directory you deliberately keep content in (say `.decisions/`) can be
+waived back in with `--include-hidden '<glob>'` on `gbrain sync` — the glob
+names exactly which hidden paths to admit
+(`gbrain sync --include-hidden '.decisions/**'`); everything else hidden
+stays pruned, and vendored/generated exclusions are never waived. Two
+bounds: the flag scopes a single sync invocation (it cannot combine with
+`--all` — register the subdirectory as the source's `local_path` instead),
+and it does not reach a non-git directory's filesystem-walk import fallback
+(every git-tracked source, the normal case, is covered).
+
 Everything else is ordinary synced content — including `ops/` (the bundled
 daily-task-manager skill files its canonical page under `ops/tasks`).
 
@@ -171,9 +183,9 @@ vars — incident-time escape hatches, not everyday knobs.
    `gbrain sync --skip-failed` to acknowledge a known-bad set yourself.
 
 5. **Staleness can't read "fresh" forever.** A source whose content stopped
-   moving (or whose local clone vanished) used to report fresh indefinitely
-   off the stored content timestamp. Content-relative staleness now ramps
-   toward stale once wall-clock time since the last sync passes a ceiling
+   moving (or whose local clone vanished) would otherwise report fresh
+   indefinitely off the stored content timestamp. Content-relative staleness
+   ramps toward stale once wall-clock time since the last sync passes a ceiling
    (default 72h; `GBRAIN_STALENESS_CEILING_HOURS` to tune — it tracks
    `GBRAIN_SYNC_FRESHNESS_FAIL_HOURS` unless set). The ramp is gradual, so
    the warn tier still fires before the fail tier. `gbrain status` source
@@ -189,6 +201,22 @@ vars — incident-time escape hatches, not everyday knobs.
    gbrain include `schema_version: 1`, `owner: "gbrain"`, and
    `kind: "import"` so downstream tools can validate the contract before
    deciding whether to resume.
+
+7. **Sync imports commits, not your working tree.** Files written into the
+   brain repo but never committed are invisible to incremental sync. Sync
+   won't stay silent about them: it prints a NOTE with the drift counts
+   (`N uncommitted file(s) not synced`), the sync result object carries an
+   `uncommitted` summary (surfaced via `sync_brain` over MCP and in
+   `gbrain dream --json` phase details), and the nightly dream cycle reports
+   the sync phase as `warn` instead of a clean run. The fix is to commit the files. If your
+   workflow legitimately writes without committing, opt in to importing
+   uncommitted state with `gbrain sync --working-tree` (one run) or
+   `gbrain config set sync.include_working_tree true` (standing config,
+   honored by every caller including the dream cycle). Caution before making
+   it standing config: untracked means everything `git status` lists as
+   untracked — unignored scratch files and secrets included — so review
+   `git status` first. Gitignored files stay excluded either way (use
+   `--include-gitignored` for those).
 
 ## How to Verify
 
@@ -219,3 +247,19 @@ vars — incident-time escape hatches, not everyday knobs.
 ---
 
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*
+
+## Sync resumability + lock tuning knobs (v0.42.x, #1794)
+
+Six env-only escape hatches for `gbrain sync` — deliberately env-only, with no
+config-dashboard surface, because they are incident-time controls. Moved here
+from CLAUDE.md in the v0.48.2.0 upstream sync: per-command detail belongs in
+the on-demand layer, not the always-loaded map.
+
+| Env var | Default | What it does |
+|---|---|---|
+| `GBRAIN_SYNC_CHECKPOINT_EVERY` | 1000 | Flush the checkpoint every N drained files. |
+| `GBRAIN_SYNC_CHECKPOINT_SECONDS` | 10 | Also flush every N seconds (whichever comes first) — bounds worst-case loss regardless of throughput. Flush also fires after the first file. |
+| `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
+| `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
+| `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
+| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |

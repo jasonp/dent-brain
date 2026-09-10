@@ -172,6 +172,38 @@ export function isSupabasePoolerUrl(url: string): boolean {
 // nothing left to retry to. Dropped wholesale (both the implementation and
 // its test/connection-manager.serial.test.ts additions) during the
 // v0.46.19.0-v0.46.28.0 sync rather than carrying dead code.
+//
+// RESTORED (v0.46.28.0->v0.48.2.0 sync), function only: upstream's
+// v0.46.34.0 db-availability wave gave `deriveSessionPoolerUrl` a SECOND,
+// non-retry job — a pure "is a session-pooler endpoint derivable from this
+// URL?" predicate for the engine-free diagnostics (`gbrain engine status
+// --probe`, `gbrain db-repair`, pg-access-classify). That use is not
+// redundant with `deriveDirectUrl`, so the helper comes back. What stays
+// dropped is the part this fork actually rejected: the single-flight retry
+// wiring inside ConnectionManager. Nothing here reconnects; deriveDirectUrl
+// remains the only connection path.
+/**
+ * Derive the SESSION-mode pooler URL from a TRANSACTION-mode pooler URL
+ * (#1915): same pooler host, port 6543 -> 5432, KEEPING the postgres.<ref>
+ * user (Supavisor needs the tenant suffix). Returns null when the URL isn't
+ * a Supabase transaction-pooler shape (pooler hostname + port 6543 — a bare
+ * :6543 on an unknown host proves nothing about what :5432 serves).
+ */
+export function deriveSessionPoolerUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));
+    const isPoolerHost = SUPABASE_POOLER_HOSTNAME_PATTERNS.some(re => re.test(parsed.hostname));
+    if (!isPoolerHost || parsed.port !== '6543') return null;
+    const scheme = url.match(/^postgres(?:ql)?:\/\//i)?.[0] ?? 'postgres://';
+    const auth = parsed.username
+      ? `${parsed.username}${parsed.password ? `:${parsed.password}` : ''}@`
+      : '';
+    return `${scheme}${auth}${parsed.hostname}:5432${parsed.pathname ?? ''}${parsed.search ?? ''}`;
+  } catch {
+    return null;
+  }
+}
+
 export function deriveDirectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.replace(/^postgres(ql)?:\/\//, 'http://'));

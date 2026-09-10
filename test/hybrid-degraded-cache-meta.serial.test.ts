@@ -79,6 +79,10 @@ beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  // v0.48.2: the balanced bundle now reranks with a keyed default; without the
+  // key the search stamps `reranker_skipped` (by design). This suite is about
+  // EMBED degradation, so hold the reranker off to keep `degraded` clean.
+  await engine.setConfig('search.reranker.enabled', 'false');
 
   const fixtures: Array<[string, string, string]> = [
     ['alice-foo', 'Alice Foo', 'person'],
@@ -166,6 +170,16 @@ describe('cache-hit stamping', () => {
     await awaitPendingSearchCacheWrites();
 
     const { meta } = await cachedRun('builder', { limit: 5, offset: 50 });
+    expect(meta.cache?.status).toBe('disabled');
+    expect(typeof meta.retrieved_count).toBe('number');
+  });
+
+  test('offset<0 also bypasses the cache entirely (#4358 residual — negative offsets re-slice a stored page just as badly as positive ones)', async () => {
+    const { results: missResults } = await cachedRun('builder', { limit: 5 });
+    expect(missResults.length).toBeGreaterThan(0);
+    await awaitPendingSearchCacheWrites();
+
+    const { meta } = await cachedRun('builder', { limit: 5, offset: -50 });
     expect(meta.cache?.status).toBe('disabled');
     expect(typeof meta.retrieved_count).toBe('number');
   });

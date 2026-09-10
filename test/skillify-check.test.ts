@@ -22,6 +22,13 @@ function run(args: string[]): { exitCode: number; stdout: string; stderr: string
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: REPO,
+      // execFileSync's default maxBuffer is 1MB and it TRUNCATES silently —
+      // the JSON then fails to parse with a misleading "Unterminated string"
+      // that reads like a bug in the script. `--recent` is proportional to how
+      // many files the working tree touched recently, so a big branch (an
+      // upstream sync touches >1200 files) blows past 1MB. Matches the 10MB
+      // runWithPath already sets below.
+      maxBuffer: 10 * 1024 * 1024,
     });
     return { exitCode: 0, stdout, stderr: '' };
   } catch (err: any) {

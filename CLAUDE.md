@@ -60,7 +60,7 @@ markdown files (tool-agnostic, work with both CLI and plugin contexts).
 Explore via `ls src/core/`, `ls src/commands/`, `ls src/mcp/` — names are descriptive; read files for detail. Do not maintain a file inventory in this doc; it goes stale fast.
 
 **Cross-cutting invariants (must-never-violate, regardless of which file you touch).**
-These used to be buried across the per-file index; they live here so they always load.
+They live here so they always load.
 Per-file detail is in `docs/architecture/KEY_FILES.md`.
 
 - **Trust is fail-closed.** `OperationContext.remote` is REQUIRED on the type. Anything not
@@ -101,10 +101,12 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   `src/core/pglite-engine.ts`, `src/core/postgres-engine.ts`, and
   `src/core/migrate.ts`, dependencies previously reached through runtime dynamic
   imports use static top-level imports. Besides the snapshot loader's lazy
-  `require()` cluster in `pglite-engine.ts:tryLoadSnapshot` (fs/crypto/
-  migrate/pglite-schema + one gateway shape lookup — lazy so production
-  builds without the test-fixture path don't eager-load; the guard now
-  matches `require()` calls too), the only dynamic-`import()` exceptions
+  `require()` cluster in `pglite-engine.ts:tryLoadSnapshot` (fs/crypto + one
+  gateway shape lookup — lazy so production builds without the test-fixture
+  path don't eager-load; the snapshot hash reads migrate.ts/pglite-schema.ts
+  FILE BYTES, never the loaded modules, so coverage instrumentation can't
+  skew it; the guard now matches `require()` calls too), the only
+  dynamic-`import()` exceptions
   are the four `ai/gateway.ts` lookups in both engines'
   `initSchema()` and `_upsertChunksOnce()` methods; each remains lazy inside a
   local `try/catch` because the gateway has a large provider/config closure and,
@@ -171,9 +173,14 @@ detail on demand.)
 | any file in `src/` (what it does + its invariants) | `docs/architecture/KEY_FILES.md` — find the file's entry |
 | search / ranking / hybrid / retrieval | `docs/architecture/RETRIEVAL.md` + the `search/*` entries in `KEY_FILES.md` |
 | search modes / cost knobs | `docs/guides/search-modes.md` |
+| engine detection / Postgres adoption / DB-access repair / degraded serve (`engine status`, `db-repair`, `init --prefer-postgres`, `GBRAIN_DB_ACCESS`) | `docs/ENGINES.md` ("Engine detection and access repair" + "Local Postgres") |
 | embedding spend gates / cost gate / `spend.posture` / off switches | `docs/operations/spend-controls.md` |
+| the monthly backup-coverage check (`gbrain backup`, render channels, nag budget) | `docs/operations/backup-check.md` + the `backup/*` entries in `KEY_FILES.md` |
 | push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
 | checkpoint compaction / compiled context files (`gbrain compile-context`) | `docs/guides/checkpoint-compaction.md` + `docs/guides/ambient-recall.md` |
+| ambient memory writeback (opt-in unprompted fact capture — `memory.auto_writeback`, harness instruction blocks, Stop-hook backstop, read-time TTL) | `docs/guides/ambient-writeback.md` + the ambient-writeback cluster in `KEY_FILES.md` |
+| Memorable integration / session receipts / relay consent (`integrations.memorable.*`) | `docs/memorable-agents.md` + the hook-heartbeat/capture-spec/codex-hooks entries in `KEY_FILES.md` |
+| chat connectors (live ChatGPT/Claude history sync — `gbrain connectors`) | `docs/guides/chat-connectors.md` + the `src/core/connectors/*` entries in `KEY_FILES.md` |
 | schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
 | thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
 | memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
@@ -182,21 +189,21 @@ detail on demand.)
 | bulk-command progress wiring | `docs/progress-events.md` |
 | eval methodology / metrics | `docs/eval/` |
 | brains vs sources / topology | `docs/architecture/brains-and-sources.md`, `topologies.md` |
+| google connector (Gmail/Calendar/Contacts, OAuth) / credential vault | `docs/guides/google-connect.md` + the `creds/*` + `google/*` entries in `KEY_FILES.md` |
+| open loops / `gbrain waiting` / commitment extraction | `docs/guides/open-loops.md` + the `loops*` entries in `KEY_FILES.md` |
 | skill routing | `skills/RESOLVER.md` |
 | agent bootstrap (paste-in install, hooks, `gbrain bootstrap`, sweep, keyless) | `docs/guides/bootstrap.md` + `docs/designs/AGENT_BOOTSTRAP_PLAN.md` + the KEY_FILES bootstrap cluster |
 | shipping a release / CHANGELOG / PR conventions | `docs/RELEASING.md` (ship IRON RULES stay inline below) |
 
 The per-file index (`## Key files`), the thin-client routing seam, and the testing
-discipline used to live inline here. They moved to the docs above so this file
-stays small enough to load every session. Nothing was lost — the pre-move content
-is in git, and the docs carry every load-bearing invariant (compressed to
-current-state).
+discipline live in the docs above, not inline, so this file stays small enough to
+load every session. Those docs carry every load-bearing invariant, compressed to
+current state.
 
 ## Maintaining CLAUDE.md and the reference docs
 
-CLAUDE.md grew to ~592KB / ~147k tokens once the per-file index became append-only
-(one `**vX.Y.Z:**` clause per release per file). That is the exact anti-pattern
-gbrain exists to fix. The rules that keep it from recurring:
+An append-only per-file index once grew this file to ~592KB / ~147k tokens — the
+exact anti-pattern gbrain exists to fix. The rules that keep it from recurring:
 
 - **CLAUDE.md is orientation, not the implementation spec.** It carries the North
   Star, the two axes, architecture + cross-cutting invariants, the resolver, and
@@ -334,7 +341,7 @@ audit trail lives in the source repo's git history.
 
 Read the skill files in `skills/` before doing brain operations. GBrain ships 50+ skills
 (the current list lives in `skills/manifest.json`) organized by `skills/RESOLVER.md`
-(`AGENTS.md` is also accepted as of v0.19):
+(`AGENTS.md` is also accepted):
 
 **Original 8 (conformance-migrated):** ingest (thin router), query, maintain, enrich,
 briefing, migrate, setup, publish.
@@ -388,9 +395,8 @@ filed for held-out corpus growth, cross-vendor verification, hierarchical
 area-of-areas, embedding-based pre-router, and the run-1 vs run-2
 prompt-design ablation methodology.
 
-**Operational health (v0.19.1):** smoke-test (8 post-restart health checks with auto-fix
-for Bun, CLI, DB, worker, Zod CJS, gateway, API key, brain repo; user-extensible via
-`~/.gbrain/smoke-tests.d/*.sh`).
+**Operational health:** `gbrain smoke-test` runs the post-restart health checks
+with bounded auto-fix; user-extensible via `~/.gbrain/smoke-tests.d/*.sh`.
 
 **Conventions:** `skills/conventions/` has cross-cutting rules (quality, brain-first,
 model-routing, test-before-bulk, cross-modal). `skills/_brain-filing-rules.md` and
@@ -453,9 +459,6 @@ the test verification gate (Step 16) because:
 - bun prints failure details before the summary line, so `tail -N` drops them
 - Step T1 needs the full failure list to classify in-branch vs pre-existing
 
-This bit us during v0.26.2 ship: `bun test 2>&1 | tail -10` reported "3911 pass / 23 fail"
-but no failure details survived, forcing a 23-minute re-run to triage.
-
 Apply the same pattern to any long-running command whose exit code matters:
 `bun run typecheck`, `bun run ci:local`, migration runs, eval suites, etc.
 For background tasks (`run_in_background: true`), the harness captures the exit
@@ -472,14 +475,9 @@ per-source lock heartbeats through the direct pool and refuses to steal a live,
 recently-refreshed holder. Six env knobs tune it (all env-only, incident-time escape
 hatches — no config-dashboard surface by design):
 
-| Env var | Default | What it does |
-|---|---|---|
-| `GBRAIN_SYNC_CHECKPOINT_EVERY` | 1000 | Flush the checkpoint every N drained files. |
-| `GBRAIN_SYNC_CHECKPOINT_SECONDS` | 10 | Also flush every N seconds (whichever comes first) — bounds worst-case loss regardless of throughput. Flush also fires after the first file. |
-| `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
-| `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
-| `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
-| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |
+The six env-only tuning knobs (checkpoint cadence, failure ceiling, yield
+interval, lock-steal grace, stall-abort seconds) are documented in
+[`docs/guides/live-sync.md`](docs/guides/live-sync.md#sync-resumability--lock-tuning-knobs-v042x-1794).
 
 ## Pace Mode (DB-contention-aware backfill pacing)
 
@@ -699,19 +697,30 @@ ship — the repeatable mechanical sweep (obfuscation/eval, gitleaks with the te
 allowlist stripped, committed `admin/dist` changes as alarms; new endpoints/spawns/env/deps
 as context).
 
-**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship. The script reads `./VERSION` and hits the production MCP server's initialize handshake; if production reports a lower version than main, the script exits 1. Deploys are automatic as of v0.49.0.0 (see below), so a failure here means the last deploy did not land — check the Actions run before shipping on top of it. Shipping more changes over an un-deployed fix compounds the problem and is exactly how we hit the May 8 → May 12 zombie-reaper recurrence.
+**Also required: deploy-drift check.** Run `bun run check:prod-version` at the start of every /ship: it compares `./VERSION` against the production MCP initialize handshake and exits 1 when production is behind. A failure means the last deploy did not land — fix that before shipping on top of it.
 
 ## Post-ship requirements (production deploy)
 
-**Deploys are automatic.** `.github/workflows/deploy.yml` runs on every push to `main`: it deploys with `railway up --detach --service dent-brain` using the `RAILWAY_TOKEN` project secret, then polls `/health` until production reports the version in `./VERSION`, failing loudly if it never flips. Railway's native GitHub integration cannot be used here — the repo and the paid Railway app live under different GitHub accounts, so the service's `source.repo` is permanently null — and this workflow bypasses that entirely.
+**Deploys are automatic.** `.github/workflows/deploy.yml` runs on every push to `main`: `railway up --detach --service dent-brain` with the `RAILWAY_TOKEN` secret, then polls `/health` until production reports `./VERSION`. (Railway's native GitHub integration cannot be used: repo and paid Railway app live under different GitHub accounts, so `source.repo` is permanently null.)
 
-Watch the Actions run rather than deploying by hand. If it fails (expired token, boot failure), the emergency fallback is `railway up --detach` from the repo root — **not** `railway redeploy`, which redeploys the existing image instead of building the new commit. Confirm with `bun run check:prod-version`.
+Watch the Actions run rather than deploying by hand. If it fails, the emergency fallback is `railway up --detach` from the repo root — **not** `railway redeploy`, which redeploys the existing image instead of building the new commit.
 
 Changing a Railway environment variable also triggers a redeploy on its own; wait for that to settle before deploying again.
 
 ## Post-ship requirements (MANDATORY)
 
-After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran it automatically that counts; otherwise run it manually. Files that MUST be checked: README.md, CLAUDE.md, CHANGELOG.md, TODOS.md, docs/.
+After EVERY /ship, run /document-release. Not optional. If /ship's Step 8.5 ran it automatically that counts; otherwise run it manually.
+
+Files that MUST be checked on every ship:
+- README.md — does it reflect new features, commands, or setup steps?
+- `docs/architecture/KEY_FILES.md` — new or changed files in `src/`, and their
+  invariants, are recorded HERE. This is the on-demand layer behind the Reference
+  map, and it is where per-file and per-version detail belongs.
+- CLAUDE.md — only if an always-loaded rule, the Reference map, or the dispatcher
+  changed; it is a map, not a log (see "Maintaining CLAUDE.md" below).
+- CHANGELOG.md — does it cover every commit?
+- TODOS.md — are completed items marked done?
+- docs/ — do any guides need updating?
 
 ## Version locations
 
@@ -726,6 +735,46 @@ Follow `docs/CHANGELOG_VOICE.md`: release-summary in GStack/Garry voice (headlin
 Create `skills/migrations/v[version].md` only when existing users must act post-upgrade (new setup step, schema change, changed defaults, deprecated commands, new background processes). Skip for bug fixes, docs, transparent perf, optional new features. **Key test:** will an existing user's brain work worse after upgrading and doing nothing? If yes, write a migration.
 
 **Canonical, not advisory:** if shipping requires "in your AGENTS.md, add..." or "in your cron, rewrite...", the migration orchestrator should do that edit, not the user. Exception: host-specific code (RCE surface) — emit a TODO to `~/.gbrain/migrations/pending-host-work.jsonl`. See `docs/reference/release-ops.md`.
+
+## "Say to your agent" rule: every feature doc addresses the END USER (IRON RULE)
+
+GBrain is installed and operated by an AI agent. Most users never type a
+`gbrain` command — they talk to their harness (Claude Code, Codex, OpenClaw,
+Hermes, Cursor). Documentation that only shows CLI blocks serves the operator
+and abandons the end user.
+
+**The rule:** whenever a feature is added or explained in a public-facing doc
+(README, CHANGELOG, docs/guides, tutorials), include the common end-user block:
+
+    **Say to your agent:** *"<natural-language prompt>"* — *"<optional second phrasing>"*
+
+- 1-3 quoted phrases a user can literally type into ANY harness (a 4th is fine
+  when it hands off to an adjacent skill, e.g. a capture block that also points
+  at cold-start's "fill my brain"). Plain English, outcome-framed ("connect my
+  chatgpt account and pull my whole history into the brain"); don't dress a bare
+  command name as a sentence.
+- **When a skill backs the feature, the phrases MUST come from (or contain) the
+  skill's frontmatter `triggers:`** — those are what the harness actually
+  routes on (baseline routing is substring match), so the doc and the router can
+  never drift apart. Verify each phrase against the real trigger before shipping.
+  The skills section of README points at `skills/RESOLVER.md` as the full
+  phrasebook.
+- **When NO skill backs the feature (a CLI-only path), be honest:** the phrase
+  states the outcome and names the command the agent runs for it ("Run a search
+  benchmark against LongMemEval — your agent runs `gbrain eval longmemeval`"),
+  rather than implying a trigger that doesn't exist.
+- Grouping two phrases for the SAME skill with a `/` (e.g. *"Brain health"* /
+  *"check backlinks"*) is allowed; separate distinct destinations with an em-dash.
+- CLI blocks stay — they serve operators and the agents themselves. The say
+  block sits adjacent, not instead.
+- CHANGELOG: every feature entry's "To take advantage of vX" block carries a
+  say line alongside the commands.
+- Same privacy bar as everything else public: generic placeholders in the
+  phrases, never real names.
+
+Litmus test: a non-technical user reads the section and knows the exact
+sentence to type into their agent. If they'd have to translate a flag into
+English themselves, the section fails.
 
 ## Privacy rule: scrub real names from public docs
 

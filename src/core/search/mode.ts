@@ -27,10 +27,10 @@ import { createHash } from 'crypto';
 import { CR_MODES, type CRMode } from '../types.ts';
 import { getFtsLanguage } from '../fts-language.ts';
 import { getRecipe } from '../ai/recipes/index.ts';
-// #3657 seam: the sunsetting legacy reranker default has ONE code home
+// #3657 seam: the runtime/mode-bundle reranker default has ONE code home
 // (ai/defaults.ts — a leaf module, no SDK loads). The three bundles below
-// resolve through it so the September default swap is a one-line change.
-import { LEGACY_DEFAULT_RERANKER_MODEL } from '../ai/defaults.ts';
+// resolve through DEFAULT_RERANKER_MODEL (cohere:rerank-v3.5 in this fork).
+import { DEFAULT_RERANKER_MODEL } from '../ai/defaults.ts';
 
 /**
  * Look up the `reranker.default_timeout_ms` declared by the resolved
@@ -77,6 +77,17 @@ export interface ModeBundle {
   /** Zero-LLM intent classifier weight adjustments (PR #897). On for everyone. */
   intentWeighting: boolean;
   /**
+   * Keyword-arm AND→OR zero-recall fallback (fix/title-retrieval-arm, D2).
+   * websearch AND semantics at chunk grain mean one non-co-occurring token
+   * zeroes keyword recall; the fallback retries once with OR-of-terms.
+   * On corpora the FTS config can't stem (CJK/agglutinative text under
+   * 'english') the OR retry can match a large fraction of the corpus, and
+   * ts_rank has no IDF to demote common-token hits — the relaxed rows read
+   * as noise in the RRF blend. This knob lets those corpora turn the
+   * fallback off. Default on (the previous hardcoded behavior).
+   */
+  keywordOrFallback: boolean;
+  /**
    * Per-call token budget cap (PR #897). undefined = no-op (tokenmax).
    * 4000 = tight (conservative, fits Haiku context loop).
    * 12000 = balanced (sweet-spot for Sonnet).
@@ -91,11 +102,14 @@ export interface ModeBundle {
   expansion: boolean;
   /**
    * Default `limit` for the operation layer (`src/core/operations.ts:1087`).
-   * Note: production `query` op TODAY defaults to 20. Mode bundle becomes
-   * the default ONLY when the caller omits the field — same chain semantics
-   * as model-tier resolution. See `[CDX-1+2+3]` in the plan: the original
-   * "tokenmax preserves Garry's setup" framing is wrong; tokenmax is an
-   * EXPANSION from the implicit current default (limit 20).
+   * Mode bundle becomes the default ONLY when the caller omits the field —
+   * same chain semantics as model-tier resolution. See `[CDX-1+2+3]` in the
+   * plan: the original "tokenmax preserves Garry's setup" framing is wrong;
+   * tokenmax is an EXPANSION from the implicit historical default (limit 20).
+   * (That flat-20 default no longer exists anywhere in `query`: #4360 fixed
+   * the text/hybrid path's cache-hit slice, #4356 Problem 2 fixed the
+   * image-similarity branch. `search_by_image`, a separate op with no mode
+   * param, still hard-defaults to 20 — a different public contract.)
    */
   searchLimit: number;
   /**
@@ -109,15 +123,14 @@ export interface ModeBundle {
   reranker_enabled: boolean;
   /**
    * Provider:model for the reranker. Bundle default is
-   * `LEGACY_DEFAULT_RERANKER_MODEL` (ai/defaults.ts — currently zerank-2)
-   * — LEGACY until the September removal (v0.46.3 split-default: existing
-   * ZE-keyed brains keep a working reranker until the hosted API dies on
-   * 2026-09-04; voyage-keyed new installs get an explicit
-   * `search.reranker.model voyage:rerank-2.5` override written at init
-   * (keyed non-voyage installs get explicit `search.reranker.enabled false`),
-   * and the September release flips this bundle value to voyage). Voyage
-   * rerankers (`rerank-2.5`, `rerank-2.5-lite`) are live recipes today via
-   * `touchpoints.reranker`.
+   * `DEFAULT_RERANKER_MODEL` (ai/defaults.ts — `cohere:rerank-v3.5` since
+   * v0.48.2, flipped from the sunsetting ZeroEntropy zerank-2 ahead of the
+   * 2026-09-04 hosted shutdown). Rides COHERE_API_KEY; a brain without the
+   * key fails open per search (`RerankError('no_key')`, one audit row per
+   * process, no stderr — `gbrain search modes` / `gbrain doctor` say so).
+   * Keyed non-voyage installs get explicit `search.reranker.enabled false`
+   * at init. Because `reranker_model` is folded into the knobs hash
+   * unconditionally, the flip re-keyed every cached result set once.
    */
   reranker_model: string;
   /** Candidates to send upstream (default 30). The full result list always
@@ -284,8 +297,10 @@ export interface ModeBundle {
   /**
    * v0.46.15 (#1863) — weak-top floor: when the TOP rerank score is below
    * this, autocut no-ops (gap normalization by a weak top manufactures
-   * spurious cliffs). Scale-dependent on the reranker — the September
-   * reranker default flip must re-tune it. Config: `search.autocut_min_top`.
+   * spurious cliffs). Scale-dependent on the reranker — tuned on zerank-2's
+   * score scale; the v0.48.2 voyage default is measured against it by the
+   * pre-registered rerank A/B (rule R2) and re-tuned there if it moves.
+   * Config: `search.autocut_min_top`.
    */
   autocut_min_top: number;
   /**
@@ -326,13 +341,14 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: 4000,
     expansion: false,
     searchLimit: 10,
     // v0.35.0.0+: reranker off — conservative is cost-sensitive; reranker
     // spend doesn't fit the tier's value prop.
     reranker_enabled: false,
-    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
+    reranker_model: DEFAULT_RERANKER_MODEL,
     reranker_top_n_in: 30,
     reranker_top_n_out: null,
     reranker_timeout_ms: 5000,
@@ -373,21 +389,21 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: 12000,
     expansion: false,
     searchLimit: 25,
     // v0.36.0.0 (D6): reranker flipped ON for `balanced` mode bundle. The
-    // real-corpus benchmark that justified this measured zerank-2 reshuffling
-    // 60% of top-1 results; the reranker stays on through the Cohere swap on
-    // the premise that a second-stage cross-encoder earns its keep, but that
-    // 60% figure is a ZE measurement and has NOT been re-run against
-    // rerank-v3.5 — treat it as the reason the stage exists, not as a
-    // current-provider benchmark. Missing COHERE_API_KEY is handled via
-    // src/core/search/rerank.ts fail-open contract: log to audit JSONL,
-    // return input order unchanged. Opt out with
+    // real-corpus benchmark shows a cross-encoder reshuffles 60% of top-1
+    // results. Treat that as the reason the stage exists, not as a
+    // current-provider benchmark: it is a zerank-2 measurement and has NOT
+    // been re-run against this fork's `cohere:rerank-v3.5` default. A missing
+    // COHERE_API_KEY is handled via the src/core/search/rerank.ts fail-open
+    // contract: one `no_key` audit row per process, results pass through in
+    // RRF order, `reranker_skipped` stamped on the search meta. Opt out with
     // `gbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
-    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
+    reranker_model: DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (25) so the cross-encoder scores
     // every result the limit slice will return — no unscored tail for autocut
     // to wrongly drop (Codex #2). Was 30; tracking searchLimit is the
@@ -436,6 +452,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     cache_similarity_threshold: 0.92,
     cache_ttl_seconds: 3600,
     intentWeighting: true,
+    keywordOrFallback: true,
     tokenBudget: undefined,
     expansion: true,
     searchLimit: 50,
@@ -445,7 +462,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // their fee. ~$0.0003/query at this shape; rounding error vs the
     // tier's $700/mo @ Opus pairing per CLAUDE.md cost matrix.
     reranker_enabled: true,
-    reranker_model: LEGACY_DEFAULT_RERANKER_MODEL,
+    reranker_model: DEFAULT_RERANKER_MODEL,
     // v0.42.3.0 D4: topNIn = searchLimit (50) so every returned result is
     // cross-encoder scored — closes the Codex #2 recall gap where autocut
     // would drop the deliberately-preserved un-reranked tail (results 31-50).
@@ -503,6 +520,7 @@ export interface SearchKeyOverrides {
   cache_similarity_threshold?: number;
   cache_ttl_seconds?: number;
   intentWeighting?: boolean;
+  keywordOrFallback?: boolean;
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
@@ -556,6 +574,7 @@ export interface SearchPerCallOpts {
   cache_similarity_threshold?: number;
   cache_ttl_seconds?: number;
   intentWeighting?: boolean;
+  keywordOrFallback?: boolean;
   tokenBudget?: number;
   expansion?: boolean;
   searchLimit?: number;
@@ -660,6 +679,7 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     cache_similarity_threshold: pick('cache_similarity_threshold'),
     cache_ttl_seconds: pick('cache_ttl_seconds'),
     intentWeighting: pick('intentWeighting'),
+    keywordOrFallback: pick('keywordOrFallback'),
     tokenBudget: pick('tokenBudget'),
     expansion: pick('expansion'),
     searchLimit: pick('searchLimit'),
@@ -898,7 +918,53 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // ~50% cache savings back. Same contamination class as detail (v=16) and
 // hardExcludes (v=12); same one-time global cold-miss pattern as the bumps
 // above, refills within cache.ttl_seconds (3600s default).
-export const KNOBS_HASH_VERSION = 23;
+//
+// bump 23→24 (#4358 residual): hybrid.ts's `pagedRequest` skip-cache gate
+// only bypassed the cache for offset>0 (the #4368 wave absorbed the
+// positive-offset half of the original #4358 fix, which used `!== 0`, as
+// `> 0`). A negative offset re-slices an already-sliced stored page just as
+// badly as a positive one, and — since offset isn't part of this hash — a
+// negative-offset request could read OR write the same cache row an
+// offset=0 (or any other offset) request shares. Any row written while that
+// gap was live may hold a wrong page under a knobsHash a clean request can
+// still reach. No new key part; the bump alone invalidates (the PR authored
+// this as v=22; master had already reached 23, so it sequences here per the
+// D8 convention). Same one-time global cold-miss pattern as the bumps
+// above; refills within cache.ttl_seconds (3600s).
+//
+// bump 24→25 (#3617): `kof=` (keyword AND→OR fallback knob) joins the key.
+// The PR authored this as 23→24, but 24 was claimed by the negative-offset
+// bump above while it was open, so it takes the next free number per the D8
+// convention. Same one-time global cold-miss pattern as the bumps above.
+//
+// bump 25→26 folds salience/recency + intent_patterns (#4415) — wave-g. Three
+// new ctx parts:
+//   sal=/rec= — the EFFECTIVE per-call salience/recency modes (explicit
+//     SearchOpts ?? auto-suggested, resolved by the same chain bare
+//     hybridSearch uses — see hybrid.ts resolveEffectiveSalience/
+//     resolveEffectiveRecency). #4415 extended the per-call knobs to the
+//     default MCP `search` surface, so a salience:'strong' write (reordered
+//     result set) could be served to a salience:'off' lookup of the same
+//     query for the whole TTL — same contamination class as det= (v=16).
+//   ipat= — fingerprint of the applied `search.intent_patterns` config.
+//     The patterns change classification (intent weights + auto salience/
+//     recency/detail) and therefore results; without the fold, a config
+//     edit kept serving old-classification rows for up to the TTL.
+// Same one-time global cold-miss pattern as the bumps above; refills
+// within cache.ttl_seconds (3600s default). (Authored as 23→24 on the
+// wave-g branch; 24 and 25 were claimed by the two bumps above while it
+// was in flight, so it takes the next free number per the D8 convention.)
+//
+// v=27 (master, 0.48.0.0): adaptive-return gate + intent fold (see the ar=/ari=
+// key parts below). bump 27→28 (#4256, fixes #3695's fusion path): compiledTruthBoost now
+// suppresses the 2x compiled-truth authority boost for synthetic chunkless
+// title rows (chunk_id 0 + empty chunk_text) in both rrfFusion variants —
+// result ordering changes for identical knobs, so cached rows ranked under
+// the old boost must not be served under the new semantics. No new key
+// part; version-only invalidation (same class as the 13→14 detail=medium
+// boost-scope bump and the 21→22 stamp/injection epoch). One-time global
+// cold-miss spike on upgrade; refills within cache.ttl_seconds (3600s).
+export const KNOBS_HASH_VERSION = 28;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -938,6 +1004,20 @@ export interface KnobsHashContext {
    */
   hardExcludes?: string[];
   /**
+   * v=27 (2026-08 fix wave, E5b): the RESOLVED adaptive-return gate for this
+   * call — params + the query's resolved intent class (classifier-
+   * deterministic, computed pre-lookup by hybridSearchCached). Enabled folds
+   * all five parts; disabled/absent hashes like legacy rows. See the ar=/ari=
+   * comment in knobsHash for the cross-intent contamination rationale.
+   */
+  adaptiveReturn?: {
+    enabled: boolean;
+    entityMax: number;
+    otherMax: number;
+    minKeep: number;
+    intent: string;
+  };
+  /**
    * v=16 (#3515): the EFFECTIVE detail level for this call — per-call
    * SearchOpts.detail, or the auto-detected level when the caller didn't
    * specify (hybridSearchCached threads `opts.detail ?? autoDetectDetail(query)`,
@@ -958,6 +1038,28 @@ export interface KnobsHashContext {
    * (private included), matching enforcement's strict `=== true` semantics.
    */
   excludePrivate?: boolean;
+  /**
+   * v=24 (#4415, wave-g): the EFFECTIVE salience/recency boost modes for
+   * this call — per-call SearchOpts, or the classifier's auto-suggestion
+   * when the caller didn't specify (hybridSearchCached resolves them with
+   * the same chain bare hybridSearch uses). Both reorder the post-fusion
+   * result set, so a 'strong' write must never serve an 'off' lookup.
+   * Undefined falls back to 'off' (the classifier's default for unmatched
+   * queries) so legacy callers hash stably.
+   */
+  salience?: 'off' | 'on' | 'strong';
+  recency?: 'off' | 'on' | 'strong';
+  /**
+   * v=24 (#4415, wave-g): fingerprint of the applied `search.intent_patterns`
+   * config (query-intent.ts intentPatternFingerprint — 'none' when unset).
+   * The patterns change classification (intent weights + auto salience/
+   * recency/detail) and therefore results; folding the fingerprint makes a
+   * config edit invalidate immediately instead of after the TTL. Threaded
+   * through ctx (not read process-globally like fts=) because the applied
+   * config is PER ENGINE (wave-g) — a process-global read would key one
+   * brain's rows under another brain's patterns in a multi-engine process.
+   */
+  intentPatterns?: string;
 }
 
 export function knobsHash(
@@ -1085,6 +1187,42 @@ export function knobsHash(
     // Strict `=== true` mirrors the enforcement predicate so undefined and
     // false (both private-included) hash identically.
     `xp=${ctx?.excludePrivate === true ? 1 : 0}`,
+    // v=25 addition (#3617, append-only): keyword AND→OR fallback knob. A
+    // fallback-on write (OR-relaxed rows blended in) must not be served
+    // to a fallback-off lookup — the zero-strict-recall result sets are
+    // disjoint (relaxed rows vs empty keyword arm). `?? true` mirrors the
+    // module's defensive read of other knobs for partial-knobs callers.
+    `kof=${(knobs.keywordOrFallback ?? true) ? 1 : 0}`,
+    // v=26 additions (#4415, wave-g, append-only): effective salience/
+    // recency boost modes + applied intent-pattern config fingerprint. A
+    // salience/recency-boosted (reordered) write must never serve a lookup
+    // under different modes, and a `search.intent_patterns` edit changes
+    // classification → results, so it must change the key. 'off'/'none'
+    // fallbacks keep legacy callers stable.
+    `sal=${ctx?.salience ?? 'off'}`,
+    `rec=${ctx?.recency ?? 'off'}`,
+    `ipat=${ctx?.intentPatterns ?? 'none'}`,
+    // v=27 ALSO covers a same-knobs behavioral change shipped in the same
+    // release (#3617 follow-up): OR-relaxed keyword/title rows no longer
+    // vote in RRF when the vector arm is non-empty, so a pre-fix cache row
+    // (relaxed junk fused in) must not serve post-fix lookups — the version
+    // bump invalidates them wholesale (one-bump-per-wave rule).
+    // v=27 additions (2026-08 fix wave, E5b + outside-voice F11, append-only):
+    // adaptive-return gate params + the query's resolved intent class. An
+    // adaptive-on write (intent-capped result set) must never serve an
+    // adaptive-off lookup or a different cap config — and because the
+    // semantic cache admits SIMILAR queries, an entity-intent row (cap 2)
+    // must never serve a concept-intent lookup (cap 6) either; folding the
+    // resolved intent class closes that channel (same-query lookups are
+    // classifier-deterministic; near-duplicate queries with a different
+    // class simply miss). Residual, documented: a future classifier change
+    // reclassifies queries and silently re-keys — acceptable, cache-only.
+    // Gate-off calls hash identically to legacy rows ('0'/'none' fallbacks).
+    `ar=${ctx?.adaptiveReturn?.enabled ? 1 : 0}`,
+    `arem=${ctx?.adaptiveReturn?.enabled ? ctx.adaptiveReturn.entityMax : 'none'}`,
+    `arom=${ctx?.adaptiveReturn?.enabled ? ctx.adaptiveReturn.otherMax : 'none'}`,
+    `armk=${ctx?.adaptiveReturn?.enabled ? ctx.adaptiveReturn.minKeep : 'none'}`,
+    `ari=${ctx?.adaptiveReturn?.enabled ? ctx.adaptiveReturn.intent : 'none'}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));
@@ -1122,6 +1260,10 @@ export function loadOverridesFromConfig(
   const iw = get('search.intentWeighting');
   if (iw !== undefined) {
     out.intentWeighting = iw === '1' || iw.toLowerCase() === 'true';
+  }
+  const kof = get('search.keywordOrFallback');
+  if (kof !== undefined) {
+    out.keywordOrFallback = kof === '1' || kof.toLowerCase() === 'true';
   }
   const tb = get('search.tokenBudget');
   if (tb !== undefined) {
@@ -1295,6 +1437,7 @@ export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.cache.similarity_threshold',
   'search.cache.ttl_seconds',
   'search.intentWeighting',
+  'search.keywordOrFallback',
   'search.tokenBudget',
   'search.expansion',
   'search.searchLimit',

@@ -61,9 +61,9 @@ describe('voyage canonical embedding model (v0.46.3)', () => {
     expect(supportsVoyageOutputDimension('voyage-4-nano')).toBe(false);
   });
 
-  test('new-install default constants point at voyage', () => {
+  test('new-install default constants: voyage embedding, cohere reranker (fork)', () => {
     expect(NEW_INSTALL_DEFAULT_EMBEDDING_MODEL).toBe('voyage:voyage-4');
-    expect(NEW_INSTALL_DEFAULT_RERANKER_MODEL).toBe('voyage:rerank-2.5');
+    expect(NEW_INSTALL_DEFAULT_RERANKER_MODEL).toBe('cohere:rerank-v3.5');
   });
 });
 
@@ -72,7 +72,7 @@ describe('zeroentropyai sunset metadata (v0.46.3)', () => {
     expect(zeroentropyai.sunset).toBeDefined();
     expect(zeroentropyai.sunset!.date).toBe('2026-09-04');
     expect(zeroentropyai.sunset!.replacement?.embedding).toBe('voyage:voyage-4');
-    expect(zeroentropyai.sunset!.replacement?.reranker).toBe('voyage:rerank-2.5');
+    expect(zeroentropyai.sunset!.replacement?.reranker).toBe('cohere:rerank-v3.5');
   });
 
   test('voyage carries NO sunset (it is the replacement, not the deprecated)', () => {

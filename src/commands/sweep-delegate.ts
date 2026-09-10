@@ -28,6 +28,7 @@ import {
   type SweepStartIpcResult,
 } from '../core/context/resolve-ipc.ts';
 import type { DelegatedSweepOptions, SweepStatusResponse } from '../core/context/sweep-ipc.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 const POLL_MS = 500;
 const MAX_POLL_FAILURES = 60;
@@ -58,6 +59,10 @@ export type ParsedDelegatedSweepArgs =
 export function parseDelegatedSweepArgs(args: string[]): ParsedDelegatedSweepArgs {
   const options: DelegatedSweepOptions = {};
   let jsonMode = false;
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (VALUE_FLAGS.has(a)) {

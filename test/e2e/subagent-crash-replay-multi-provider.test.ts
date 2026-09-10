@@ -95,15 +95,15 @@ type ProviderShape = {
 };
 
 /**
- * OpenRouter is deliberately NOT in this matrix. Its recipe declares
- * `supports_subagent_loop: false` — tool_call_ids are not stable through the
- * proxy — and v0.46.28.0 moved that refusal to BOTH submit (minions/queue.ts)
- * and handler dispatch (minions/handlers/subagent.ts). An OR-proxied subagent
- * loop is therefore an unreachable configuration, not a response shape to
- * reconcile; replaying one here asserted behaviour the product now forbids.
- * The refusal itself is pinned as a negative case at the bottom of this file.
+ * OpenRouter is deliberately NOT in this replay matrix. Non-Anthropic OR
+ * routes declare `supports_subagent_loop: false` (tool_call_ids are not
+ * stable through the proxy), and the refusal is enforced at BOTH submit
+ * (minions/queue.ts) and handler dispatch (minions/handlers/subagent.ts) —
+ * an unreachable configuration, not a response shape to reconcile. #4514
+ * carved out `openrouter:anthropic/…`, which shares Anthropic's tool-call
+ * envelope; its replay coverage lives in the dedicated OR-Anthropic suites,
+ * not here. The non-Anthropic refusal is pinned at the bottom of this file.
  */
-const NO_SUBAGENT_LOOP_MODEL = 'openrouter:anthropic/claude-sonnet-4-6';
 
 const PROVIDER_MATRIX: ProviderShape[] = [
   {
@@ -142,6 +142,14 @@ const PROVIDER_MATRIX: ProviderShape[] = [
       providerId: 'google',
     },
   },
+  // #4478: openrouter left the replay matrix when its recipe declared the
+  // subagent loop unsupported — the handler's capability gate refuses those
+  // jobs BEFORE the replay path, so they can never reach reconciliation.
+  // #4514 then carved out Anthropic-via-OR (`openrouter:anthropic/…`), which
+  // shares Anthropic's tool-call envelope; its allowed-path replay coverage
+  // lives in test/e2e/openrouter-anthropic-subagent-replay.live.test.ts and
+  // test/e2e/subagent-gateway-path.test.ts, not here. Non-Anthropic OR
+  // families stay refused — pinned by the dedicated describe below.
   {
     providerId: 'deepseek',
     modelId: 'deepseek:deepseek-chat',
@@ -346,24 +354,35 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
     });
   });
 
-  describe('provider whose recipe declares supports_subagent_loop: false', () => {
-    it('refuses the OR-proxied model instead of replaying it', async () => {
-      // The gateway must never be reached — the capability verdict is checked
-      // before any chat turn. If this transport is called, the gate regressed.
-      __setChatTransportForTests(async () => {
-        throw new Error('gateway.chat() must not be reached for a refused provider');
+  describe('openrouter non-Anthropic route: refused by the supports_subagent_loop gate before replay (#4478/#4514)', () => {
+    // The enforcement's own regression coverage: a crashed openrouter job on
+    // a NON-Anthropic route must NOT resume through the replay path — the
+    // capability gate throws the typed no_subagent_loop rejection first, and
+    // the prior tool row is never re-executed. (#4514 allows only
+    // `openrouter:anthropic/…` on the loop; every other OR family keeps this
+    // refusal until it gets its own live abort/retry evidence.) Covers both
+    // persisted shapes so a future shape-specific bypass can't sneak past
+    // the gate.
+    const OPENROUTER_MODEL = 'openrouter:google/gemini-3-flash-preview';
+
+    for (const shape of ['v2', 'v1'] as const) {
+      it(`typed no_subagent_loop rejection instead of replay (${shape} shape)`, async () => {
+        __setChatTransportForTests(async () => {
+          throw new Error('transport must not be reached for a loop-refused provider');
+        });
+
+        const executions: Array<{ name: string; input: unknown }> = [];
+        const tools = makeStubTools(executions);
+        const handler = buildHandler(tools);
+
+        const { jobId } = await seedCrashedState(`find foo (openrouter ${shape})`, shape);
+        const ctx = await makeCrashedCtx(jobId, `find foo (openrouter ${shape})`, OPENROUTER_MODEL);
+
+        await expect(handler(ctx)).rejects.toThrow(/supports_subagent_loop: false/);
+        // The refusal fires BEFORE reconciliation/dispatch: nothing re-executes.
+        expect(executions.length).toBe(0);
       });
-
-      const executions: Array<{ name: string; input: unknown }> = [];
-      const handler = buildHandler(makeStubTools(executions));
-
-      const { jobId } = await seedCrashedState('find foo (openrouter)', 'v2');
-      const ctx = await makeCrashedCtx(jobId, 'find foo (openrouter)', NO_SUBAGENT_LOOP_MODEL);
-
-      await expect(handler(ctx)).rejects.toThrow(/supports_subagent_loop: false/);
-      // And it refuses BEFORE dispatching anything.
-      expect(executions.length).toBe(0);
-    });
+    }
   });
 
   describe('non-idempotent tool with pending status (unrecoverable error)', () => {

@@ -46,6 +46,14 @@ export const EMBEDDING_PRICING: Record<string, EmbeddingPricing> = {
   'voyage:voyage-multimodal-3':    { pricePerMTok: 0.12 },
   // Voyage rerankers (same pricing page, verified 2026-08-21). Same
   // budget-tracker rerank-kind fallback rationale as the zerank-2 row below.
+  //
+  // FORK NOTE: `cohere:rerank-v3.5` — this fork's DEFAULT reranker — has NO
+  // row here on purpose. Cohere prices rerank per SEARCH, not per token, so
+  // any pricePerMTok would be a made-up tokens-per-search conversion, and
+  // this table's rule is fail-closed over fabricated ("no entry means
+  // lookupEmbeddingPrice returns `unknown`"). Consequence: budget estimates
+  // on the default rerank path read `unknown` rather than wrong. Tracked in
+  // TODOS.md — closing it needs a real per-search accounting unit, not a row.
   'voyage:rerank-2.5':             { pricePerMTok: 0.05 },
   'voyage:rerank-2.5-lite':        { pricePerMTok: 0.02 },
   // voyage-4-nano is deliberately absent: it's the open-weight variant (see

@@ -1,8 +1,9 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { handleToolCall } from '../mcp/server.ts';
 import { resolveSourceWithTier, localFederatedSourceIds } from '../core/source-resolver.ts';
-import { bigintToStringReplacer } from '../cli.ts';
+import { bigintToStringReplacer } from '../core/utils.ts';
 import { writeStdoutFinal } from '../core/cli-force-exit.ts';
+import { expandEqualsFlags } from '../core/cli-flag-value.ts';
 
 /**
  * `gbrain call <tool> <json>` — trusted local op-dispatch surface.
@@ -24,6 +25,10 @@ export async function runCall(
   // but the parser is positional-tolerant for ergonomics).
   let explicitSource: string | null = null;
   const rest: string[] = [];
+  // Split an equals-joined flag token into two so every arm below accepts
+  // both spellings. Without this a value joined by `=` is dropped and the
+  // command silently falls back to its ambient default.
+  args = expandEqualsFlags(args);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--source') {
