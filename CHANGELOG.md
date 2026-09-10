@@ -2,6 +2,51 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.51.0.0] - 2026-09-10
+
+## **Four months of upstream in one merge, and the two bugs it flushed out.**
+
+This pulls `garrytan/gbrain` v0.46.29.0 through v0.48.2.0 into the fork: 51 commits, 1,289 files, +145k lines. Hybrid relaxed-arm fusion demotion, the Gmail open-loop engine, ambient memory writeback, engine detection and DB-access repair, the monthly backup-coverage check, live ChatGPT/Claude history sync, and the community fix waves behind them.
+
+The merge base was wrong before any of that could land. The previous sync landed as a squash, so git still believed the base was v0.46.18.0 and tried to re-apply everything already in the tree: 923 conflicted files. Recording v0.46.28.0 as incorporated restored the real base and cut it to 40.
+
+### The numbers that matter
+
+- **51** upstream commits, **1,289** files, **+145,834 / -9,207** lines
+- **923 → 40** conflicts once the merge base was corrected
+- **26,692** unit tests green, **56/56** verify checks, **216/224** e2e files
+- **18** commands stopped silently dropping `--source=<id>`
+- **5** CVEs closed (hono, js-yaml, @ai-sdk/provider-utils)
+
+### What this means for you
+
+Reranking stays on Cohere `rerank-v3.5`. Upstream answered the ZeroEntropy sunset with Voyage; this fork had already shipped Cohere and keeps it. Every surface resolves through upstream's one-constant seam, so the divergence is a single value, not a fork of the machinery. **If `COHERE_API_KEY` is not set, init writes `search.reranker.enabled=false` and search returns results unreranked** — that is deliberate (silence beats a `no_key` audit row on every query), but it is the one thing to check after upgrading.
+
+`--source=<id>` now works everywhere. It used to be dropped by 18 commands, which then fell through to the ambient source chain — reading, and for `embed` and `sweep` *writing*, under a source you never named.
+
+### To take advantage of v0.51.0.0
+
+```bash
+gbrain upgrade
+export COHERE_API_KEY=…            # or: gbrain config set search.reranker.enabled false
+gbrain doctor                      # reranker_health names the fix if the key is missing
+```
+
+Schema migrations run on upgrade: this fork's v141/v142 keep their slots and upstream's new v141-v145 shift +2 to v143-v147.
+
+### Itemized changes
+
+- **Migrations renumbered, not reordered.** Upstream's five new migrations collide with this fork's v141/v142 (themselves upstream v133/v134, renumbered last sync), so they shift +2 to v143-v147. No duplicates, no gaps; a fresh brain applies 142 migrations to v147. Migration tests now pin by NAME, because the number moves every sync.
+- **`pushLockDir` hashed the raw path** while `workspacePush` keys off the resolved git toplevel. On macOS (`/var` → `/private/var`) the spellings hashed differently, so two concurrent pushes could both take the push lock — the exact race the lock exists to prevent, silent on the platform most likely to hit it.
+- **`cohere_api_key` was in neither the file-plane nor the DB-merge key list**, so a DB-plane Cohere key was invisible and a re-init would disable reranking on a brain that is in fact keyed.
+- **break-lock reconciles both intents.** A deleted source's orphaned lock is breakable again (upstream #4412) while a typo'd `--source` still exits 1 loudly — the lock row is the evidence.
+- **`--source` equals-spelling sweep finished.** All 18 remaining commands converted; the idiom guard's PENDING list is empty and shrink-only. Behavior pinned by `test/cli-flag-equals-spelling.test.ts`, because the existing guard is structural and proves shape, not behavior.
+- **Sweep corpus tests no longer race the clock.** They shared one 5s wall-clock budget with two earlier passes; the merge added enough work upstream of them that CI hit `budget_exhausted:corpus`. The product default is unchanged and the shrinking margin is filed as P2.
+- **CI base ref de-hardcoded.** Upstream's new Selected-E2E job fetched `origin/master`, which does not exist here, so it died before running a single test.
+- **Security.** hono 4.13.0 → 4.13.7, js-yaml 3.15.1 → 3.15.2, @ai-sdk/provider-utils 4.0.26 → 4.0.51.
+
+Known gap: `cohere:rerank-v3.5` has no `EMBEDDING_PRICING` row, so budget estimates read `unknown` on the default rerank path. Cohere prices rerank per search, not per token, and that table's rule is fail-closed over fabricated. Filed as P2.
+
 ## [0.50.2.0] - 2026-08-31
 
 ## **`--source=wiki` was not a typo. It was silently ignored.**
