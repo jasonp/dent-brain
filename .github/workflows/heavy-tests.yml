@@ -728,11 +728,19 @@ jobs:
           tail -40 claude-plugin-door.txt
           if [ "$EXIT" -ne 0 ]; then exit "$EXIT"; fi
           pass_count=$(grep -Eo '[0-9]+ pass' claude-plugin-door.txt | tail -1 | grep -Eo '^[0-9]+' || true)
-          # 2 = validate+install + the persona-variant install added by
-          # v0.46.18.0 (#4251) — that commit grew the VALIDATE describe without
-          # re-pinning here, which is what turned the nightly red.
-          if [ "${pass_count:-0}" -ne 2 ]; then
-            echo "::error::claude plugin door expected exactly 2 passing INSTALL tests, summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
+          # FORK NOTE: the expected count is DERIVED from the marketplace under
+          # test, not a literal. The VALIDATE describe holds validate+install
+          # (always) plus the persona-variant install added by v0.46.18.0
+          # (#4251), which `test.skipIf(variants.length === 0)`s itself on a
+          # build whose marketplace publishes only the primary entry. Upstream
+          # ships variants (2); this fork ships one plugin (1). A literal here
+          # is wrong for one side or the other, and the v0.48.2.0 merge proved
+          # the failure mode: upstream's 1 -> 2 edit auto-merged over this
+          # fork's correct 1 with no conflict and turned the nightly red.
+          # Deriving keeps the anti-silently-skipped-test pin live on both.
+          expected=$(bun -e 'const m=JSON.parse(require("fs").readFileSync(".claude-plugin/marketplace.json","utf8"));const n=(m.plugins??[]).map(p=>p.name).filter(Boolean);const primary=n.includes(m.name)?m.name:n[0];console.log(n.filter(x=>x!==primary).length>0?2:1)')
+          if [ "${pass_count:-0}" -ne "$expected" ]; then
+            echo "::error::claude plugin door expected exactly $expected passing INSTALL test(s), summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
             exit 1
           fi
 
